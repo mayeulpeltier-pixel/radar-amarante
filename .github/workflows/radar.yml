@@ -1,0 +1,59 @@
+name: Radar Amarante
+
+# Quand le radar tourne :
+#  - schedule : automatiquement, tous les lundis a 06h00 UTC (08h00 Paris l'ete).
+#  - workflow_dispatch : a la demande, depuis l'onglet Actions ou l'app mobile.
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  radar:
+    runs-on: ubuntu-latest
+    # Timeout global : si un run depasse 30 min (API bloquee, boucle anormale),
+    # GitHub le coupe proprement et le marque en echec. C'est l'anti-blocage
+    # au niveau de l'ordonnanceur, sans une ligne de code.
+    timeout-minutes: 30
+
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installer les dependances
+        run: pip install requests gspread google-auth python-dateutil
+
+      # 1) Barriere de securite : les tests d'abord. Si un test casse, le job
+      #    s'arrete ICI et le radar ne tourne pas (pas de run sur du code casse).
+      - name: Lancer les tests
+        run: python -m unittest test_radar -v
+
+      # 2) Reconstituer le fichier de compte de service Google a partir du
+      #    secret (un secret ne peut pas etre un fichier, donc on le recree).
+      - name: Reconstituer la cle de service Google
+        run: echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > service_account.json
+
+      # 3) Lancer le radar. Les secrets sont injectes en variables d'env, jamais
+      #    ecrits dans le code. Le master fait le reste (TED puis BM).
+      - name: Lancer le radar
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          RADAR_LOG_FILE: radar.log
+        run: python radar_run.py
+
+      # 4) Conserver le journal du run comme artefact telechargeable (90 jours),
+      #    meme si le run a echoue, pour diagnostic a posteriori.
+      - name: Archiver le journal
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: radar-log
+          path: radar.log
+          retention-days: 90
