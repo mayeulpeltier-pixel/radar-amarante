@@ -149,7 +149,7 @@ ORDRE_ZONES = [
 
 def resoudre_pays(brut, source):
     """Renvoie (nom_affiche, zone) a partir du champ pays_execution."""
-    brut = (brut or "").strip()
+    brut = _txt(brut)
     if not brut:
         return ("Pays non précisé", "Non classé")
     if source == "TED":
@@ -168,9 +168,17 @@ def resoudre_pays(brut, source):
     return (nom or brut, "Non classé")
 
 
+def _txt(v):
+    """Cellule -> texte propre. gspread peut renvoyer des int/float (ex. un
+    numero de telephone ou un score), donc on force en str avant tout .strip()."""
+    if v is None:
+        return ""
+    return str(v).strip()
+
+
 def _vrai(v):
     """Interprete une valeur de cellule comme booleen (divergence, securite)."""
-    return str(v).strip().lower() in ("true", "vrai", "1", "oui", "yes")
+    return _txt(v).lower() in ("true", "vrai", "1", "oui", "yes")
 
 
 def _num(v, defaut=0.0):
@@ -181,15 +189,17 @@ def _num(v, defaut=0.0):
 
 
 def ligne_vers_lead(row, source):
-    """Transforme une ligne de Sheet (dict par nom de colonne) en lead unifie."""
-    pays_brut = row.get("pays_execution", "")
+    """Transforme une ligne de Sheet (dict par nom de colonne) en lead unifie.
+    Toutes les cellules passent par _txt() : gspread peut renvoyer des nombres
+    (telephone, score, identifiant) la ou on attend du texte."""
+    pays_brut = _txt(row.get("pays_execution"))
     nom_pays, zone = resoudre_pays(pays_brut, source)
-    action = (row.get("action_recommandee", "") or "").strip().lower()
+    action = _txt(row.get("action_recommandee")).lower()
 
     if source == "BM":
-        cible = row.get("cible_commerciale_reelle", "") or \
+        cible = _txt(row.get("cible_commerciale_reelle")) or \
             "Titulaire du marché qui déploie les équipes, pas l'agence acheteuse."
-        groupe = (row.get("procurement_group", "") or "").strip() or "n.c."
+        groupe = _txt(row.get("procurement_group")) or "n.c."
     else:
         cible = "Bureau ou consortium titulaire du marché, pas le bailleur."
         groupe = "AT"
@@ -198,22 +208,22 @@ def ligne_vers_lead(row, source):
         "src": source,
         "pays": nom_pays,
         "zone": zone,
-        "titre": (row.get("titre", "") or "").strip(),
-        "agence": (row.get("acheteur", "") or "").strip() or "n.c.",
+        "titre": _txt(row.get("titre")),
+        "agence": _txt(row.get("acheteur")) or "n.c.",
         "final": round(_num(row.get("score_final")), 1),
         "surete": round(_num(row.get("score_surete")), 1),
         "comm": round(_num(row.get("score_commercial")), 1),
         "action": action or "n.c.",
-        "win": (row.get("fenetre_action", "") or "indetermine").strip() or "indetermine",
-        "nom": (row.get("contact_name", "") or "").strip() or "n.c.",
-        "email": (row.get("contact_email", "") or "").strip() or "n.c.",
-        "tel": (row.get("contact_phone", "") or "").strip() or "n.c.",
-        "cible": cible.strip(),
-        "justif": (row.get("justification", "") or "").strip(),
+        "win": _txt(row.get("fenetre_action")) or "indetermine",
+        "nom": _txt(row.get("contact_name")) or "n.c.",
+        "email": _txt(row.get("contact_email")) or "n.c.",
+        "tel": _txt(row.get("contact_phone")) or "n.c.",
+        "cible": cible,
+        "justif": _txt(row.get("justification")),
         "grp": groupe,
-        "lien": (row.get("lien_avis", "") or "").strip(),
-        "ecart": _vrai(row.get("divergence", "")),
-        "secu": _vrai(row.get("securite_existante_detectee", "")),
+        "lien": _txt(row.get("lien_avis")),
+        "ecart": _vrai(row.get("divergence")),
+        "secu": _vrai(row.get("securite_existante_detectee")),
     }
 
 
