@@ -68,6 +68,12 @@ NOM_ONGLET_WHITELIST = "comptes_cibles_bitd"
 NOM_ONGLET_PRIVE = "prive_radar"
 
 GNEWS_BASE = "https://news.google.com/rss/search"
+# GDELT DOC 2.0 API : base evenementielle mondiale gratuite, multilingue,
+# maj toutes les 15 min. Complete Google News (couverture presse etrangere).
+GDELT_ENDPOINT = "https://api.gdeltproject.org/api/v2/doc/doc"
+GDELT_TIMESPAN = "3m"          # fenetre glissante (max ~3 mois cote GDELT)
+GDELT_MAXRECORDS = 25
+ACTIVER_GDELT = os.environ.get("RADAR_GDELT", "1") != "0"  # coupe-circuit
 DECLENCHEURS = ("contrat OR export OR implantation OR usine OR filiale OR livraison "
                 "OR chantier OR essais OR démonstration OR formation OR déploiement")
 MAX_ARTICLES_PAR_ENTREPRISE = 8
@@ -185,6 +191,66 @@ def parser_rss(xml_texte):
 
 def _nettoyer(html):
     return re.sub(r"<[^>]+>", " ", html or "").replace("&nbsp;", " ").strip()
+
+
+# --- GDELT DOC 2.0 (source presse mondiale multilingue) --------------------
+def url_ou_requete_gdelt(entreprise, requete_perso=""):
+    return requete_perso.strip() or '"{}"'.format(entreprise)
+
+
+def collecter_gdelt(entreprise, requete_perso="", session=None):
+    """Articles GDELT pour une entreprise. Tolerant : erreur -> liste vide."""
+    if not ACTIVER_GDELT:
+        return []
+    session = session or ted.session_robuste()
+    params = {"query": url_ou_requete_gdelt(entreprise, requete_perso),
+              "mode": "artlist", "format": "json",
+              "maxrecords": str(GDELT_MAXRECORDS), "timespan": GDELT_TIMESPAN,
+              "sort": "datedesc"}
+    try:
+        rep = session.get(GDELT_ENDPOINT, params=params, timeout=30)
+        rep.raise_for_status()
+        return parser_gdelt(rep.json())
+    except Exception as e:
+        print("  (info) GDELT indisponible pour {} ({}).".format(entreprise, e))
+        return []
+
+
+def parser_gdelt(donnees):
+    articles = []
+    for a in (donnees or {}).get("articles", []):
+        titre = (a.get("title") or "").strip()
+        lien = (a.get("url") or "").strip()
+        if titre and lien:
+            articles.append({"titre": titre, "lien": lien,
+                             "date": _date_gdelt(a.get("seendate", "")),
+                             "resume": titre})
+    return articles[:MAX_ARTICLES_PAR_ENTREPRISE]
+
+
+def _date_gdelt(s):
+    """'20260615T120000Z' -> date RFC822 (lisible par article_frais)."""
+    s = (s or "").strip()
+    try:
+        dt = datetime.datetime.strptime(s, "%Y%m%dT%H%M%SZ").replace(
+            tzinfo=datetime.timezone.utc)
+        return email.utils.format_datetime(dt)
+    except Exception:
+        return ""
+
+
+def collecter_sources(entreprise, requete_perso="", session=None):
+    """Fusionne Google News + GDELT, dedoublonne par URL. Point d'entree unique
+    de la collecte (une seule fonction a remplacer pour ajouter une source)."""
+    articles = collecter_articles(entreprise, requete_perso, session)
+    articles += collecter_gdelt(entreprise, requete_perso, session)
+    vus, uniques = set(), []
+    for a in articles:
+        k = id_article(a.get("lien", ""))
+        if k and k not in vus:
+            vus.add(k)
+            uniques.append(a)
+    return uniques
 
 
 def article_frais(article, aujourd=None):
@@ -425,7 +491,7 @@ def traiter_entreprise(entreprise_row, deja_vus, cles_existantes=None,
     requete = entreprise_row.get("requete_personnalisee", "")
     retenus = {}  # clef_evenement -> meilleur signal (dedup intra-run)
 
-    for article in collecter_articles(entreprise, requete, session=session):
+    for article in collecter_sources(entreprise, requete, session=session):
         if not article_frais(article):
             continue
         pub = id_article(article.get("lien", ""))
