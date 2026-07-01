@@ -217,12 +217,18 @@ def ligne_vers_lead(row, source):
     (telephone, score, identifiant) la ou on attend du texte."""
     pays_brut = _txt(row.get("pays_execution"))
     nom_pays, zone = resoudre_pays(pays_brut, source)
+    if source == "PRIVÉ":
+        zone = _txt(row.get("zone")) or zone
     action = _txt(row.get("action_recommandee")).lower()
 
     if source == "BM":
         cible = _txt(row.get("cible_commerciale_reelle")) or \
             "Titulaire du marché qui déploie les équipes, pas l'agence acheteuse."
         groupe = _txt(row.get("procurement_group")) or "n.c."
+    elif source == "PRIVÉ":
+        cible = _txt(row.get("cible_commerciale_reelle")) or \
+            "Contact via réseau : direction sûreté / export / MCO."
+        groupe = _txt(row.get("type_activite")) or "signal"
     else:
         cible = "Bureau ou consortium titulaire du marché, pas le bailleur."
         groupe = "AT"
@@ -259,13 +265,16 @@ def ligne_vers_lead(row, source):
         "date_det": date_det,
         "statut": statut,
         "deadline": _txt(row.get("deadline")),
+        "conf": _txt(row.get("confiance")),
+        "modele": _txt(row.get("modele")),
     }
 
 
-def construire_leads(lignes_ted, lignes_bm):
-    """Fusionne les deux onglets, deduplique, trie par score."""
+def construire_leads(lignes_ted, lignes_bm, lignes_prive=None):
+    """Fusionne les onglets (TED, Banque Mondiale, PRIVÉ/BITD), deduplique, trie."""
     leads = [ligne_vers_lead(r, "TED") for r in lignes_ted]
     leads += [ligne_vers_lead(r, "BM") for r in lignes_bm]
+    leads += [ligne_vers_lead(r, "PRIVÉ") for r in (lignes_prive or [])]
     leads = [l for l in leads if l["titre"]]  # avis exploitables seulement
 
     # Deduplication : un meme avis (meme lien, ou meme pays+titre) ne doit
@@ -328,7 +337,24 @@ def lire_onglets(sheet_id, fichier_cs):
     # situees apres la zone preservee) pour le CRM et le tri par mois.
     lignes_ted = _lignes_vers_dicts(valeurs(NOM_ONGLET_TED), ted.TOUTES_COLONNES_SHEET)
     lignes_bm = _lignes_vers_dicts(valeurs(NOM_ONGLET_BM), bm.TOUTES_COLONNES_BM)
-    return lignes_ted, lignes_bm
+
+    # Onglet des signaux prives (BITD), s'il existe. Schema fourni par le moteur.
+    try:
+        import bitd_signaux as bitd
+        colonnes_prive = bitd.TOUTES_COLONNES_PRIVE
+        onglet_prive = bitd.NOM_ONGLET_PRIVE
+    except Exception:
+        onglet_prive = "prive_radar"
+        colonnes_prive = [
+            "date_maj", "score_final", "score_surete", "score_commercial",
+            "action_recommandee", "fenetre_action", "titre", "acheteur",
+            "pays_execution", "zone", "type_activite", "confiance", "modele",
+            "cible_commerciale_reelle", "justification", "entreprise",
+            "priorite_compte", "publication_number", "lien_avis",
+            "date_publication", "statut_suivi", "date_detection"]
+    lignes_prive = _lignes_vers_dicts(valeurs(onglet_prive), colonnes_prive)
+
+    return lignes_ted, lignes_bm, lignes_prive
 
 
 def generer_html(leads):
@@ -363,8 +389,8 @@ def main():
         sys.exit(1)
 
     print("Lecture des onglets du Sheet...")
-    lignes_ted, lignes_bm = lire_onglets(sheet_id, fichier_cs)
-    leads = construire_leads(lignes_ted, lignes_bm)
+    lignes_ted, lignes_bm, lignes_prive = lire_onglets(sheet_id, fichier_cs)
+    leads = construire_leads(lignes_ted, lignes_bm, lignes_prive)
     print("  TED : {} avis | BM : {} avis | total exploitable : {}".format(
         len(lignes_ted), len(lignes_bm), len(leads)))
 
@@ -590,6 +616,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
       <button data-src="all" aria-pressed="true">Toutes</button>
       <button data-src="BM" aria-pressed="false">Banque Mondiale</button>
       <button data-src="TED" aria-pressed="false">TED</button>
+      <button data-src="PRIVÉ" aria-pressed="false">Privé (BITD)</button>
     </div>
     <div class="seg" id="triseg" role="group" aria-label="Tri">
       <button data-tri="score" aria-pressed="true">Importance</button>
