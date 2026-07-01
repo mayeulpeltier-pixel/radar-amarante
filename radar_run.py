@@ -157,6 +157,15 @@ def main():
         logger.error("ted_complet_bm.py est introuvable (meme dossier requis).")
         sys.exit(1)
 
+    # --- 2 bis. Import du moteur de signaux prives (BITD), optionnel ----------
+    # S'il manque, ou si la whitelist n'est pas encore importee dans le Sheet,
+    # cette etape ne fait rien : elle n'empeche jamais le radar public de tourner.
+    bitd = None
+    try:
+        import bitd_signaux as bitd
+    except Exception as e:
+        logger.info("(info) Moteur BITD indisponible (%s). Etape ignoree.", e)
+
     # --- 3. Garde commune : cle API ------------------------------------------
     if not os.environ.get("ANTHROPIC_API_KEY"):
         logger.error("ANTHROPIC_API_KEY n'est pas definie. Les deux "
@@ -170,9 +179,12 @@ def main():
 
     # --- 4. Lancement sequentiel, chacun isole -------------------------------
     resultats = {}
-    resultats["TED"] = lancer_collecteur("ETAPE 1/2 -- COLLECTEUR TED", ted)
+    resultats["TED"] = lancer_collecteur("ETAPE 1/3 -- COLLECTEUR TED", ted)
     resultats["Banque Mondiale"] = lancer_collecteur(
-        "ETAPE 2/2 -- COLLECTEUR BANQUE MONDIALE", bm)
+        "ETAPE 2/3 -- COLLECTEUR BANQUE MONDIALE", bm)
+    if bitd is not None:
+        resultats["Signaux BITD"] = lancer_collecteur(
+            "ETAPE 3/3 -- MOTEUR SIGNAUX PRIVES (BITD)", bitd)
 
     # --- 5. Bilan global ------------------------------------------------------
     logger.info("#" * 60)
