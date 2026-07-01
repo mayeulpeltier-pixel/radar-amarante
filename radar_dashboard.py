@@ -258,6 +258,7 @@ def ligne_vers_lead(row, source):
         "mois_label": mois_label,
         "date_det": date_det,
         "statut": statut,
+        "deadline": _txt(row.get("deadline")),
     }
 
 
@@ -272,7 +273,7 @@ def construire_leads(lignes_ted, lignes_bm):
     # On garde l'occurrence au meilleur score.
     uniques = {}
     for l in leads:
-        cle = l["lien"] or (l["src"] + "|" + l["pays"] + "|" + l["titre"])
+        cle = l["lien"] or (l["src"] + "|" + l["pays"] + "|" + l["agence"] + "|" + l["titre"])
         if cle not in uniques or l["final"] > uniques[cle]["final"]:
             uniques[cle] = l
     leads = list(uniques.values())
@@ -468,6 +469,11 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .statut.perdu{border-color:rgba(150,150,150,0.4);color:var(--bone-faint)}
   .statut.relance{border-color:rgba(192,39,58,0.5);color:#e08e98}
   .datedet{font-family:var(--mono);font-size:0.58rem;color:var(--bone-faint);letter-spacing:0.04em}
+  .jx{font-family:var(--mono);font-size:0.58rem;letter-spacing:0.08em;font-weight:600;padding:3px 8px;border-radius:4px;border:1px solid var(--line)}
+  .jx.urgent{background:rgba(192,39,58,0.18);border-color:rgba(192,39,58,0.6);color:#e88b96}
+  .jx.proche{background:var(--watch-soft);border-color:rgba(200,137,59,0.5);color:#dcb079}
+  .jx.large{border-color:var(--line-2);color:var(--bone-dim)}
+  .jx.clos{border-color:rgba(150,150,150,0.35);color:var(--bone-faint)}
   .leads{display:grid;grid-template-columns:repeat(2,1fr);gap:13px}
   .lead{background:var(--ink-2);border:1px solid var(--line);border-radius:9px;overflow:hidden;position:relative;display:flex;flex-direction:column}
   .lead .spine{position:absolute;left:0;top:0;bottom:0;width:4px}
@@ -587,6 +593,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
     </div>
     <div class="seg" id="triseg" role="group" aria-label="Tri">
       <button data-tri="score" aria-pressed="true">Importance</button>
+      <button data-tri="urgence" aria-pressed="false">Urgence</button>
       <button data-tri="date" aria-pressed="false">Récents</button>
     </div>
     <button class="clearz" id="clearz">Réinitialiser</button>
@@ -746,12 +753,41 @@ document.getElementById('search').addEventListener('input',e=>{state.q=e.target.
 
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
+// Jours restants avant la date limite. Renvoie un entier (peut etre negatif si
+// cloture) ou null si pas de date exploitable.
+function joursRestants(s){
+  s=(s||'').trim(); if(!s)return null;
+  let d=null;
+  let m=s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if(m){ d=new Date(+m[1],+m[2]-1,+m[3]); }
+  else{ let m2=s.match(/^(\d{2})\/(\d{2})\/(\d{4})/); if(m2){ d=new Date(+m2[3],+m2[2]-1,+m2[1]); } }
+  if(!d||isNaN(d))return null;
+  const auj=new Date(); auj.setHours(0,0,0,0);
+  return Math.round((d-auj)/86400000);
+}
+function badgeDeadline(l){
+  const jr=joursRestants(l.deadline);
+  if(jr===null)return '';
+  if(jr<0)return '<span class="jx clos">clôturé</span>';
+  if(jr===0)return '<span class="jx urgent">clôt. aujourd\'hui</span>';
+  const cls=jr<=7?'urgent':(jr<=30?'proche':'large');
+  return `<span class="jx ${cls}">J-${jr}</span>`;
+}
+
 function render(){
   buildZoneChart();
   const box=document.getElementById('leads');
   let filtered=LEADS.filter(l=>match(l));
   if(state.tri==='date'){
     filtered.sort((a,b)=> (b.date_det||'').localeCompare(a.date_det||'') || b.final-a.final);
+  }else if(state.tri==='urgence'){
+    filtered.sort((a,b)=>{
+      const ja=joursRestants(a.deadline), jb=joursRestants(b.deadline);
+      const oa=(ja!==null&&ja>=0), ob=(jb!==null&&jb>=0);
+      if(oa&&ob)return ja-jb;            // deux ouverts : le plus proche d'abord
+      if(oa!==ob)return oa?-1:1;         // un ouvert passe avant un fermé/sans date
+      return b.final-a.final;            // sinon, par score
+    });
   }else{
     filtered.sort((a,b)=> b.final-a.final);
   }
@@ -780,7 +816,7 @@ function render(){
       <div class="lhead"><div class="lmeta"><span class="src ${l.src.toLowerCase()}">${l.src==='BM'?'Banque Mondiale':'TED'}</span><span class="pays">${esc(l.pays)}</span><span>· ${esc(l.zone)}</span></div>
       <div class="scorebox"><div class="sf">${l.final.toFixed(1)}</div><div class="sd">sûreté ${l.surete.toFixed(1)} · com ${l.comm.toFixed(1)}</div></div></div>
       <h3 class="ltitle">${esc(l.titre)}</h3>
-      <div class="badges"><span class="badge win-${win}">${winLabel[win]}</span>${ecart}${statut}${dateChip}</div>
+      <div class="badges"><span class="badge win-${win}">${winLabel[win]}</span>${badgeDeadline(l)}${ecart}${statut}${dateChip}</div>
       <div class="contact"><div class="row"><span class="k">Agence</span><span class="v">${esc(l.agence)}</span></div>${contactRows}</div>
       <div class="cible"><b>Qui démarcher.</b> ${esc(l.cible)}</div>
       ${l.justif?`<details class="just"><summary><span class="chev">▸</span> Justification sûreté</summary><p>${esc(l.justif)}</p></details>`:''}
