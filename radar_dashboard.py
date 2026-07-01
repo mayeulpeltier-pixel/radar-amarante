@@ -188,6 +188,29 @@ def _num(v, defaut=0.0):
         return defaut
 
 
+_MOIS_FR = ["", "janvier", "février", "mars", "avril", "mai", "juin", "juillet",
+            "août", "septembre", "octobre", "novembre", "décembre"]
+
+
+def _mois_depuis_date(s):
+    """'2026-06-28' -> ('2026-06', 'juin 2026'). Gere aussi JJ/MM/AAAA.
+    Renvoie ('', 'Sans date') si illisible (l'avis ira dans un groupe a part)."""
+    import re
+    s = _txt(s)
+    m = re.match(r"(\d{4})-(\d{2})", s)
+    if m:
+        annee, mois = m.group(1), int(m.group(2))
+    else:
+        m2 = re.match(r"\d{2}/(\d{2})/(\d{4})", s)
+        if m2:
+            annee, mois = m2.group(2), int(m2.group(1))
+        else:
+            return ("", "Sans date")
+    if 1 <= mois <= 12:
+        return ("{}-{:02d}".format(annee, mois), "{} {}".format(_MOIS_FR[mois], annee))
+    return ("", "Sans date")
+
+
 def ligne_vers_lead(row, source):
     """Transforme une ligne de Sheet (dict par nom de colonne) en lead unifie.
     Toutes les cellules passent par _txt() : gspread peut renvoyer des nombres
@@ -203,6 +226,13 @@ def ligne_vers_lead(row, source):
     else:
         cible = "Bureau ou consortium titulaire du marché, pas le bailleur."
         groupe = "AT"
+
+    # Periode : mois de PREMIERE detection (date_detection ne change jamais ;
+    # a defaut, date de derniere maj). Permet de classer les leads par mois.
+    date_det = _txt(row.get("date_detection")) or _txt(row.get("date_maj"))
+    mois_cle, mois_label = _mois_depuis_date(date_det)
+    # Statut de suivi (CRM) : ce que tu ecris a la main dans le Sheet.
+    statut = _txt(row.get("statut_suivi")) or "nouveau"
 
     return {
         "src": source,
@@ -224,36 +254,80 @@ def ligne_vers_lead(row, source):
         "lien": _txt(row.get("lien_avis")),
         "ecart": _vrai(row.get("divergence")),
         "secu": _vrai(row.get("securite_existante_detectee")),
+        "mois": mois_cle,
+        "mois_label": mois_label,
+        "date_det": date_det,
+        "statut": statut,
     }
 
 
 def construire_leads(lignes_ted, lignes_bm):
-    """Fusionne les deux onglets en une liste de leads, trie par score."""
+    """Fusionne les deux onglets, deduplique, trie par score."""
     leads = [ligne_vers_lead(r, "TED") for r in lignes_ted]
     leads += [ligne_vers_lead(r, "BM") for r in lignes_bm]
-    # On ne garde que les avis exploitables (titre + score)
-    leads = [l for l in leads if l["titre"]]
+    leads = [l for l in leads if l["titre"]]  # avis exploitables seulement
+
+    # Deduplication : un meme avis (meme lien, ou meme pays+titre) ne doit
+    # apparaitre qu'une fois, meme si la feuille contient des lignes en double.
+    # On garde l'occurrence au meilleur score.
+    uniques = {}
+    for l in leads:
+        cle = l["lien"] or (l["src"] + "|" + l["pays"] + "|" + l["titre"])
+        if cle not in uniques or l["final"] > uniques[cle]["final"]:
+            uniques[cle] = l
+    leads = list(uniques.values())
+
     leads.sort(key=lambda l: l["final"], reverse=True)
     return leads
 
 
+def _lignes_vers_dicts(valeurs, colonnes):
+    """Transforme une grille brute (get_all_values) en liste de dicts, en
+    mappant PAR POSITION sur l'ordre officiel `colonnes` (source de verite =
+    les collecteurs). On ignore la ligne d'en-tete de la feuille, qui peut etre
+    restee sur un ancien schema et provoquer un decalage. Robuste."""
+    if not valeurs:
+        return []
+    debut = 0
+    premiere = [str(c).strip() for c in valeurs[0]]
+    # Detecte une ligne d'en-tete (presence de noms de colonnes connus).
+    if "score_final" in premiere or "titre" in premiere or premiere[:1] == ["date_maj"]:
+        debut = 1
+    dicts = []
+    for row in valeurs[debut:]:
+        if not any(str(c).strip() for c in row):
+            continue  # ligne vide
+        d = {nom: (row[i] if i < len(row) else "") for i, nom in enumerate(colonnes)}
+        dicts.append(d)
+    return dicts
+
+
 def lire_onglets(sheet_id, fichier_cs):
-    """Lit les deux onglets via gspread. Import paresseux (pas requis pour les tests)."""
+    """Lit les deux onglets via gspread, en lecture POSITIONNELLE (get_all_values
+    + ordre officiel des colonnes), pas get_all_records (sensible aux en-tetes).
+    Import paresseux : pas requis pour les tests de generation HTML."""
     import gspread
     from google.oauth2.service_account import Credentials
+    import ted_complet_v14 as ted
+    import ted_complet_bm as bm
+
     portee = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
     creds = Credentials.from_service_account_file(fichier_cs, scopes=portee)
     client = gspread.authorize(creds)
     classeur = client.open_by_key(sheet_id)
 
-    def lire(nom):
+    def valeurs(nom):
         try:
-            return classeur.worksheet(nom).get_all_records()
+            return classeur.worksheet(nom).get_all_values()
         except gspread.WorksheetNotFound:
             print("  (info) onglet '{}' introuvable, ignore.".format(nom))
             return []
 
-    return lire(NOM_ONGLET_TED), lire(NOM_ONGLET_BM)
+    # On lit TOUTES les colonnes (y compris statut_suivi et date_detection,
+    # situees apres la zone preservee) pour le CRM et le tri par mois.
+    lignes_ted = _lignes_vers_dicts(valeurs(NOM_ONGLET_TED), ted.TOUTES_COLONNES_SHEET)
+    lignes_bm = _lignes_vers_dicts(valeurs(NOM_ONGLET_BM), bm.TOUTES_COLONNES_BM)
+    return lignes_ted, lignes_bm
 
 
 def generer_html(leads):
@@ -265,6 +339,12 @@ def generer_html(leads):
         "surveiller": sum(1 for l in leads if l["action"] == "surveiller"),
         "ignorer": sum(1 for l in leads if l["action"] == "ignorer"),
     }
+    # Mois presents, du plus recent au plus ancien (pour les onglets periode).
+    labels = {}
+    for l in leads:
+        if l["mois"]:
+            labels[l["mois"]] = l["mois_label"]
+    meta["mois"] = [{"cle": c, "label": labels[c]} for c in sorted(labels, reverse=True)]
     leads_json = json.dumps(leads, ensure_ascii=False)
     meta_json = json.dumps(meta, ensure_ascii=False)
     return (GABARIT_HTML
@@ -308,6 +388,8 @@ GABARIT_HTML = r"""<!DOCTYPE html>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Jost:wght@300;400;500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <style>
   :root{
     --ink:#16100F; --ink-2:#1F1715; --ink-3:#281D1B;
@@ -374,6 +456,18 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .clearz{font-family:var(--mono);font-size:0.66rem;letter-spacing:0.08em;color:var(--bone-dim);background:none;border:none;cursor:pointer;text-decoration:underline;text-underline-offset:3px;display:none}
   .clearz.on{display:inline}
   .count{font-family:var(--mono);font-size:0.7rem;color:var(--bone-dim);letter-spacing:0.06em;margin-bottom:14px}
+  /* Onglets periode (mois) */
+  .period{display:flex;gap:7px;flex-wrap:wrap;margin:22px 0 4px;align-items:center}
+  .period .chip{background:var(--ink-2);border:1px solid var(--line);border-radius:20px;padding:7px 14px;cursor:pointer;color:var(--bone-dim);font-family:var(--mono);font-size:0.66rem;letter-spacing:0.06em;transition:.15s;white-space:nowrap}
+  .period .chip:hover{border-color:rgba(236,228,218,0.3);color:var(--bone)}
+  .period .chip[aria-pressed="true"]{background:var(--oxblood);border-color:var(--oxblood);color:var(--bone)}
+  /* Badge statut de suivi (CRM) */
+  .statut{font-family:var(--mono);font-size:0.56rem;letter-spacing:0.1em;text-transform:uppercase;padding:3px 7px;border-radius:4px;border:1px solid var(--line);color:var(--bone-dim)}
+  .statut.contacte{border-color:rgba(200,137,59,0.5);color:#dcb079}
+  .statut.gagne{border-color:rgba(95,160,110,0.6);color:#86c596}
+  .statut.perdu{border-color:rgba(150,150,150,0.4);color:var(--bone-faint)}
+  .statut.relance{border-color:rgba(192,39,58,0.5);color:#e08e98}
+  .datedet{font-family:var(--mono);font-size:0.58rem;color:var(--bone-faint);letter-spacing:0.04em}
   .leads{display:grid;grid-template-columns:repeat(2,1fr);gap:13px}
   .lead{background:var(--ink-2);border:1px solid var(--line);border-radius:9px;overflow:hidden;position:relative;display:flex;flex-direction:column}
   .lead .spine{position:absolute;left:0;top:0;bottom:0;width:4px}
@@ -421,8 +515,40 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .empty{grid-column:1/-1;text-align:center;padding:50px 20px;color:var(--bone-dim);font-family:var(--mono);font-size:0.8rem;letter-spacing:0.06em}
   footer{margin-top:34px;padding-top:18px;border-top:1px solid var(--line);font-family:var(--mono);font-size:0.64rem;color:var(--bone-faint);letter-spacing:0.06em;line-height:1.8}
   @media(max-width:860px){.stats{grid-template-columns:repeat(2,1fr)}.zonegrid{grid-template-columns:repeat(2,1fr)}.leads{grid-template-columns:1fr}.runmeta{text-align:left}}
-  @media(prefers-reduced-motion:reduce){*{transition:none!important}}
+  @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
   :focus-visible{outline:2px solid var(--watch);outline-offset:2px}
+
+  /* Synthese executive */
+  .exec{margin-top:18px;padding:15px 18px;background:linear-gradient(100deg,rgba(111,14,39,0.22),rgba(31,23,21,0.4));border:1px solid rgba(140,29,44,0.35);border-radius:9px;font-size:0.96rem;line-height:1.55;color:var(--bone)}
+  .exec b{color:#e8a0ab;font-weight:600}
+  .exec .lead-strong{font-family:var(--display);font-weight:500}
+  /* Bloc carte + graphique cote a cote */
+  .geo{display:grid;grid-template-columns:1.7fr 1fr;gap:13px;margin-top:24px}
+  .panel{background:var(--ink-2);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .panel .phead{font-family:var(--mono);font-size:0.62rem;letter-spacing:0.22em;text-transform:uppercase;color:var(--bone-dim);padding:13px 16px 0}
+  #map{height:340px;width:100%;margin-top:10px;background:#11100f;border-bottom-left-radius:10px;border-bottom-right-radius:10px}
+  .leaflet-container{background:#13110f!important;font-family:var(--mono)!important}
+  .leaflet-popup-content-wrapper{background:var(--ink-3);color:var(--bone);border-radius:7px;box-shadow:0 6px 24px rgba(0,0,0,0.5)}
+  .leaflet-popup-tip{background:var(--ink-3)}
+  .leaflet-popup-content{margin:11px 13px;font-family:var(--body)}
+  .leaflet-popup-content b{font-family:var(--display)}
+  .leaflet-control-attribution{background:rgba(20,16,15,0.7)!important;color:var(--bone-faint)!important}
+  .leaflet-control-attribution a{color:var(--bone-dim)!important}
+  .leaflet-bar a{background:var(--ink-3)!important;color:var(--bone)!important;border-color:var(--line)!important}
+  /* Graphique repartition par zone */
+  .zonechart{padding:14px 16px 16px;display:flex;flex-direction:column;gap:9px}
+  .zrow{cursor:pointer}
+  .zrow .zlab{display:flex;justify-content:space-between;font-family:var(--mono);font-size:0.66rem;letter-spacing:0.04em;color:var(--bone-dim);margin-bottom:4px}
+  .zrow:hover .zlab{color:var(--bone)}
+  .zrow[aria-pressed="true"] .zlab{color:var(--fort)}
+  .ztrack{height:8px;background:var(--ink-3);border-radius:5px;overflow:hidden}
+  .zfill{height:100%;border-radius:5px;background:linear-gradient(90deg,var(--oxblood),var(--fort));transition:width .4s ease}
+  .zrow[aria-pressed="true"] .zfill{background:var(--fort)}
+  /* Entree progressive */
+  @keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  .lead{animation:rise .35s ease both}
+  .panel,.exec,.stats .tile{animation:rise .4s ease both}
+  @media(max-width:860px){.geo{grid-template-columns:1fr}#map{height:280px}}
 </style>
 </head>
 <body>
@@ -436,11 +562,19 @@ GABARIT_HTML = r"""<!DOCTYPE html>
       <div class="runmeta" id="runmeta"></div>
     </div>
     <div class="stats" id="stats"></div>
+    <div class="exec" id="exec"></div>
   </header>
-  <section class="zones">
-    <div class="eyebrow">Carte des zones</div>
-    <div class="zonegrid" id="zonegrid"></div>
+  <section class="geo">
+    <div class="panel">
+      <div class="phead">Carte des opportunités</div>
+      <div id="map"></div>
+    </div>
+    <div class="panel">
+      <div class="phead">Répartition par zone</div>
+      <div class="zonechart" id="zonechart"></div>
+    </div>
   </section>
+  <div class="period" id="period"></div>
   <div class="controls">
     <label class="search">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
@@ -450,6 +584,10 @@ GABARIT_HTML = r"""<!DOCTYPE html>
       <button data-src="all" aria-pressed="true">Toutes</button>
       <button data-src="BM" aria-pressed="false">Banque Mondiale</button>
       <button data-src="TED" aria-pressed="false">TED</button>
+    </div>
+    <div class="seg" id="triseg" role="group" aria-label="Tri">
+      <button data-tri="score" aria-pressed="true">Importance</button>
+      <button data-tri="date" aria-pressed="false">Récents</button>
     </div>
     <button class="clearz" id="clearz">Réinitialiser</button>
   </div>
@@ -462,7 +600,36 @@ const LEADS = __LEADS_JSON__;
 const META = __META_JSON__;
 const ORDRE_ZONES = ["Afrique de l'Ouest","Sahel","Afrique centrale","Afrique de l'Est","Afrique australe","Afrique du Nord","Proche-Orient","Péninsule arabique","Asie centrale","Asie du Sud","Asie du Sud-Est","Caucase","Balkans","Europe de l'Est","Caraïbes","Amérique latine","Europe de l'Ouest","Outre-mer","Non classé"];
 const winLabel={immediate:'Fenêtre immédiate',court_terme:'Court terme',indetermine:'Fenêtre indéterminée'};
-let state={zone:null,src:'all',q:'',action:'contacter'};
+let state={zone:null,src:'all',q:'',action:'contacter',mois:null,tri:'score'};
+
+// Filtre commun. `ignore` permet de compter en ignorant un critere donne
+// (ex: compter les zones sans s'auto-filtrer sur la zone selectionnee).
+function match(l, ignore){
+  ignore = ignore || {};
+  if(!ignore.action && state.action!=='all' && l.action!==state.action) return false;
+  if(!ignore.mois && state.mois && l.mois!==state.mois) return false;
+  if(!ignore.zone && state.zone && l.zone!==state.zone) return false;
+  if(!ignore.src && state.src!=='all' && l.src!==state.src) return false;
+  if(!ignore.q && state.q){const hay=(l.pays+' '+l.agence+' '+l.titre+' '+l.zone+' '+l.nom).toLowerCase(); if(!hay.includes(state.q)) return false;}
+  return true;
+}
+
+// Onglets periode (mois). Construits depuis META.mois (du plus recent au plus ancien).
+function buildPeriod(){
+  const box=document.getElementById('period');
+  const chips=[{cle:null,label:'Toute la période'}].concat(META.mois);
+  box.innerHTML=chips.map(m=>{
+    const c=m.cle===null ? LEADS.length : LEADS.filter(l=>l.mois===m.cle).length;
+    const pressed=(state.mois===m.cle)?'true':'false';
+    return `<button class="chip" data-mois="${m.cle===null?'':m.cle}" aria-pressed="${pressed}">${m.label} · ${c}</button>`;
+  }).join('');
+  box.querySelectorAll('.chip').forEach(ch=>ch.addEventListener('click',()=>{
+    const v=ch.dataset.mois;
+    state.mois = v===''? null : v;
+    box.querySelectorAll('.chip').forEach(x=>x.setAttribute('aria-pressed',(x===ch)?'true':'false'));
+    render();
+  }));
+}
 
 document.getElementById('runmeta').innerHTML =
   'Run du <b>'+META.date+'</b><br>'+META.total+' avis analysés<br>Sources, TED + Banque Mondiale';
@@ -483,30 +650,96 @@ statsBox.querySelectorAll('.tile').forEach(t=>t.addEventListener('click',()=>{
   render();
 }));
 
-// Zone map (compte selon l'action filtree)
-function buildZones(){
-  const counts={};
-  LEADS.forEach(l=>{ if(state.action==='all'||l.action===state.action){counts[l.zone]=(counts[l.zone]||0)+1;} });
-  const zones=ORDRE_ZONES.filter(z=>counts[z]); 
-  const maxZ=Math.max(1,...zones.map(z=>counts[z]));
-  const zg=document.getElementById('zonegrid');
-  if(!zones.length){zg.innerHTML='<div class="count" style="grid-column:1/-1">Aucune zone pour ce filtre.</div>';return;}
-  zg.innerHTML=zones.map(z=>{
-    const c=counts[z], intensity=c>=Math.ceil(maxZ*0.75)?3:(c>=2?2:1);
-    const pressed=z===state.zone?'true':'false';
-    return `<button class="zone" data-zone="${z}" data-int="${intensity}" aria-pressed="${pressed}"><div class="zn">${z}</div><div class="zc">${c}</div><div class="zl">avis</div><div class="zbar"></div></button>`;
-  }).join('');
-  zg.querySelectorAll('.zone').forEach(el=>el.addEventListener('click',()=>{
-    state.zone=state.zone===el.dataset.zone?null:el.dataset.zone;
-    document.getElementById('clearz').classList.toggle('on',!!state.zone);
-    zg.querySelectorAll('.zone').forEach(x=>x.setAttribute('aria-pressed',x.dataset.zone===state.zone?'true':'false'));
-    render();
-  }));
+// Coordonnees (lat,lng) par pays affiche, pour la carte mondiale.
+const COORDS={
+ "Mali":[17.6,-3.5],"Niger":[17.6,9.4],"Burkina Faso":[12.2,-1.6],"Tchad":[15.5,18.7],"Mauritanie":[20.3,-10.9],
+ "Côte d'Ivoire":[7.5,-5.5],"Nigeria":[9.1,8.7],"Sénégal":[14.5,-14.5],"Ghana":[7.9,-1.0],"Togo":[8.6,0.8],"Bénin":[9.3,2.3],"Guinée":[9.9,-9.7],"Libéria":[6.4,-9.4],
+ "RDC":[-4.0,21.8],"Congo-Brazzaville":[-0.7,15.8],"Cameroun":[5.6,12.4],"Centrafrique":[6.6,20.9],"Gabon":[-0.8,11.6],
+ "Éthiopie":[9.1,40.5],"Kenya":[0.0,37.9],"Ouganda":[1.4,32.3],"Tanzanie":[-6.4,34.9],"Somalie":[5.2,46.2],"Soudan du Sud":[7.3,30.3],"Rwanda":[-1.9,29.9],"Djibouti":[11.8,42.6],
+ "Mozambique":[-18.7,35.5],"Madagascar":[-18.8,46.9],"Afrique du Sud":[-30.6,22.9],"Zambie":[-13.1,27.8],"Zimbabwe":[-19.0,29.2],"Malawi":[-13.3,34.3],"Angola":[-11.2,17.9],"Botswana":[-22.3,24.7],
+ "Égypte":[26.8,30.8],"Maroc":[31.8,-7.1],"Tunisie":[33.9,9.6],"Algérie":[28.0,1.7],"Libye":[26.3,17.2],
+ "Cisjordanie et Gaza":[31.9,35.2],"Jordanie":[30.6,36.2],"Liban":[33.9,35.9],"Irak":[33.2,43.7],"Yémen":[15.6,48.0],"Turquie":[39.0,35.2],"Oman":[21.5,55.9],
+ "Ouzbékistan":[41.4,64.6],"Tadjikistan":[38.9,71.3],"Kirghizistan":[41.2,74.8],"Kazakhstan":[48.0,66.9],
+ "Bangladesh":[23.7,90.4],"Pakistan":[30.4,69.3],"Inde":[22.4,78.9],"Népal":[28.4,84.1],"Indonésie":[-2.5,118.0],"Philippines":[12.9,121.8],
+ "Ukraine":[48.4,31.2],"Moldavie":[47.2,28.5],"Albanie":[41.2,20.0],"Macédoine du Nord":[41.6,21.7],"Serbie":[44.0,21.0],"Géorgie":[42.3,43.4],"Arménie":[40.1,45.0],"Azerbaïdjan":[40.1,47.6],
+ "Haïti":[19.0,-72.3],"Jamaïque":[18.1,-77.3],"Mexique":[23.6,-102.6],"Équateur":[-1.8,-78.2],"Brésil":[-10.3,-53.2],"Colombie":[4.6,-74.3],
+ "France":[46.6,2.2],"Allemagne":[51.2,10.4],"Danemark":[56.0,9.5],"Nouvelle-Calédonie":[-21.3,165.5]
+};
+const TIER_COULEUR={contacter:'#C0273A',surveiller:'#C8893B',ignorer:'#5C6670'};
+const TIER_RANG={contacter:3,surveiller:2,ignorer:1};
+
+// Synthese executive
+function buildExec(){
+  const aContacter=LEADS.filter(l=>l.action==='contacter');
+  const zonesRisque=new Set(aContacter.map(l=>l.zone)).size;
+  const immediat=aContacter.filter(l=>l.win==='immediate').length;
+  const avecContact=aContacter.filter(l=>l.email!=='n.c.').length;
+  document.getElementById('exec').innerHTML=
+    `<span class="lead-strong">${aContacter.length} opportunités prioritaires</span> détectées dans `+
+    `<b>${zonesRisque} zones</b> à enjeu sûreté, dont <b>${immediat}</b> en fenêtre immédiate. `+
+    `<b>${avecContact}</b> disposent d'un contact direct identifié, en amont de la concurrence.`;
 }
-document.getElementById('clearz').addEventListener('click',()=>{state.zone=null;document.getElementById('clearz').classList.remove('on');buildZones();render();});
+
+// Graphique repartition par zone (respecte les filtres sauf la zone)
+function buildZoneChart(){
+  const counts={};
+  LEADS.forEach(l=>{ if(match(l,{zone:true})){counts[l.zone]=(counts[l.zone]||0)+1;} });
+  const zones=ORDRE_ZONES.filter(z=>counts[z]);
+  const maxZ=Math.max(1,...zones.map(z=>counts[z]));
+  const box=document.getElementById('zonechart');
+  if(!zones.length){box.innerHTML='<div class="count">Aucune zone pour ce filtre.</div>';return;}
+  box.innerHTML=zones.map(z=>{
+    const c=counts[z], pct=Math.round(c/maxZ*100);
+    const pressed=z===state.zone?'true':'false';
+    return `<div class="zrow" data-zone="${z}" role="button" tabindex="0" aria-pressed="${pressed}"><div class="zlab"><span>${z}</span><span>${c}</span></div><div class="ztrack"><div class="zfill" style="width:${pct}%"></div></div></div>`;
+  }).join('');
+  box.querySelectorAll('.zrow').forEach(el=>{
+    const choisir=()=>{ state.zone=state.zone===el.dataset.zone?null:el.dataset.zone;
+      document.getElementById('clearz').classList.toggle('on',!!(state.zone||state.mois)); render(); };
+    el.addEventListener('click',choisir);
+    el.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();choisir();}});
+  });
+}
+
+// Carte mondiale (Leaflet). Un marqueur agrege par pays.
+let _map=null, _layer=null;
+function initMap(){
+  if(typeof L==='undefined'){document.getElementById('map').innerHTML='<div class="count" style="padding:20px">Carte indisponible (connexion requise).</div>';return;}
+  _map=L.map('map',{worldCopyJump:true,minZoom:1,attributionControl:true}).setView([18,18],2);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
+    attribution:'&copy; OpenStreetMap &copy; CARTO',subdomains:'abcd',maxZoom:8
+  }).addTo(_map);
+  _layer=L.layerGroup().addTo(_map);
+}
+function updateMap(filtered){
+  if(!_map||!_layer)return;
+  _layer.clearLayers();
+  const parPays={};
+  filtered.forEach(l=>{ if(!COORDS[l.pays])return; (parPays[l.pays]=parPays[l.pays]||[]).push(l); });
+  Object.entries(parPays).forEach(([pays,arr])=>{
+    const meilleur=arr.reduce((a,b)=>TIER_RANG[b.action]>TIER_RANG[a.action]?b:a);
+    const couleur=TIER_COULEUR[meilleur.action]||'#5C6670';
+    const r=6+Math.min(14,arr.length*2);
+    const top=arr.slice().sort((a,b)=>b.final-a.final)[0];
+    const m=L.circleMarker(COORDS[pays],{radius:r,color:couleur,weight:1.5,fillColor:couleur,fillOpacity:0.55});
+    m.bindPopup(`<b>${pays}</b><br>${arr.length} avis · meilleur score ${top.final.toFixed(1)}<br><span style="color:#A99E92;font-size:0.85em">${top.titre.slice(0,70)}</span>`);
+    m.on('click',()=>{ const inp=document.getElementById('search'); inp.value=pays; state.q=pays.toLowerCase(); document.getElementById('clearz').classList.add('on'); render(); });
+    m.addTo(_layer);
+  });
+}
+document.getElementById('clearz').addEventListener('click',()=>{
+  state.zone=null; state.mois=null;
+  document.getElementById('clearz').classList.remove('on');
+  buildPeriod(); buildZoneChart(); render();
+});
 document.querySelectorAll('#srcseg button').forEach(b=>b.addEventListener('click',()=>{
   state.src=b.dataset.src;
   document.querySelectorAll('#srcseg button').forEach(x=>x.setAttribute('aria-pressed',x===b?'true':'false'));
+  render();
+}));
+document.querySelectorAll('#triseg button').forEach(b=>b.addEventListener('click',()=>{
+  state.tri=b.dataset.tri;
+  document.querySelectorAll('#triseg button').forEach(x=>x.setAttribute('aria-pressed',x===b?'true':'false'));
   render();
 }));
 document.getElementById('search').addEventListener('input',e=>{state.q=e.target.value.toLowerCase().trim();render();});
@@ -514,17 +747,19 @@ document.getElementById('search').addEventListener('input',e=>{state.q=e.target.
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 function render(){
-  buildZones();
+  buildZoneChart();
   const box=document.getElementById('leads');
-  const filtered=LEADS.filter(l=>{
-    if(state.action!=='all'&&l.action!==state.action)return false;
-    if(state.zone&&l.zone!==state.zone)return false;
-    if(state.src!=='all'&&l.src!==state.src)return false;
-    if(state.q){const hay=(l.pays+' '+l.agence+' '+l.titre+' '+l.zone+' '+l.nom).toLowerCase();if(!hay.includes(state.q))return false;}
-    return true;
-  });
+  let filtered=LEADS.filter(l=>match(l));
+  if(state.tri==='date'){
+    filtered.sort((a,b)=> (b.date_det||'').localeCompare(a.date_det||'') || b.final-a.final);
+  }else{
+    filtered.sort((a,b)=> b.final-a.final);
+  }
+  updateMap(filtered);
+  const moisLabel = state.mois ? (META.mois.find(m=>m.cle===state.mois)||{}).label : null;
   document.getElementById('count').textContent=
     `${filtered.length} avis affiché${filtered.length>1?'s':''}`+
+    (moisLabel?`, ${moisLabel}`:'')+
     (state.zone?`, zone ${state.zone}`:'')+(state.src!=='all'?`, source ${state.src}`:'');
   if(!filtered.length){box.innerHTML='<div class="empty">Aucun avis ne correspond à ce filtre.</div>';return;}
   box.innerHTML=filtered.map(l=>{
@@ -533,6 +768,10 @@ function render(){
     const mail=l.email!=='n.c.'?`<a href="mailto:${esc(l.email)}">${esc(l.email)}</a>`:'n.c.';
     const tel=l.tel!=='n.c.'?`<a href="tel:${esc(l.tel.replace(/\s/g,''))}">${esc(l.tel)}</a>`:'n.c.';
     const ecart=l.ecart?`<span class="badge ecart" title="Écart d'évaluation entre les deux passes, lire la justification">⚠ écart</span>`:'';
+    const stKey=(l.statut||'nouveau').toLowerCase();
+    const stCls=stKey.includes('gagn')?'gagne':stKey.includes('perd')?'perdu':stKey.includes('contact')?'contacte':stKey.includes('relanc')?'relance':'';
+    const statut=(stKey!=='nouveau')?`<span class="statut ${stCls}">${esc(l.statut)}</span>`:'';
+    const dateChip=l.mois_label&&l.mois_label!=='Sans date'?`<span class="datedet">détecté ${esc(l.mois_label)}</span>`:'';
     const contactRows = l.src==='BM' ? `
           <div class="row"><span class="k">Contact</span><span class="v">${esc(l.nom)}</span></div>
           <div class="row"><span class="k">Email</span><span class="v">${mail}</span></div>
@@ -541,7 +780,7 @@ function render(){
       <div class="lhead"><div class="lmeta"><span class="src ${l.src.toLowerCase()}">${l.src==='BM'?'Banque Mondiale':'TED'}</span><span class="pays">${esc(l.pays)}</span><span>· ${esc(l.zone)}</span></div>
       <div class="scorebox"><div class="sf">${l.final.toFixed(1)}</div><div class="sd">sûreté ${l.surete.toFixed(1)} · com ${l.comm.toFixed(1)}</div></div></div>
       <h3 class="ltitle">${esc(l.titre)}</h3>
-      <div class="badges"><span class="badge win-${win}">${winLabel[win]}</span>${ecart}</div>
+      <div class="badges"><span class="badge win-${win}">${winLabel[win]}</span>${ecart}${statut}${dateChip}</div>
       <div class="contact"><div class="row"><span class="k">Agence</span><span class="v">${esc(l.agence)}</span></div>${contactRows}</div>
       <div class="cible"><b>Qui démarcher.</b> ${esc(l.cible)}</div>
       ${l.justif?`<details class="just"><summary><span class="chev">▸</span> Justification sûreté</summary><p>${esc(l.justif)}</p></details>`:''}
@@ -550,6 +789,9 @@ function render(){
 }
 document.getElementById('foot').innerHTML=
   'Généré automatiquement après le run du radar. Les contacts proviennent des avis Banque Mondiale.<br>Le destinataire commercial réel est le titulaire du marché, pas l\'agence acheteuse.';
+buildExec();
+initMap();
+buildPeriod();
 render();
 </script>
 </body>
