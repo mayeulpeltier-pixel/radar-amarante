@@ -206,5 +206,40 @@ class TestActionRecommandee(unittest.TestCase):
             ted.calculer_action_recommandee(8.0, None), "ignorer")
 
 
+# ===========================================================================
+# 8. MEMOIRE INTER-RUNS : ne pas reanalyser un avis deja vu
+# ===========================================================================
+class TestMemoireInterRuns(unittest.TestCase):
+
+    def test_extraction_positionnelle_publications(self):
+        # Grille brute facon get_all_values : en-tete + 2 lignes de donnees.
+        idx = bm.COLONNES_BM.index("publication_number")
+        entete = list(bm.COLONNES_BM)
+        l1 = [""] * len(bm.COLONNES_BM); l1[idx] = "OP00448833"
+        l2 = [""] * len(bm.COLONNES_BM); l2[idx] = "OP00453048"
+        nums = ted._publications_depuis_valeurs([entete, l1, l2], bm.COLONNES_BM)
+        self.assertEqual(nums, {"OP00448833", "OP00453048"})
+
+    def test_grille_vide(self):
+        self.assertEqual(ted._publications_depuis_valeurs([], bm.COLONNES_BM), set())
+
+    def test_sans_entete(self):
+        # Pas de ligne d'en-tete : toutes les lignes sont des donnees.
+        idx = bm.COLONNES_BM.index("publication_number")
+        l1 = [""] * len(bm.COLONNES_BM); l1[idx] = "OP1"
+        nums = ted._publications_depuis_valeurs([l1], bm.COLONNES_BM)
+        self.assertEqual(nums, {"OP1"})
+
+    def test_filtre_ne_garde_que_les_nouveaux(self):
+        # Simule le filtre applique dans main() : avis dont le numero est deja
+        # connu sont retires.
+        deja_vus = {"OP1", "OP2"}
+        avis = [{"publication_number": "OP1"}, {"publication_number": "OP3"},
+                {"publication_number": "OP2"}, {"publication_number": "OP4"}]
+        nouveaux = [a for a in avis
+                    if str(a.get("publication_number", "")).strip() not in deja_vus]
+        self.assertEqual([a["publication_number"] for a in nouveaux], ["OP3", "OP4"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
