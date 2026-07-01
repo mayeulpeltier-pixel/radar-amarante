@@ -659,6 +659,28 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .modal .mbtn.primary{background:var(--oxblood);border-color:var(--oxblood);color:#fff}
   .modal .mbtn.primary:hover{background:var(--fort)}
   .modal .mbtn.ghost:hover{border-color:var(--oxblood);color:var(--fort)}
+  /* --- Comptes chauds (BITD) + timeline --- */
+  #comptes{margin:0 0 18px}
+  .chead{display:flex;align-items:baseline;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+  .chead b{color:var(--bone);font-size:14px}
+  .csub{color:var(--bone-dim);font-size:11px}
+  .cgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}
+  .ccard{text-align:left;cursor:pointer;background:var(--panel);border:1px solid var(--line);
+    border-radius:9px;padding:11px 12px;color:var(--bone);font:inherit;transition:.15s}
+  .ccard:hover{border-color:var(--oxblood);transform:translateY(-1px)}
+  .ccard.t-chaud{border-left:3px solid var(--fort)}
+  .ccard.t-tiede{border-left:3px solid var(--watch)}
+  .ccard.t-froid{border-left:3px solid var(--line)}
+  .ccard .cn{font-weight:600;font-size:13px;display:flex;gap:6px;align-items:center}
+  .ccard .cmeta{color:var(--bone-dim);font-size:11px;margin-top:4px}
+  .ccard .cbar{height:4px;background:rgba(255,255,255,.06);border-radius:3px;margin-top:8px;overflow:hidden}
+  .ccard .cbar span{display:block;height:100%;background:var(--oxblood)}
+  .modal .tlhead{color:var(--bone-dim);font-size:12px;text-transform:uppercase;letter-spacing:.06em;margin:14px 0 8px}
+  .modal .timeline{display:flex;flex-direction:column;gap:2px}
+  .modal .tlrow{display:grid;grid-template-columns:96px 1fr auto 42px;gap:8px;padding:6px 0;
+    border-bottom:1px solid rgba(255,255,255,.05);font-size:12px}
+  .modal .tlrow .tld{color:var(--bone-dim)}
+  .modal .tlrow .tls{color:var(--fort);text-align:right;font-weight:600}
 </style>
 </head>
 <body>
@@ -685,6 +707,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
     </div>
   </section>
   <div class="period" id="period"></div>
+  <div id="comptes"></div>
   <div class="controls">
     <label class="search">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
@@ -1009,6 +1032,7 @@ function ficheHtml(l){
    </div>
    <div class="mactions">
      <a class="mbtn primary" href="${mailtoHref(l)}">✉ Rédiger l'email</a>
+     ${l.src==='PRIVÉ'?`<button class="mbtn ghost" type="button" data-compte-link="${esc(l.agence)}">Historique du compte ↗</button>`:''}
      ${l.lien?`<a class="mbtn ghost" href="${esc(l.lien)}" target="_blank" rel="noopener">Voir l'avis ↗</a>`:''}
      <button class="mbtn ghost" type="button" onclick="closeFiche()">Fermer</button>
    </div>`;
@@ -1022,9 +1046,81 @@ document.getElementById('leads').addEventListener('click',e=>{
 document.getElementById('modal').addEventListener('click',e=>{if(e.target.id==='modal')closeFiche();});
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeFiche();});
 
+// --- Historique par entreprise + score d'accélération (signaux BITD) ---
+function joursDepuis(d){if(!d)return null;const t=Date.parse(d);if(isNaN(t))return null;return Math.floor((Date.now()-t)/86400000);}
+function poidsRecence(j){if(j==null)return 0.3;if(j<=30)return 1;if(j<=90)return 0.6;if(j<=180)return 0.3;return 0.1;}
+function agregerComptes(){
+  const parNom={};
+  LEADS.filter(l=>l.src==='PRIVÉ').forEach(l=>{
+    const k=l.agence||'?';
+    (parNom[k]=parNom[k]||{nom:k,signaux:[],pays:new Set(),act:new Set()});
+    parNom[k].signaux.push(l);
+    if(l.pays)parNom[k].pays.add(l.pays);
+    if(l.grp&&l.grp!=='signal')parNom[k].act.add(l.grp.replace(/_/g,' '));
+  });
+  const comptes=Object.values(parNom).map(c=>{
+    let accel=0,recents=0,dernier=null;
+    c.signaux.forEach(s=>{
+      const j=joursDepuis(s.date_det);
+      accel+=(s.final/10)*poidsRecence(j);
+      if(j!=null&&j<=90)recents++;
+      if(s.date_det&&(!dernier||s.date_det>dernier))dernier=s.date_det;
+    });
+    if(recents>=3)accel*=1.2;                 // momentum : rafale de signaux
+    accel=Math.round(accel*100)/100;
+    const tier=accel>=1.5?'chaud':accel>=0.7?'tiede':'froid';
+    return Object.assign(c,{n:c.signaux.length,recents,dernier,accel,tier,
+      pays:[...c.pays],act:[...c.act]});
+  });
+  comptes.sort((a,b)=>b.accel-a.accel);
+  return comptes;
+}
+function buildComptes(){
+  const box=document.getElementById('comptes');
+  const comptes=agregerComptes().filter(c=>c.accel>0);
+  if(!comptes.length){box.style.display='none';return;}
+  box.style.display='';
+  const icon={chaud:'🔥',tiede:'🟠',froid:'·'};
+  box.innerHTML=`<div class="chead"><b>Comptes chauds · BITD</b><span class="csub">accélération = signaux récents pondérés par le score. Cliquer pour l'historique.</span></div><div class="cgrid">`+
+    comptes.slice(0,8).map(c=>`<button class="ccard t-${c.tier}" type="button" data-compte="${esc(c.nom)}">
+      <div class="cn"><span>${icon[c.tier]}</span>${esc(c.nom)}</div>
+      <div class="cmeta">${c.n} signal${c.n>1?'s':''}${c.recents?` · ${c.recents} récent${c.recents>1?'s':''}`:''} · ${c.pays.length} pays</div>
+      <div class="cbar"><span style="width:${Math.min(100,Math.round(c.accel/2*100))}%"></span></div></button>`).join('')+`</div>`;
+}
+function openCompte(nom){
+  const c=agregerComptes().find(x=>x.nom===nom);if(!c)return;
+  const etiq={chaud:'🔥 Compte chaud',tiede:'🟠 Tiède',froid:'· Froid'};
+  const sigs=c.signaux.slice().sort((a,b)=>(b.date_det||'').localeCompare(a.date_det||''));
+  const tl=sigs.map(s=>`<div class="tlrow"><span class="tld">${esc(s.date_det||'—')}</span><span>${esc(s.pays)}</span><span>${esc((s.grp||'').replace(/_/g,' '))}</span><span class="tls">${s.final.toFixed(1)}</span></div>`).join('');
+  document.getElementById('modalcard').innerHTML=`
+   <div class="mhead"><button class="mclose" type="button" onclick="closeFiche()" aria-label="Fermer">×</button>
+     <div class="msrc">${etiq[c.tier]} · accélération ${c.accel}</div>
+     <h2>${esc(c.nom)}</h2>
+     <div class="mscore"><span class="big">${c.n}</span><span class="sub">signaux · ${c.recents} récent(s) · ${c.pays.length} pays</span></div>
+   </div>
+   <div class="mbody">
+     ${c.pays.length?`<div class="frow"><span class="fk">Pays</span><span class="fv">${c.pays.map(esc).join(', ')}</span></div>`:''}
+     ${c.act.length?`<div class="frow"><span class="fk">Activités</span><span class="fv">${c.act.map(esc).join(', ')}</span></div>`:''}
+     <div class="frow"><span class="fk">Dernier signal</span><span class="fv">${esc(c.dernier||'—')}</span></div>
+     <div class="tlhead">Historique des signaux</div>
+     <div class="timeline">${tl}</div>
+   </div>
+   <div class="mactions"><button class="mbtn ghost" type="button" onclick="closeFiche()">Fermer</button></div>`;
+  document.getElementById('modal').classList.add('open');
+}
+document.getElementById('comptes').addEventListener('click',e=>{
+  const b=e.target.closest('[data-compte]');
+  if(b)openCompte(b.getAttribute('data-compte'));
+});
+document.getElementById('modalcard').addEventListener('click',e=>{
+  const b=e.target.closest('[data-compte-link]');
+  if(b){closeFiche();openCompte(b.getAttribute('data-compte-link'));}
+});
+
 buildExec();
 initMap();
 buildPeriod();
+buildComptes();
 render();
 </script>
 </body>
