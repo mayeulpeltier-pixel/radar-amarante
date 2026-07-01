@@ -1292,6 +1292,51 @@ def charger_index_publication(feuille):
     return index
 
 
+def _publications_depuis_valeurs(valeurs, colonnes):
+    """Ensemble des publication_number d'une grille brute (get_all_values), lus
+    PAR POSITION selon l'ordre officiel `colonnes`. Robuste a un en-tete
+    desaligne. Ignore une eventuelle ligne d'en-tete."""
+    if not valeurs:
+        return set()
+    try:
+        idx = colonnes.index("publication_number")
+    except ValueError:
+        return set()
+    premiere = [str(c).strip() for c in valeurs[0]]
+    debut = 1 if "publication_number" in premiere else 0
+    nums = set()
+    for row in valeurs[debut:]:
+        if idx < len(row):
+            pub = str(row[idx]).strip()
+            if pub:
+                nums.add(pub)
+    return nums
+
+
+def numeros_publication_existants(sheet_id, fichier_compte_service, nom_onglet, colonnes):
+    """Memoire inter-runs : ensemble des publication_number deja presents dans un
+    onglet. Permet de NE PAS reanalyser un avis deja traite (economie de tokens)
+    ni de le re-ajouter en double. Lecture positionnelle (robuste a l'en-tete).
+    Tolerant aux pannes : toute erreur ou absence de Sheet -> ensemble vide, on
+    analyse alors tout, comme avant."""
+    if not (sheet_id and fichier_compte_service):
+        return set()
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+        portee = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+        creds = Credentials.from_service_account_file(fichier_compte_service, scopes=portee)
+        classeur = gspread.authorize(creds).open_by_key(sheet_id)
+        try:
+            feuille = classeur.worksheet(nom_onglet)
+        except gspread.WorksheetNotFound:
+            return set()
+        return _publications_depuis_valeurs(feuille.get_all_values(), colonnes)
+    except Exception as e:
+        print("  (info) Lecture des avis deja analyses impossible ({}). On analyse tout.".format(e))
+        return set()
+
+
 def ligne_depuis_resultat(r):
     """Construit la ligne (hors statut_suivi) a partir d'un resultat de
     main(). Tout est converti en chaine pour eviter les soucis de type
@@ -1440,6 +1485,25 @@ def main():
 
     if not avis_normalises:
         print("Aucun avis a analyser. Rien a envoyer au modele.")
+        return
+
+    # Memoire inter-runs : on ne reanalyse pas un avis deja traite lors d'un run
+    # precedent (economie de tokens + temps), ce qui evite aussi de le
+    # re-ajouter en double dans le Sheet. Si pas de Sheet ou erreur de lecture,
+    # numeros_publication_existants renvoie un ensemble vide -> on analyse tout.
+    sheet_id = os.environ.get("TED_SHEET_ID")
+    fichier_compte_service = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
+    deja_vus = numeros_publication_existants(
+        sheet_id, fichier_compte_service, NOM_ONGLET_SHEET, COLONNES_SHEET)
+    if deja_vus:
+        avant = len(avis_normalises)
+        avis_normalises = [a for a in avis_normalises
+                           if str(a.get("publication_number", "")).strip() not in deja_vus]
+        print("Memoire : {} avis deja analyses (runs precedents) ignores, "
+              "{} nouveau(x) a analyser.".format(avant - len(avis_normalises), len(avis_normalises)))
+    if not avis_normalises:
+        print("Aucun NOUVEL avis TED a analyser (tout deja vu). "
+              "Le Sheet et le dashboard restent a jour.")
         return
 
     # V12 : controle rapide de l'enrichissement. Si ce compteur est a 0/N,
