@@ -166,6 +166,13 @@ def main():
     except Exception as e:
         logger.info("(info) Moteur BITD indisponible (%s). Etape ignoree.", e)
 
+    # --- 2 ter. Import de l'enrichissement firmographique, optionnel ---------
+    enrich = None
+    try:
+        import enrichir_entreprises as enrich
+    except Exception as e:
+        logger.info("(info) Enrichissement indisponible (%s). Etape ignoree.", e)
+
     # --- 3. Garde commune : cle API ------------------------------------------
     if not os.environ.get("ANTHROPIC_API_KEY"):
         logger.error("ANTHROPIC_API_KEY n'est pas definie. Les deux "
@@ -179,12 +186,15 @@ def main():
 
     # --- 4. Lancement sequentiel, chacun isole -------------------------------
     resultats = {}
-    resultats["TED"] = lancer_collecteur("ETAPE 1/3 -- COLLECTEUR TED", ted)
+    resultats["TED"] = lancer_collecteur("ETAPE -- COLLECTEUR TED", ted)
     resultats["Banque Mondiale"] = lancer_collecteur(
-        "ETAPE 2/3 -- COLLECTEUR BANQUE MONDIALE", bm)
+        "ETAPE -- COLLECTEUR BANQUE MONDIALE", bm)
     if bitd is not None:
         resultats["Signaux BITD"] = lancer_collecteur(
-            "ETAPE 3/3 -- MOTEUR SIGNAUX PRIVES (BITD)", bitd)
+            "ETAPE -- MOTEUR SIGNAUX PRIVES (BITD)", bitd)
+    if enrich is not None:
+        resultats["Enrichissement"] = lancer_collecteur(
+            "ETAPE -- ENRICHISSEMENT ENTREPRISES", enrich)
 
     # --- 5. Bilan global ------------------------------------------------------
     logger.info("#" * 60)
