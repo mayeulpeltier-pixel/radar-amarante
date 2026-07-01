@@ -625,6 +625,40 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .lead{animation:rise .35s ease both}
   .panel,.exec,.stats .tile{animation:rise .4s ease both}
   @media(max-width:860px){.geo{grid-template-columns:1fr}#map{height:280px}}
+  /* --- Fiche lead (modale) + actions --- */
+  .foot .footacts{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .foot .act{cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--bone-dim);
+    font:inherit;font-size:12px;padding:4px 10px;border-radius:6px;text-decoration:none;transition:.15s}
+  .foot .act:hover{border-color:var(--oxblood);color:var(--bone)}
+  .foot .act.mail{border-color:var(--oxblood);color:var(--fort)}
+  .foot .act.mail:hover{background:var(--oxblood);color:#fff}
+  .modal-ov{position:fixed;inset:0;background:rgba(10,6,8,.72);backdrop-filter:blur(3px);
+    display:none;align-items:flex-start;justify-content:center;z-index:1000;padding:40px 16px;overflow:auto}
+  .modal-ov.open{display:flex}
+  .modal{background:var(--panel);border:1px solid var(--line);border-radius:12px;max-width:640px;width:100%;
+    box-shadow:0 24px 80px rgba(0,0,0,.6);animation:pop .18s ease}
+  @keyframes pop{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  .modal .mhead{padding:20px 22px 14px;border-bottom:1px solid var(--line);position:relative}
+  .modal .mclose{position:absolute;top:14px;right:16px;background:none;border:none;color:var(--bone-dim);
+    font-size:22px;cursor:pointer;line-height:1}
+  .modal .mclose:hover{color:var(--bone)}
+  .modal .msrc{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--fort)}
+  .modal h2{font-size:17px;margin:6px 0 0;color:var(--bone);padding-right:24px}
+  .modal .mscore{display:flex;gap:18px;margin-top:12px;align-items:baseline}
+  .modal .mscore .big{font-size:30px;font-weight:700;color:var(--bone)}
+  .modal .mscore .sub{font-size:12px;color:var(--bone-dim)}
+  .modal .mbody{padding:16px 22px}
+  .modal .frow{display:flex;gap:12px;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.05);font-size:13px}
+  .modal .fk{flex:0 0 130px;color:var(--bone-dim)}
+  .modal .fv{flex:1;color:var(--bone)}
+  .modal .fv a{color:var(--fort)}
+  .modal .mactions{display:flex;gap:10px;padding:16px 22px 22px;flex-wrap:wrap}
+  .modal .mbtn{flex:1;min-width:160px;text-align:center;padding:11px 14px;border-radius:8px;font:inherit;
+    font-size:13px;font-weight:600;cursor:pointer;text-decoration:none;border:1px solid var(--line);
+    background:transparent;color:var(--bone)}
+  .modal .mbtn.primary{background:var(--oxblood);border-color:var(--oxblood);color:#fff}
+  .modal .mbtn.primary:hover{background:var(--fort)}
+  .modal .mbtn.ghost:hover{border-color:var(--oxblood);color:var(--fort)}
 </style>
 </head>
 <body>
@@ -674,11 +708,55 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   <div class="leads" id="leads"></div>
   <footer id="foot"></footer>
 </div>
+<div class="modal-ov" id="modal" role="dialog" aria-modal="true">
+  <div class="modal" id="modalcard"></div>
+</div>
 <script>
 const LEADS = __LEADS_JSON__;
 const META = __META_JSON__;
 const ORDRE_ZONES = ["Afrique de l'Ouest","Sahel","Afrique centrale","Afrique de l'Est","Afrique australe","Afrique du Nord","Proche-Orient","Péninsule arabique","Asie centrale","Asie du Sud","Asie du Sud-Est","Caucase","Balkans","Europe de l'Est","Caraïbes","Amérique latine","Europe de l'Ouest","Outre-mer","Non classé"];
 const winLabel={immediate:'Fenêtre immédiate',court_terme:'Court terme',indetermine:'Fenêtre indéterminée'};
+const SRC_LABEL={BM:'Banque Mondiale',TED:'TED',BOAMP:'BOAMP','PRIVÉ':'Privé · BITD'};
+let AFFICHES=[];
+
+// Pays francophones (choix de la langue du mail). Les entreprises BITD et les
+// acheteurs BOAMP sont francophones par nature.
+const FRANCO=['france','mali','niger','tchad','senegal','ivoire','burkina','benin','togo',
+'guinee','cameroun','gabon','congo','rdc','centrafrique','djibouti','madagascar','maroc','algerie',
+'tunisie','mauritanie','liban','haiti','belgique','suisse','luxembourg','monaco','comores','burundi',
+'rwanda','seychelles','vanuatu'];
+function sansAccent(s){return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');}
+function langue(l){
+  if(l.src==='PRIVÉ'||l.src==='BOAMP')return 'fr';
+  // Match par MOT entier (évite "niger" ⊂ "nigeria").
+  const p=' '+sansAccent(l.pays).replace(/[^a-z ]/g,' ').replace(/\s+/g,' ').trim()+' ';
+  return FRANCO.some(f=>p.includes(' '+f+' '))?'fr':'en';
+}
+
+// Brouillon d'email contextualise (pre-rempli, a ajuster avant envoi).
+function buildEmail(l){
+  const fr=langue(l)==='fr';
+  const pays=l.pays||(fr?'la zone concernée':'the area');
+  const zone=l.zone&&l.zone!=='Non classé'?l.zone:(fr?'les zones sensibles':'high-risk areas');
+  if(l.src==='PRIVÉ'){
+    const act=l.grp&&l.grp!=='signal'?l.grp.replace(/_/g,' '):(fr?'déploiement':'deployment');
+    if(fr)return{subject:`Sûreté de vos équipes déployées — ${pays}`,
+      body:`Madame, Monsieur,\n\nNous suivons le développement de ${l.agence} à l'international. Un déploiement de vos équipes en ${pays} (${act}) peut impliquer des enjeux de sûreté pour les personnels sur place.\n\nAmarante International sécurise les collaborateurs de la BITD en environnement sensible : protection rapprochée, escorte, chauffeurs de sécurité, évaluation de sites et conseil sûreté.\n\nSi le sujet est d'actualité pour vos prochaines missions, je serais ravi d'en échanger quelques minutes.\n\nBien cordialement,\n[Votre nom]\nAmarante International`};
+    return{subject:`Security for your deployed teams — ${pays}`,
+      body:`Dear Sir or Madam,\n\nWe are following ${l.agence}'s international development. Deploying your teams to ${pays} (${act}) may raise security considerations for your personnel on the ground.\n\nAmarante International protects defence-industry staff in complex environments: close protection, secure transport, site assessment and security advisory.\n\nIf this is relevant to your upcoming missions, I would welcome a brief call.\n\nKind regards,\n[Your name]\nAmarante International`};
+  }
+  // Marches publics (TED / BM / BOAMP)
+  const titre=l.titre||(fr?'votre projet':'your project');
+  if(fr)return{subject:`Sûreté des équipes — ${pays}`,
+    body:`Madame, Monsieur,\n\nJe me permets de vous contacter au sujet de « ${titre} », en ${pays}.\n\nAmarante International accompagne les organisations déployant du personnel en environnement complexe : protection rapprochée, escorte sécurisée, chauffeurs de sécurité et conseil sûreté. Nous intervenons régulièrement en ${zone}.\n\nSi la sûreté des équipes mobilisées sur ce projet est un sujet, je serais ravi d'échanger quelques minutes.\n\nBien cordialement,\n[Votre nom]\nAmarante International`};
+  return{subject:`Security for deployed teams — ${pays}`,
+    body:`Dear Sir or Madam,\n\nI am reaching out regarding "${titre}", in ${pays}.\n\nAmarante International supports organisations deploying staff in complex environments: close protection, secure transport and security advisory. We operate regularly across ${zone}.\n\nIf the safety of the teams involved in this project is a consideration, I would welcome a brief call.\n\nKind regards,\n[Your name]\nAmarante International`};
+}
+function mailtoHref(l){
+  const e=buildEmail(l);
+  const to=(l.email&&l.email!=='n.c.')?encodeURIComponent(l.email):'';
+  return `mailto:${to}?subject=${encodeURIComponent(e.subject)}&body=${encodeURIComponent(e.body)}`;
+}
 let state={zone:null,src:'all',q:'',action:'contacter',mois:null,tri:'score'};
 
 // Filtre commun. `ignore` permet de compter en ignorant un critere donne
@@ -870,7 +948,8 @@ function render(){
     (moisLabel?`, ${moisLabel}`:'')+
     (state.zone?`, zone ${state.zone}`:'')+(state.src!=='all'?`, source ${state.src}`:'');
   if(!filtered.length){box.innerHTML='<div class="empty">Aucun avis ne correspond à ce filtre.</div>';return;}
-  box.innerHTML=filtered.map(l=>{
+  AFFICHES=filtered;
+  box.innerHTML=filtered.map((l,i)=>{
     const tier=l.action;
     const win=(['immediate','court_terme','indetermine'].includes(l.win))?l.win:'indetermine';
     const mail=l.email!=='n.c.'?`<a href="mailto:${esc(l.email)}">${esc(l.email)}</a>`:'n.c.';
@@ -880,23 +959,69 @@ function render(){
     const stCls=stKey.includes('gagn')?'gagne':stKey.includes('perd')?'perdu':stKey.includes('contact')?'contacte':stKey.includes('relanc')?'relance':'';
     const statut=(stKey!=='nouveau')?`<span class="statut ${stCls}">${esc(l.statut)}</span>`:'';
     const dateChip=l.mois_label&&l.mois_label!=='Sans date'?`<span class="datedet">détecté ${esc(l.mois_label)}</span>`:'';
-    const contactRows = l.src==='BM' ? `
+    const hasContact=(l.nom&&l.nom!=='n.c.')||(l.email&&l.email!=='n.c.')||(l.tel&&l.tel!=='n.c.');
+    const contactRows = hasContact ? `
           <div class="row"><span class="k">Contact</span><span class="v">${esc(l.nom)}</span></div>
           <div class="row"><span class="k">Email</span><span class="v">${mail}</span></div>
           <div class="row"><span class="k">Tél</span><span class="v">${tel}</span></div>` : '';
-    return `<article class="lead" data-tier="${tier}"><span class="spine"></span><div class="body">
-      <div class="lhead"><div class="lmeta"><span class="src ${l.src.toLowerCase()}">${l.src==='BM'?'Banque Mondiale':'TED'}</span><span class="pays">${esc(l.pays)}</span><span>· ${esc(l.zone)}</span></div>
+    return `<article class="lead" data-tier="${tier}" data-idx="${i}"><span class="spine"></span><div class="body">
+      <div class="lhead"><div class="lmeta"><span class="src ${l.src.toLowerCase()}">${SRC_LABEL[l.src]||l.src}</span><span class="pays">${esc(l.pays)}</span><span>· ${esc(l.zone)}</span></div>
       <div class="scorebox"><div class="sf">${l.final.toFixed(1)}</div><div class="sd">sûreté ${l.surete.toFixed(1)} · com ${l.comm.toFixed(1)}</div></div></div>
       <h3 class="ltitle">${esc(l.titre)}</h3>
       <div class="badges"><span class="badge win-${win}">${winLabel[win]}</span>${badgeDeadline(l)}${ecart}${statut}${dateChip}</div>
       <div class="contact"><div class="row"><span class="k">Agence</span><span class="v">${esc(l.agence)}</span></div>${contactRows}</div>
       <div class="cible"><b>Qui démarcher.</b> ${esc(l.cible)}</div>
       ${l.justif?`<details class="just"><summary><span class="chev">▸</span> Justification sûreté</summary><p>${esc(l.justif)}</p></details>`:''}
-      </div><div class="foot"><span class="grp">Groupe ${esc(l.grp)}</span>${l.lien?`<a class="av" href="${esc(l.lien)}" target="_blank" rel="noopener">Voir l'avis ↗</a>`:''}</div></article>`;
+      </div><div class="foot"><span class="grp">Groupe ${esc(l.grp)}</span><span class="footacts"><button class="act" type="button" data-fiche="${i}">Fiche ↗</button><a class="act mail" href="${mailtoHref(l)}">✉ Rédiger email</a>${l.lien?`<a class="act" href="${esc(l.lien)}" target="_blank" rel="noopener">Voir l'avis ↗</a>`:''}</span></div></article>`;
   }).join('');
 }
 document.getElementById('foot').innerHTML=
   'Généré automatiquement après le run du radar. Les contacts proviennent des avis Banque Mondiale.<br>Le destinataire commercial réel est le titulaire du marché, pas l\'agence acheteuse.';
+
+// --- Fiche lead detaillee (modale) ---
+function ficheHtml(l){
+  const row=(k,v)=>v?`<div class="frow"><span class="fk">${k}</span><span class="fv">${v}</span></div>`:'';
+  const mail=(l.email&&l.email!=='n.c.')?`<a href="mailto:${esc(l.email)}">${esc(l.email)}</a>`:'';
+  const tel=(l.tel&&l.tel!=='n.c.')?esc(l.tel):'';
+  const jr=joursRestants(l.deadline);
+  const dl=(jr!==null)?(jr>=0?`${jr} j restants (${esc(l.deadline)})`:`clôturé (${esc(l.deadline)})`):'';
+  return `
+   <div class="mhead"><button class="mclose" type="button" onclick="closeFiche()" aria-label="Fermer">×</button>
+     <div class="msrc">${SRC_LABEL[l.src]||l.src}</div>
+     <h2>${esc(l.titre)}</h2>
+     <div class="mscore"><span class="big">${l.final.toFixed(1)}</span><span class="sub">sûreté ${l.surete.toFixed(1)} · commercial ${l.comm.toFixed(1)}</span></div>
+   </div>
+   <div class="mbody">
+     ${row('Pays',esc(l.pays))}
+     ${row('Zone',esc(l.zone))}
+     ${row('Action',esc(l.action))}
+     ${row('Fenêtre',winLabel[l.win]||esc(l.win))}
+     ${row('Échéance',dl)}
+     ${row(l.src==='PRIVÉ'?'Activité':'Groupe',esc(l.grp))}
+     ${row(l.src==='PRIVÉ'?'Entreprise':'Agence',esc(l.agence))}
+     ${row('Contact',(l.nom&&l.nom!=='n.c.')?esc(l.nom):'')}
+     ${row('Email',mail)}
+     ${row('Tél',tel)}
+     ${row('SIREN',esc(l.siren||''))}
+     ${row("Chiffre d'affaires",l.ca?esc(l.ca)+' €':'')}
+     ${row('Qui démarcher',esc(l.cible))}
+     ${row('Justification',esc(l.justif))}
+   </div>
+   <div class="mactions">
+     <a class="mbtn primary" href="${mailtoHref(l)}">✉ Rédiger l'email</a>
+     ${l.lien?`<a class="mbtn ghost" href="${esc(l.lien)}" target="_blank" rel="noopener">Voir l'avis ↗</a>`:''}
+     <button class="mbtn ghost" type="button" onclick="closeFiche()">Fermer</button>
+   </div>`;
+}
+function openFiche(l){if(!l)return;document.getElementById('modalcard').innerHTML=ficheHtml(l);document.getElementById('modal').classList.add('open');}
+function closeFiche(){document.getElementById('modal').classList.remove('open');}
+document.getElementById('leads').addEventListener('click',e=>{
+  const b=e.target.closest('[data-fiche]');
+  if(b){e.preventDefault();openFiche(AFFICHES[+b.getAttribute('data-fiche')]);}
+});
+document.getElementById('modal').addEventListener('click',e=>{if(e.target.id==='modal')closeFiche();});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeFiche();});
+
 buildExec();
 initMap();
 buildPeriod();
