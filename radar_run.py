@@ -157,6 +157,13 @@ def main():
         logger.error("ted_complet_bm.py est introuvable (meme dossier requis).")
         sys.exit(1)
 
+    # --- 2 bis-a. Import du collecteur BOAMP (marches publics FR), optionnel --
+    boamp = None
+    try:
+        import ted_complet_boamp as boamp
+    except Exception as e:
+        logger.info("(info) Collecteur BOAMP indisponible (%s). Etape ignoree.", e)
+
     # --- 2 bis. Import du moteur de signaux prives (BITD), optionnel ----------
     # S'il manque, ou si la whitelist n'est pas encore importee dans le Sheet,
     # cette etape ne fait rien : elle n'empeche jamais le radar public de tourner.
@@ -189,6 +196,9 @@ def main():
     resultats["TED"] = lancer_collecteur("ETAPE -- COLLECTEUR TED", ted)
     resultats["Banque Mondiale"] = lancer_collecteur(
         "ETAPE -- COLLECTEUR BANQUE MONDIALE", bm)
+    if boamp is not None:
+        resultats["BOAMP"] = lancer_collecteur(
+            "ETAPE -- COLLECTEUR BOAMP (marches publics FR)", boamp)
     if bitd is not None:
         resultats["Signaux BITD"] = lancer_collecteur(
             "ETAPE -- MOTEUR SIGNAUX PRIVES (BITD)", bitd)
