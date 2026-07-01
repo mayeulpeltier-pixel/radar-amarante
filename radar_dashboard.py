@@ -270,11 +270,24 @@ def ligne_vers_lead(row, source):
     }
 
 
-def construire_leads(lignes_ted, lignes_bm, lignes_prive=None):
-    """Fusionne les onglets (TED, Banque Mondiale, PRIVÉ/BITD), deduplique, trie."""
+def construire_leads(lignes_ted, lignes_bm, lignes_prive=None, enrichissement=None):
+    """Fusionne les onglets (TED, Banque Mondiale, PRIVÉ/BITD), deduplique, trie.
+    Pour les leads PRIVÉ, remonte le dirigeant (enrichissement) comme contact."""
     leads = [ligne_vers_lead(r, "TED") for r in lignes_ted]
     leads += [ligne_vers_lead(r, "BM") for r in lignes_bm]
-    leads += [ligne_vers_lead(r, "PRIVÉ") for r in (lignes_prive or [])]
+    leads_prive = [ligne_vers_lead(r, "PRIVÉ") for r in (lignes_prive or [])]
+
+    enrichissement = enrichissement or {}
+    for l in leads_prive:
+        info = enrichissement.get(l["agence"].lower())
+        if info:
+            dirigeant = _txt(info.get("dirigeant_principal"))
+            if dirigeant and l["nom"] in ("", "n.c."):
+                l["nom"] = dirigeant
+            l["siren"] = _txt(info.get("siren"))
+            l["ca"] = _txt(info.get("chiffre_affaires"))
+    leads += leads_prive
+
     leads = [l for l in leads if l["titre"]]  # avis exploitables seulement
 
     # Deduplication : un meme avis (meme lien, ou meme pays+titre) ne doit
@@ -300,8 +313,9 @@ def _lignes_vers_dicts(valeurs, colonnes):
         return []
     debut = 0
     premiere = [str(c).strip() for c in valeurs[0]]
-    # Detecte une ligne d'en-tete (presence de noms de colonnes connus).
-    if "score_final" in premiere or "titre" in premiere or premiere[:1] == ["date_maj"]:
+    # Detecte une ligne d'en-tete : mots-cles connus OU 1re cellule = 1re colonne.
+    if ("score_final" in premiere or "titre" in premiere
+            or premiere[:1] == ["date_maj"] or (colonnes and premiere[:1] == [colonnes[0]])):
         debut = 1
     dicts = []
     for row in valeurs[debut:]:
@@ -354,7 +368,23 @@ def lire_onglets(sheet_id, fichier_cs):
             "date_publication", "statut_suivi", "date_detection"]
     lignes_prive = _lignes_vers_dicts(valeurs(onglet_prive), colonnes_prive)
 
-    return lignes_ted, lignes_bm, lignes_prive
+    # Enrichissement firmographique (dirigeants), pour remonter le contact.
+    try:
+        import enrichir_entreprises as ee
+        colonnes_enr = ee.COLONNES_ENRICHIES
+        onglet_enr = ee.NOM_ONGLET_ENRICHIES
+    except Exception:
+        onglet_enr = "entreprises_enrichies"
+        colonnes_enr = ["entreprise", "siren", "nom_officiel", "dirigeant_principal",
+                        "autres_dirigeants", "activite_naf", "effectif", "ville",
+                        "chiffre_affaires", "source", "date_enrichissement"]
+    enrichissement = {}
+    for d in _lignes_vers_dicts(valeurs(onglet_enr), colonnes_enr):
+        nom = _txt(d.get("entreprise")).lower()
+        if nom:
+            enrichissement[nom] = d
+
+    return lignes_ted, lignes_bm, lignes_prive, enrichissement
 
 
 def generer_html(leads):
@@ -389,8 +419,8 @@ def main():
         sys.exit(1)
 
     print("Lecture des onglets du Sheet...")
-    lignes_ted, lignes_bm, lignes_prive = lire_onglets(sheet_id, fichier_cs)
-    leads = construire_leads(lignes_ted, lignes_bm, lignes_prive)
+    lignes_ted, lignes_bm, lignes_prive, enrichissement = lire_onglets(sheet_id, fichier_cs)
+    leads = construire_leads(lignes_ted, lignes_bm, lignes_prive, enrichissement)
     print("  TED : {} avis | BM : {} avis | total exploitable : {}".format(
         len(lignes_ted), len(lignes_bm), len(leads)))
 
