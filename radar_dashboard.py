@@ -225,6 +225,10 @@ def ligne_vers_lead(row, source):
         cible = _txt(row.get("cible_commerciale_reelle")) or \
             "Titulaire du marché qui déploie les équipes, pas l'agence acheteuse."
         groupe = _txt(row.get("procurement_group")) or "n.c."
+    elif source == "BOAMP":
+        cible = _txt(row.get("cible_commerciale_reelle")) or \
+            "Acheteur public ou titulaire du marché ; vérifier qui expose du personnel."
+        groupe = _txt(row.get("procurement_method")) or "MP"
     elif source == "PRIVÉ":
         cible = _txt(row.get("cible_commerciale_reelle")) or \
             "Contact via réseau : direction sûreté / export / MCO."
@@ -270,11 +274,13 @@ def ligne_vers_lead(row, source):
     }
 
 
-def construire_leads(lignes_ted, lignes_bm, lignes_prive=None, enrichissement=None):
-    """Fusionne les onglets (TED, Banque Mondiale, PRIVÉ/BITD), deduplique, trie.
-    Pour les leads PRIVÉ, remonte le dirigeant (enrichissement) comme contact."""
+def construire_leads(lignes_ted, lignes_bm, lignes_boamp=None, lignes_prive=None,
+                     enrichissement=None):
+    """Fusionne les onglets (TED, Banque Mondiale, BOAMP, PRIVÉ/BITD), deduplique,
+    trie. Pour les leads PRIVÉ, remonte le dirigeant (enrichissement) comme contact."""
     leads = [ligne_vers_lead(r, "TED") for r in lignes_ted]
     leads += [ligne_vers_lead(r, "BM") for r in lignes_bm]
+    leads += [ligne_vers_lead(r, "BOAMP") for r in (lignes_boamp or [])]
     leads_prive = [ligne_vers_lead(r, "PRIVÉ") for r in (lignes_prive or [])]
 
     enrichissement = enrichissement or {}
@@ -352,6 +358,14 @@ def lire_onglets(sheet_id, fichier_cs):
     lignes_ted = _lignes_vers_dicts(valeurs(NOM_ONGLET_TED), ted.TOUTES_COLONNES_SHEET)
     lignes_bm = _lignes_vers_dicts(valeurs(NOM_ONGLET_BM), bm.TOUTES_COLONNES_BM)
 
+    # BOAMP (marches publics FR) : meme schema que la Banque Mondiale.
+    try:
+        import ted_complet_boamp as boamp
+        onglet_boamp = boamp.NOM_ONGLET_BOAMP
+    except Exception:
+        onglet_boamp = "boamp_radar"
+    lignes_boamp = _lignes_vers_dicts(valeurs(onglet_boamp), bm.TOUTES_COLONNES_BM)
+
     # Onglet des signaux prives (BITD), s'il existe. Schema fourni par le moteur.
     try:
         import bitd_signaux as bitd
@@ -384,7 +398,7 @@ def lire_onglets(sheet_id, fichier_cs):
         if nom:
             enrichissement[nom] = d
 
-    return lignes_ted, lignes_bm, lignes_prive, enrichissement
+    return lignes_ted, lignes_bm, lignes_boamp, lignes_prive, enrichissement
 
 
 def generer_html(leads):
@@ -419,8 +433,8 @@ def main():
         sys.exit(1)
 
     print("Lecture des onglets du Sheet...")
-    lignes_ted, lignes_bm, lignes_prive, enrichissement = lire_onglets(sheet_id, fichier_cs)
-    leads = construire_leads(lignes_ted, lignes_bm, lignes_prive, enrichissement)
+    lignes_ted, lignes_bm, lignes_boamp, lignes_prive, enrichissement = lire_onglets(sheet_id, fichier_cs)
+    leads = construire_leads(lignes_ted, lignes_bm, lignes_boamp, lignes_prive, enrichissement)
     print("  TED : {} avis | BM : {} avis | total exploitable : {}".format(
         len(lignes_ted), len(lignes_bm), len(leads)))
 
@@ -646,6 +660,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
       <button data-src="all" aria-pressed="true">Toutes</button>
       <button data-src="BM" aria-pressed="false">Banque Mondiale</button>
       <button data-src="TED" aria-pressed="false">TED</button>
+      <button data-src="BOAMP" aria-pressed="false">BOAMP</button>
       <button data-src="PRIVÉ" aria-pressed="false">Privé (BITD)</button>
     </div>
     <div class="seg" id="triseg" role="group" aria-label="Tri">
