@@ -610,6 +610,25 @@ def main():
         print("Aucun avis Banque Mondiale a analyser.")
         return
 
+    # Memoire inter-runs : on ne reanalyse pas un avis deja traite lors d'un run
+    # precedent (economie de tokens + temps), ce qui evite aussi de le
+    # re-ajouter en double. Lecture tolerante : si pas de Sheet ou erreur, on
+    # analyse tout (comportement d'avant).
+    sheet_id = os.environ.get("TED_SHEET_ID")
+    fichier = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
+    deja_vus = ted.numeros_publication_existants(
+        sheet_id, fichier, NOM_ONGLET_BM, COLONNES_BM)
+    if deja_vus:
+        avant = len(avis_normalises)
+        avis_normalises = [a for a in avis_normalises
+                           if str(a.get("publication_number", "")).strip() not in deja_vus]
+        print("Memoire : {} avis deja analyses (runs precedents) ignores, "
+              "{} nouveau(x) a analyser.".format(avant - len(avis_normalises), len(avis_normalises)))
+    if not avis_normalises:
+        print("Aucun NOUVEL avis Banque Mondiale a analyser (tout deja vu). "
+              "Le Sheet et le dashboard restent a jour.")
+        return
+
     # Fix 3 (audit) : mode DRY-RUN. Avec la variable d'env BM_DRY_RUN definie,
     # on s'arrete ici : on voit l'entonnoir et les titres qui PASSERAIENT au
     # LLM, sans aucun appel paye. Ideal pour regler les filtres (TIER, mots
