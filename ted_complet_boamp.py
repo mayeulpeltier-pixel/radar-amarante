@@ -33,12 +33,25 @@ LIEN_BOAMP = "https://www.boamp.fr/avis/detail/{}"
 NOM_ONGLET_BOAMP = "boamp_radar"
 NB_JOURS_FENETRE = 30
 MAX_AVIS_LLM = 25
+# Interrupteur : RADAR_BOAMP=0 desactive completement le collecteur.
+ACTIVER_BOAMP = os.environ.get("RADAR_BOAMP", "1") != "0"
+# Seuil d'ecriture : en dessous, l'avis n'est PAS ecrit (evite de polluer le
+# Sheet avec du domestique francais a bas score). Le croisement risque ne
+# suffit pas : c'est ce seuil qui filtre reellement a l'ecriture.
+SEUIL_ECRITURE_BOAMP = float(os.environ.get("RADAR_BOAMP_SEUIL", "3.0"))
 
-# Filtre plein-texte (ODS applique la recherche sur tout l'enregistrement,
-# donc robuste aux noms de champs). Ajustable sans toucher au reste.
-TERMES_SURETE = ['"protection rapprochée"', '"sûreté"', '"escorte"',
-                 '"sécurité des personnes"', '"protection de personnalités"',
-                 '"agents de sécurité"', '"gardiennage"']
+# Termes FORTS only : la protection rapprochee / l'escorte de personnes ne se
+# confondent pas avec le gardiennage communal. On a retire "sûreté",
+# "gardiennage", "agents de sécurité" qui ramenaient du bruit domestique.
+TERMES_SURETE = ['"protection rapprochée"', '"escorte"',
+                 '"protection de personnalités"', '"protection rapprochee"',
+                 '"garde du corps"', '"sûreté des personnes"',
+                 '"sécurité des déplacements"']
+# Exclusions : si le titre releve clairement du domestique, on jette avant LLM.
+TERMES_EXCLUSION = ("fourniture", "mobilier", "papeter", "entretien des locaux",
+                    "nettoyage", "voirie", "réhabilitation", "auvent", "sas ",
+                    "signalétique", "portage salarial", "restauration scolaire",
+                    "espaces verts", "gardiennage", "surveillance des")
 
 
 # ===========================================================================
@@ -160,6 +173,18 @@ def ouvrir_feuille_boamp(sheet_id, fichier_compte_service):
 # ===========================================================================
 # ORCHESTRATION (mirror de bm.main, moteur reutilise)
 # ===========================================================================
+def pertinent(avis):
+    """True si l'avis releve vraiment de la protection de personnes (termes forts),
+    et pas du domestique. Filtre applique AVANT tout appel LLM (economie + anti-bruit)."""
+    texte = ted._nettoyer_html((avis.get("titre", "") + " " + avis.get("description", ""))).lower()
+    if any(x in texte for x in TERMES_EXCLUSION):
+        return False
+    forts = ("protection rapproch", "escorte", "protection de personnalit",
+             "garde du corps", "sûreté des personnes", "surete des personnes",
+             "sécurité des déplacement", "securite des deplacement", "close protection")
+    return any(f in texte for f in forts)
+
+
 def _merite_escalade(r):
     if r["extraction"] is None:
         return False
@@ -173,6 +198,9 @@ def _merite_escalade(r):
 
 
 def main():
+    if not ACTIVER_BOAMP:
+        print("BOAMP desactive (RADAR_BOAMP=0).")
+        return
     if not os.environ.get("ANTHROPIC_API_KEY"):
         print("ERREUR : ANTHROPIC_API_KEY n'est pas definie.")
         return
@@ -181,9 +209,9 @@ def main():
     print("=" * 60)
 
     bruts = collecte_boamp()
-    print("BOAMP -- avis sûrete recents recuperes : {}".format(len(bruts)))
+    print("BOAMP -- avis recuperes : {}".format(len(bruts)))
     if not bruts:
-        print("Aucun avis BOAMP pertinent. Rien a faire.")
+        print("Aucun avis BOAMP. Rien a faire.")
         return
 
     # Dedup par idweb + normalisation.
@@ -194,10 +222,15 @@ def main():
             vus.add(idw)
             uniques.append(r)
     avis_normalises = [a for a in (normaliser_boamp(r) for r in uniques) if a["titre"]]
+    # Filtre de pertinence (termes forts, hors domestique) AVANT le LLM.
+    avant_filtre = len(avis_normalises)
+    avis_normalises = [a for a in avis_normalises if pertinent(a)]
+    print("Filtre pertinence : {} rejetes (domestique/hors sujet), {} retenus.".format(
+        avant_filtre - len(avis_normalises), len(avis_normalises)))
     if len(avis_normalises) > MAX_AVIS_LLM:
         avis_normalises = avis_normalises[:MAX_AVIS_LLM]
     if not avis_normalises:
-        print("Aucun avis exploitable.")
+        print("Aucun avis pertinent pour la protection de personnes.")
         return
 
     # Memoire inter-runs (schema BM, onglet BOAMP).
@@ -242,6 +275,14 @@ def main():
             time.sleep(0.5)
 
     resultats.sort(key=lambda r: r["score"], reverse=True)
+    # Seuil d'ecriture : on n'ecrit PAS le domestique a bas score.
+    avant_seuil = len(resultats)
+    resultats = [r for r in resultats if r["score"] >= SEUIL_ECRITURE_BOAMP]
+    print("Seuil d'ecriture ({}) : {} avis ecartes, {} conserves.".format(
+        SEUIL_ECRITURE_BOAMP, avant_seuil - len(resultats), len(resultats)))
+    if not resultats:
+        print("Aucun avis BOAMP au-dessus du seuil. Rien a ecrire.")
+        return
 
     if not (sheet_id and fichier):
         print("(dry-run) {} avis analyses (pas de Sheet, non ecrit).".format(len(resultats)))
