@@ -271,6 +271,7 @@ def ligne_vers_lead(row, source):
         "deadline": _txt(row.get("deadline")),
         "conf": _txt(row.get("confiance")),
         "modele": _txt(row.get("modele")),
+        "pub": _txt(row.get("publication_number")),
     }
 
 
@@ -435,9 +436,19 @@ def generer_html(leads):
     meta["mois"] = [{"cle": c, "label": labels[c]} for c in sorted(labels, reverse=True)]
     leads_json = json.dumps(leads, ensure_ascii=False)
     meta_json = json.dumps(meta, ensure_ascii=False)
+    # Config du bouton "Je contacte" : lue dans suivi_config.py (optionnel).
+    # Absente ou vide -> le bouton ne s'affiche pas (le dashboard reste intact).
+    try:
+        import suivi_config
+        surl = getattr(suivi_config, "SUIVI_WEBAPP_URL", "") or ""
+        stok = getattr(suivi_config, "SUIVI_TOKEN", "") or ""
+    except Exception:
+        surl, stok = "", ""
     return (GABARIT_HTML
             .replace("__LEADS_JSON__", leads_json)
-            .replace("__META_JSON__", meta_json))
+            .replace("__META_JSON__", meta_json)
+            .replace("__SUIVI_URL__", json.dumps(surl))
+            .replace("__SUIVI_TOKEN__", json.dumps(stok)))
 
 
 def main():
@@ -649,6 +660,10 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .foot .act:hover{border-color:var(--oxblood);color:var(--bone)}
   .foot .act.mail{border-color:var(--oxblood);color:var(--fort)}
   .foot .act.mail:hover{background:var(--oxblood);color:#fff}
+  .foot .act.contact{border-color:var(--oxblood);color:var(--fort)}
+  .foot .act.contact:hover{background:var(--oxblood);color:#fff}
+  .foot .act.contact.done{border-color:rgba(120,190,150,0.5);color:#7fae8f;background:transparent;cursor:default}
+  .foot .act.contact.done:hover{background:transparent;color:#7fae8f}
   .modal-ov{position:fixed;inset:0;background:rgba(10,6,8,.72);backdrop-filter:blur(3px);
     display:none;align-items:flex-start;justify-content:center;z-index:1000;padding:40px 16px;overflow:auto}
   .modal-ov.open{display:flex}
@@ -754,6 +769,23 @@ GABARIT_HTML = r"""<!DOCTYPE html>
 <script>
 const LEADS = __LEADS_JSON__;
 const META = __META_JSON__;
+const SUIVI_URL = __SUIVI_URL__;
+const SUIVI_TOKEN = __SUIVI_TOKEN__;
+const SUIVI_ON = !!SUIVI_URL;
+const CONTACTES = new Set((()=>{try{return JSON.parse(localStorage.getItem('suivi_contactes')||'[]')}catch(e){return[]}})());
+const SRC_SUIVI = {TED:'TED',BM:'Banque Mondiale',BOAMP:'BOAMP','PRIVÉ':'Privé BITD',RW:'ReliefWeb',ONG:'ReliefWeb'};
+function leadId(l){return l.pub||l.lien||(l.src+'|'+l.pays+'|'+l.agence+'|'+l.titre);}
+function marquerContacte(idx,btn){
+  const l=AFFICHES[idx]; if(!l||!SUIVI_ON)return;
+  const cid=leadId(l);
+  btn.disabled=true; btn.classList.add('done'); btn.textContent='✓ Contacté';
+  CONTACTES.add(cid); try{localStorage.setItem('suivi_contactes',JSON.stringify([...CONTACTES]));}catch(e){}
+  const p={token:SUIVI_TOKEN,id:cid,source:SRC_SUIVI[l.src]||l.src,date_det:l.date_det||'',
+    pays:l.pays||'',zone:l.zone||'',agence:l.agence||'',titre:l.titre||'',lien:l.lien||'',
+    score:l.final,surete:l.surete,comm:l.comm,action:l.action||'',fenetre:l.win||'',
+    contact:(l.nom&&l.nom!=='n.c.')?l.nom:'',email:(l.email&&l.email!=='n.c.')?l.email:''};
+  fetch(SUIVI_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(p)}).catch(function(){});
+}
 const ORDRE_ZONES = ["Afrique de l'Ouest","Sahel","Afrique centrale","Afrique de l'Est","Afrique australe","Afrique du Nord","Proche-Orient","Péninsule arabique","Asie centrale","Asie du Sud","Asie du Sud-Est","Caucase","Balkans","Europe de l'Est","Caraïbes","Amérique latine","Europe de l'Ouest","Outre-mer","Non classé"];
 const winLabel={immediate:'Fenêtre immédiate',court_terme:'Court terme',indetermine:'Fenêtre indéterminée'};
 const SRC_LABEL={BM:'Banque Mondiale',TED:'TED',BOAMP:'BOAMP','PRIVÉ':'Privé · BITD'};
@@ -991,6 +1023,7 @@ function render(){
   AFFICHES=filtered;
   box.innerHTML=filtered.map((l,i)=>{
     const tier=l.action;
+    const done=SUIVI_ON&&CONTACTES.has(leadId(l));
     const win=(['immediate','court_terme','indetermine'].includes(l.win))?l.win:'indetermine';
     const mail=l.email!=='n.c.'?`<a href="mailto:${esc(l.email)}">${esc(l.email)}</a>`:'n.c.';
     const tel=l.tel!=='n.c.'?`<a href="tel:${esc(l.tel.replace(/\s/g,''))}">${esc(l.tel)}</a>`:'n.c.';
@@ -1012,7 +1045,7 @@ function render(){
       <div class="contact"><div class="row"><span class="k">Agence</span><span class="v">${esc(l.agence)}</span></div>${contactRows}</div>
       <div class="cible"><b>Qui démarcher.</b> ${esc(l.cible)}</div>
       ${l.justif?`<details class="just"><summary><span class="chev">▸</span> Justification sûreté</summary><p>${esc(l.justif)}</p></details>`:''}
-      </div><div class="foot"><span class="grp">Groupe ${esc(l.grp)}</span><span class="footacts"><button class="act" type="button" data-fiche="${i}">Fiche ↗</button><a class="act mail" href="${mailtoHref(l)}">✉ Rédiger email</a>${l.lien?`<a class="act" href="${esc(l.lien)}" target="_blank" rel="noopener">Voir l'avis ↗</a>`:''}</span></div></article>`;
+      </div><div class="foot"><span class="grp">Groupe ${esc(l.grp)}</span><span class="footacts">${SUIVI_ON?`<button class="act contact${done?' done':''}" type="button" data-contact="${i}"${done?' disabled':''}>${done?'✓ Contacté':'☎ Je contacte'}</button>`:''}<button class="act" type="button" data-fiche="${i}">Fiche ↗</button><a class="act mail" href="${mailtoHref(l)}">✉ Rédiger email</a>${l.lien?`<a class="act" href="${esc(l.lien)}" target="_blank" rel="noopener">Voir l'avis ↗</a>`:''}</span></div></article>`;
   }).join('');
 }
 document.getElementById('foot').innerHTML=
@@ -1057,6 +1090,8 @@ function ficheHtml(l){
 function openFiche(l){if(!l)return;document.getElementById('modalcard').innerHTML=ficheHtml(l);document.getElementById('modal').classList.add('open');}
 function closeFiche(){document.getElementById('modal').classList.remove('open');}
 document.getElementById('leads').addEventListener('click',e=>{
+  const bc=e.target.closest('[data-contact]');
+  if(bc){e.preventDefault();marquerContacte(+bc.getAttribute('data-contact'),bc);return;}
   const b=e.target.closest('[data-fiche]');
   if(b){e.preventDefault();openFiche(AFFICHES[+b.getAttribute('data-fiche')]);}
 });
