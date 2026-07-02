@@ -39,6 +39,19 @@ API_PAPPERS = "https://api.pappers.fr/v2/entreprise"
 DELAI_RAFRAICHISSEMENT_JOURS = 120     # au-dela, on re-enrichit
 PAUSE = 0.4                            # politesse API (7 req/s max cote gouv)
 
+# --- Recherche de contacts (Hunter.io), OPTIONNEL et frugal en quota ---------
+# Palier gratuit Hunter : 25 recherches/mois. On cible donc les seules
+# entreprises "Haute" priorite, on plafonne par run, et on verifie le quota
+# restant avant d'appeler. Emails PROFESSIONNELS uniquement (pas de webmail).
+# RGPD : email pro nominatif = donnee personnelle. Prospection B2B en France
+# autorisee si la personne est informee et peut s'opposer AU PREMIER CONTACT.
+API_HUNTER_FINDER = "https://api.hunter.io/v2/email-finder"
+API_HUNTER_ACCOUNT = "https://api.hunter.io/v2/account"
+NOM_ONGLET_CONTACTS = "contacts_bitd"
+COLONNES_CONTACTS = ["entreprise", "email_pro", "confiance", "source", "date_contact"]
+RADAR_HUNTER_MAX = int(os.environ.get("RADAR_HUNTER_MAX", "6"))   # appels/run max
+SEUIL_CONF_EMAIL = 50                  # sous ce score, email marque "a verifier"
+
 COLONNES_ENRICHIES = [
     "entreprise", "siren", "nom_officiel", "dirigeant_principal",
     "autres_dirigeants", "activite_naf", "effectif", "ville",
@@ -223,6 +236,118 @@ def ouvrir_ou_creer_onglet(classeur):
         return f
 
 
+def credits_hunter(fetch=None):
+    """Credits de recherche restants (palier gratuit = 25/mois). 0 si pas de cle."""
+    if not os.environ.get("HUNTER_API_KEY", ""):
+        return 0
+    donnees = _get_json(API_HUNTER_ACCOUNT,
+                        {"api_key": os.environ["HUNTER_API_KEY"]}, fetch=fetch)
+    try:
+        r = donnees["data"]["requests"]["searches"]
+        return int(r["available"]) - int(r["used"])
+    except Exception:
+        return 0
+
+
+def _nettoyer_nom(dirigeant):
+    """'PATRICE CAINE (Président ...)' -> 'PATRICE CAINE'."""
+    import re
+    return re.sub(r"\s*\(.*?\)\s*", "", dirigeant or "").strip()
+
+
+def trouver_contact_hunter(entreprise, dirigeant, fetch=None):
+    """Email pro le plus probable via Hunter Email Finder. {} si rien / pas de cle."""
+    cle = os.environ.get("HUNTER_API_KEY", "")
+    nom = _nettoyer_nom(dirigeant)
+    if not (cle and nom):
+        return {}
+    donnees = _get_json(API_HUNTER_FINDER,
+                        {"company": entreprise, "full_name": nom, "api_key": cle},
+                        fetch=fetch)
+    data = (donnees or {}).get("data") or {}
+    email = data.get("email")
+    if not email:
+        return {}
+    score = data.get("score")
+    statut = ((data.get("verification") or {}).get("status")) or ""
+    source = "hunter" + ("/" + statut if statut else "")
+    if score is not None and score < SEUIL_CONF_EMAIL:
+        source += " (a verifier)"
+    return {"email": email, "confiance": "" if score is None else str(score),
+            "source": source}
+
+
+def contacts_existants(classeur):
+    """Entreprises deja tentees (evite de re-consommer du quota)."""
+    import gspread
+    try:
+        valeurs = classeur.worksheet(NOM_ONGLET_CONTACTS).get_all_values()
+    except gspread.WorksheetNotFound:
+        return set()
+    debut = 1 if valeurs and str(valeurs[0][:1]) == str(["entreprise"]) else 0
+    return {str(r[0]).strip().lower() for r in valeurs[debut:] if r and str(r[0]).strip()}
+
+
+def _dirigeants_par_entreprise(classeur):
+    """Mappe entreprise -> dirigeant_principal depuis entreprises_enrichies."""
+    import gspread
+    try:
+        valeurs = classeur.worksheet(NOM_ONGLET_ENRICHIES).get_all_values()
+    except gspread.WorksheetNotFound:
+        return {}
+    i_ent = COLONNES_ENRICHIES.index("entreprise")
+    i_dir = COLONNES_ENRICHIES.index("dirigeant_principal")
+    m = {}
+    for r in valeurs:
+        if len(r) > max(i_ent, i_dir) and str(r[i_ent]).strip().lower() != "entreprise":
+            m[str(r[i_ent]).strip().lower()] = str(r[i_dir]).strip()
+    return m
+
+
+def pass_contacts_hunter(classeur, whitelist, fetch=None):
+    """Cherche l'email pro des entreprises Haute priorite sans contact connu.
+    Frugal : plafond par run + verification du quota Hunter restant."""
+    import time
+    if not os.environ.get("HUNTER_API_KEY", ""):
+        print("Hunter inactif (HUNTER_API_KEY absente).")
+        return
+    budget = min(RADAR_HUNTER_MAX, credits_hunter(fetch=fetch))
+    if budget <= 0:
+        print("Hunter : quota epuise ou indisponible, passe ignoree.")
+        return
+    deja = contacts_existants(classeur)
+    dirigeants = _dirigeants_par_entreprise(classeur)
+    cibles = [w for w in whitelist
+              if (w.get("priorite_socle", "").strip() == "Haute"
+                  and w.get("entreprise", "").strip().lower() not in deja
+                  and dirigeants.get(w.get("entreprise", "").strip().lower()))]
+    print("Hunter : {} credits utilisables, {} cible(s) Haute sans contact.".format(
+        budget, len(cibles)))
+    aujourd = datetime.date.today().isoformat()
+    nouveaux = []
+    for w in cibles[:budget]:
+        nom = w["entreprise"].strip()
+        dirigeant = dirigeants.get(nom.lower(), "")
+        c = trouver_contact_hunter(nom, dirigeant, fetch=fetch)
+        nouveaux.append([nom, c.get("email", ""), c.get("confiance", ""),
+                         c.get("source", "non trouve"), aujourd])
+        print("  {} : {}".format(nom, c.get("email") or "aucun email trouve"))
+        time.sleep(0.3)
+    if not nouveaux:
+        return
+    import gspread
+    try:
+        feuille = classeur.worksheet(NOM_ONGLET_CONTACTS)
+    except gspread.WorksheetNotFound:
+        feuille = classeur.add_worksheet(title=NOM_ONGLET_CONTACTS, rows=500,
+                                         cols=len(COLONNES_CONTACTS))
+        feuille.update([COLONNES_CONTACTS])
+    feuille.append_rows(nouveaux, value_input_option="RAW")
+    trouves = sum(1 for r in nouveaux if r[1])
+    print("Hunter : {} tentative(s), {} email(s) trouve(s), ecrits dans '{}'.".format(
+        len(nouveaux), trouves, NOM_ONGLET_CONTACTS))
+
+
 def main():
     import time
     print("=" * 60)
@@ -243,9 +368,6 @@ def main():
     a_faire = [w for w in whitelist if w.get("entreprise", "").strip().lower() not in deja]
     print("Whitelist : {} | deja enrichies : {} | a enrichir : {}".format(
         len(whitelist), len(deja), len(a_faire)))
-    if not a_faire:
-        print("Tout est deja enrichi et a jour.")
-        return
 
     session = ted.session_robuste()
     lignes = []
@@ -263,11 +385,16 @@ def main():
     portee = ["https://www.googleapis.com/auth/spreadsheets"]
     creds = Credentials.from_service_account_file(fichier, scopes=portee)
     classeur = gspread.authorize(creds).open_by_key(sheet_id)
-    feuille = ouvrir_ou_creer_onglet(classeur)
     if lignes:
+        feuille = ouvrir_ou_creer_onglet(classeur)
         feuille.append_rows(lignes, value_input_option="RAW")
-    print("{} entreprises enrichies et ecrites dans '{}'.".format(
-        len(lignes), NOM_ONGLET_ENRICHIES))
+        print("{} entreprises enrichies et ecrites dans '{}'.".format(
+            len(lignes), NOM_ONGLET_ENRICHIES))
+    else:
+        print("Enrichissement firmographique : rien de nouveau.")
+
+    # Passe contacts (Hunter), independante du cache d'enrichissement.
+    pass_contacts_hunter(classeur, whitelist)
 
 
 if __name__ == "__main__":
