@@ -290,6 +290,9 @@ def construire_leads(lignes_ted, lignes_bm, lignes_boamp=None, lignes_prive=None
             dirigeant = _txt(info.get("dirigeant_principal"))
             if dirigeant and l["nom"] in ("", "n.c."):
                 l["nom"] = dirigeant
+            email = _txt(info.get("email_pro"))
+            if email:
+                l["email"] = email          # contact Hunter -> pre-remplit le mailto
             l["siren"] = _txt(info.get("siren"))
             l["ca"] = _txt(info.get("chiffre_affaires"))
     leads += leads_prive
@@ -397,6 +400,20 @@ def lire_onglets(sheet_id, fichier_cs):
         nom = _txt(d.get("entreprise")).lower()
         if nom:
             enrichissement[nom] = d
+
+    # Contacts (Hunter) : email pro par entreprise, injecte dans l'enrichissement.
+    try:
+        import enrichir_entreprises as ee
+        onglet_contacts = ee.NOM_ONGLET_CONTACTS
+        colonnes_contacts = ee.COLONNES_CONTACTS
+    except Exception:
+        onglet_contacts = "contacts_bitd"
+        colonnes_contacts = ["entreprise", "email_pro", "confiance", "source", "date_contact"]
+    for d in _lignes_vers_dicts(valeurs(onglet_contacts), colonnes_contacts):
+        nom = _txt(d.get("entreprise")).lower()
+        email = _txt(d.get("email_pro"))
+        if nom and email:
+            enrichissement.setdefault(nom, {})["email_pro"] = email
 
     return lignes_ted, lignes_bm, lignes_boamp, lignes_prive, enrichissement
 
