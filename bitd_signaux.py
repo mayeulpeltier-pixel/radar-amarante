@@ -72,13 +72,20 @@ GNEWS_BASE = "https://news.google.com/rss/search"
 # maj toutes les 15 min. Complete Google News (couverture presse etrangere).
 GDELT_ENDPOINT = "https://api.gdeltproject.org/api/v2/doc/doc"
 GDELT_TIMESPAN = "3m"          # fenetre glissante (max ~3 mois cote GDELT)
-GDELT_MAXRECORDS = 25
+GDELT_MAXRECORDS = 8
 ACTIVER_GDELT = os.environ.get("RADAR_GDELT", "1") != "0"  # coupe-circuit
 DECLENCHEURS = ("contrat OR export OR implantation OR usine OR filiale OR livraison "
                 "OR chantier OR essais OR démonstration OR formation OR déploiement")
-MAX_ARTICLES_PAR_ENTREPRISE = 8
+MAX_ARTICLES_PAR_ENTREPRISE = 6
 PAUSE_ENTRE_REQUETES = 1.0
 JOURS_FRAICHEUR = 120                 # on ignore les articles plus vieux
+# Budget d'analyses LLM par run : garantit qu'un run finit toujours dans le
+# temps imparti (le backlog s'etale sur plusieurs runs grace a la memoire).
+MAX_ANALYSES_PAR_RUN = int(os.environ.get("RADAR_BITD_BUDGET", "200"))
+# Memoire de TOUS les articles analyses (pas seulement des signaux retenus) :
+# evite de re-analyser les non-signaux a chaque run (cause du timeout).
+NOM_ONGLET_VUS = "prive_vus"
+MAX_VUS_MEMOIRE = 6000
 
 SEUIL_CONTACTER = 6.0
 SEUIL_SURVEILLER = 4.0
@@ -481,8 +488,10 @@ def ecrire_resultats(feuille, resultats):
 # ORCHESTRATION
 # ===========================================================================
 def traiter_entreprise(entreprise_row, deja_vus, cles_existantes=None,
-                       appel=None, session=None):
-    """Renvoie les signaux retenus pour une entreprise (dedup par evenement inclus)."""
+                       appel=None, session=None, budget=None, vus_ce_run=None):
+    """Renvoie les signaux retenus pour une entreprise (dedup par evenement inclus).
+    `budget` = {'reste': n} plafonne les analyses LLM du run (garantit la fin dans
+    les temps). `vus_ce_run` collecte les articles examines (persistes ensuite)."""
     entreprise = entreprise_row.get("entreprise", "").strip()
     if not entreprise:
         return []
@@ -497,9 +506,18 @@ def traiter_entreprise(entreprise_row, deja_vus, cles_existantes=None,
         pub = id_article(article.get("lien", ""))
         if pub in deja_vus:
             continue
-        deja_vus.add(pub)
         if bruit_evident(article):
+            deja_vus.add(pub)
+            if vus_ce_run is not None:
+                vus_ce_run.add(pub)          # bruit memorise -> plus jamais re-examine
             continue
+        if budget is not None and budget.get("reste", 0) <= 0:
+            break                            # budget epuise : non marque, repris au prochain run
+        deja_vus.add(pub)
+        if vus_ce_run is not None:
+            vus_ce_run.add(pub)
+        if budget is not None:
+            budget["reste"] -= 1
 
         ex = analyser_signal_llm(entreprise, article, appel=appel)
         if not ex or not ex.get("signal"):
@@ -545,6 +563,47 @@ def traiter_entreprise(entreprise_row, deja_vus, cles_existantes=None,
     return list(retenus.values())
 
 
+def charger_vus(sheet_id, fichier_cs):
+    """Set des hash d'articles deja analyses (memoire persistante)."""
+    if not (sheet_id and fichier_cs):
+        return set()
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+        portee = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+        creds = Credentials.from_service_account_file(fichier_cs, scopes=portee)
+        classeur = gspread.authorize(creds).open_by_key(sheet_id)
+        valeurs = classeur.worksheet(NOM_ONGLET_VUS).get_all_values()
+    except Exception:
+        return set()
+    vus = set()
+    for row in valeurs:
+        if row and str(row[0]).strip() and str(row[0]).strip() != "article_hash":
+            vus.add(str(row[0]).strip())
+    return vus
+
+
+def persister_vus(classeur, nouveaux):
+    """Ajoute les nouveaux hash a l'onglet prive_vus, plafonne la taille."""
+    import gspread
+    if not nouveaux:
+        return
+    try:
+        feuille = classeur.worksheet(NOM_ONGLET_VUS)
+    except gspread.WorksheetNotFound:
+        feuille = classeur.add_worksheet(title=NOM_ONGLET_VUS, rows=MAX_VUS_MEMOIRE + 100, cols=2)
+        feuille.update([["article_hash", "date_vu"]])
+    aujourd = datetime.date.today().isoformat()
+    feuille.append_rows([[h, aujourd] for h in nouveaux], value_input_option="RAW")
+    # Plafonnement : on ne garde que les MAX_VUS_MEMOIRE plus recents.
+    valeurs = feuille.get_all_values()
+    corps = [r for r in valeurs if r and r[0] != "article_hash"]
+    if len(corps) > MAX_VUS_MEMOIRE:
+        recents = corps[-MAX_VUS_MEMOIRE:]
+        feuille.clear()
+        feuille.update([["article_hash", "date_vu"]] + recents)
+
+
 def main():
     print("=" * 60)
     print("MOTEUR DE SIGNAUX PRIVES (BITD) - Radar Amarante")
@@ -560,14 +619,21 @@ def main():
 
     deja_vus = ted.numeros_publication_existants(
         sheet_id, fichier, NOM_ONGLET_PRIVE, COLONNES_PRIVE)
+    deja_vus |= charger_vus(sheet_id, fichier)      # + tous les articles deja analyses
     cles = cles_evenements_existantes(sheet_id, fichier)
-    print("Memoire : {} articles, {} evenements deja connus.".format(
-        len(deja_vus), len(cles)))
+    print("Memoire : {} articles vus, {} evenements connus. Budget analyses : {}.".format(
+        len(deja_vus), len(cles), MAX_ANALYSES_PAR_RUN))
 
     session = ted.session_robuste()
+    budget = {"reste": MAX_ANALYSES_PAR_RUN}
+    vus_ce_run = set()
     tous = []
     for i, ligne in enumerate(whitelist, 1):
-        res = traiter_entreprise(ligne, deja_vus, cles, session=session)
+        if budget["reste"] <= 0:
+            print("  Budget d'analyses epuise : reprise des entreprises suivantes au prochain run.")
+            break
+        res = traiter_entreprise(ligne, deja_vus, cles, session=session,
+                                 budget=budget, vus_ce_run=vus_ce_run)
         for r in res:
             cles.add(r["cle"])  # evite les doublons entre entreprises du meme run
         if res:
@@ -575,11 +641,9 @@ def main():
                 i, len(whitelist), ligne.get("entreprise", ""), len(res)))
         tous.extend(res)
         time.sleep(PAUSE_ENTRE_REQUETES)
+    print("Analyses consommees ce run : {}.".format(MAX_ANALYSES_PAR_RUN - budget["reste"]))
 
     print("\nSignaux retenus : {}".format(len(tous)))
-    if not tous:
-        print("Aucun nouveau signal prive.")
-        return
     if not (sheet_id and fichier):
         print("(dry-run) Pas de Sheet, ecriture ignoree.")
         return
@@ -588,9 +652,17 @@ def main():
     portee = ["https://www.googleapis.com/auth/spreadsheets"]
     creds = Credentials.from_service_account_file(fichier, scopes=portee)
     classeur = gspread.authorize(creds).open_by_key(sheet_id)
-    feuille = ouvrir_ou_creer_onglet(classeur)
-    n = ecrire_resultats(feuille, tous)
-    print("{} nouveaux signaux ecrits dans '{}'.".format(n, NOM_ONGLET_PRIVE))
+
+    if tous:
+        feuille = ouvrir_ou_creer_onglet(classeur)
+        n = ecrire_resultats(feuille, tous)
+        print("{} nouveaux signaux ecrits dans '{}'.".format(n, NOM_ONGLET_PRIVE))
+    else:
+        print("Aucun nouveau signal prive ce run.")
+    # Toujours memoriser les articles analyses (evite de les re-analyser).
+    persister_vus(classeur, sorted(vus_ce_run))
+    print("{} articles memorises (total plafonne a {}).".format(
+        len(vus_ce_run), MAX_VUS_MEMOIRE))
 
 
 if __name__ == "__main__":
