@@ -73,6 +73,9 @@ GNEWS_BASE = "https://news.google.com/rss/search"
 GDELT_ENDPOINT = "https://api.gdeltproject.org/api/v2/doc/doc"
 GDELT_TIMESPAN = "3m"          # fenetre glissante (max ~3 mois cote GDELT)
 GDELT_MAXRECORDS = 8
+GDELT_TIMEOUT_HTTP = 10           # court : GDELT est parfois lent/rate-limite
+GDELT_MAX_ECHECS = 3             # apres N echecs d'affilee, on coupe GDELT du run
+_GDELT_ETAT = {"echecs": 0, "coupe": False}
 ACTIVER_GDELT = os.environ.get("RADAR_GDELT", "1") != "0"  # coupe-circuit
 DECLENCHEURS = ("contrat OR export OR implantation OR usine OR filiale OR livraison "
                 "OR chantier OR essais OR démonstration OR formation OR déploiement")
@@ -82,6 +85,12 @@ JOURS_FRAICHEUR = 120                 # on ignore les articles plus vieux
 # Budget d'analyses LLM par run : garantit qu'un run finit toujours dans le
 # temps imparti (le backlog s'etale sur plusieurs runs grace a la memoire).
 MAX_ANALYSES_PAR_RUN = int(os.environ.get("RADAR_BITD_BUDGET", "200"))
+# Levier de temps PRINCIPAL : nb d'entreprises traitees par run. Chaque
+# entreprise = 2 collectes reseau (Google News + GDELT), c'est ca qui prend du
+# temps, pas les analyses. On borne donc au niveau entreprise, avec un curseur
+# de reprise (rotation sur toute la whitelist en quelques runs).
+MAX_ENTREPRISES_PAR_RUN = int(os.environ.get("RADAR_BITD_MAX_ENTREPRISES", "15"))
+NOM_ONGLET_ETAT = "radar_etat"
 # Memoire de TOUS les articles analyses (pas seulement des signaux retenus) :
 # evite de re-analyser les non-signaux a chaque run (cause du timeout).
 NOM_ONGLET_VUS = "prive_vus"
@@ -206,8 +215,10 @@ def url_ou_requete_gdelt(entreprise, requete_perso=""):
 
 
 def collecter_gdelt(entreprise, requete_perso="", session=None):
-    """Articles GDELT pour une entreprise. Tolerant : erreur -> liste vide."""
-    if not ACTIVER_GDELT:
+    """Articles GDELT pour une entreprise. Tolerant : erreur -> liste vide.
+    Coupe-circuit : apres GDELT_MAX_ECHECS echecs d'affilee, GDELT est desactive
+    pour le reste du run (evite de perdre du temps sur une source en panne)."""
+    if not ACTIVER_GDELT or _GDELT_ETAT["coupe"]:
         return []
     session = session or ted.session_robuste()
     params = {"query": url_ou_requete_gdelt(entreprise, requete_perso),
@@ -215,11 +226,20 @@ def collecter_gdelt(entreprise, requete_perso="", session=None):
               "maxrecords": str(GDELT_MAXRECORDS), "timespan": GDELT_TIMESPAN,
               "sort": "datedesc"}
     try:
-        rep = session.get(GDELT_ENDPOINT, params=params, timeout=30)
+        rep = session.get(GDELT_ENDPOINT, params=params, timeout=GDELT_TIMEOUT_HTTP)
         rep.raise_for_status()
-        return parser_gdelt(rep.json())
+        articles = parser_gdelt(rep.json())
+        _GDELT_ETAT["echecs"] = 0
+        return articles
     except Exception as e:
-        print("  (info) GDELT indisponible pour {} ({}).".format(entreprise, e))
+        _GDELT_ETAT["echecs"] += 1
+        if _GDELT_ETAT["echecs"] >= GDELT_MAX_ECHECS:
+            _GDELT_ETAT["coupe"] = True
+            print("  (info) GDELT coupe pour ce run apres {} echecs.".format(
+                _GDELT_ETAT["echecs"]), flush=True)
+        else:
+            print("  (info) GDELT indisponible pour {} ({}).".format(entreprise, e),
+                  flush=True)
         return []
 
 
@@ -247,10 +267,17 @@ def _date_gdelt(s):
 
 
 def collecter_sources(entreprise, requete_perso="", session=None):
-    """Fusionne Google News + GDELT, dedoublonne par URL. Point d'entree unique
-    de la collecte (une seule fonction a remplacer pour ajouter une source)."""
+    """Fusionne Google News + GDELT, dedoublonne par URL. Chronometre chaque
+    source et signale les lenteurs (diagnostic du temps de run)."""
+    t0 = time.time()
     articles = collecter_articles(entreprise, requete_perso, session)
+    t_gn = time.time() - t0
+    t1 = time.time()
     articles += collecter_gdelt(entreprise, requete_perso, session)
+    t_gd = time.time() - t1
+    if t_gn > 5 or t_gd > 5:
+        print("    (temps) {} : GoogleNews {:.1f}s, GDELT {:.1f}s".format(
+            entreprise, t_gn, t_gd), flush=True)
     vus, uniques = set(), []
     for a in articles:
         k = id_article(a.get("lien", ""))
@@ -604,44 +631,96 @@ def persister_vus(classeur, nouveaux):
         feuille.update([["article_hash", "date_vu"]] + recents)
 
 
+def lire_curseur(sheet_id, fichier_cs):
+    """Index de l'entreprise a traiter en premier ce run (rotation)."""
+    if not (sheet_id and fichier_cs):
+        return 0
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+        portee = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+        creds = Credentials.from_service_account_file(fichier_cs, scopes=portee)
+        classeur = gspread.authorize(creds).open_by_key(sheet_id)
+        for row in classeur.worksheet(NOM_ONGLET_ETAT).get_all_values():
+            if row and str(row[0]).strip() == "bitd_curseur":
+                return int(str(row[1]).strip())
+    except Exception:
+        return 0
+    return 0
+
+
+def ecrire_curseur(classeur, valeur):
+    """Enregistre le curseur (upsert dans l'onglet radar_etat)."""
+    import gspread
+    try:
+        feuille = classeur.worksheet(NOM_ONGLET_ETAT)
+    except gspread.WorksheetNotFound:
+        feuille = classeur.add_worksheet(title=NOM_ONGLET_ETAT, rows=50, cols=2)
+        feuille.update([["cle", "valeur"]])
+    valeurs = feuille.get_all_values()
+    for i, row in enumerate(valeurs, start=1):
+        if row and str(row[0]).strip() == "bitd_curseur":
+            feuille.update_cell(i, 2, str(valeur))
+            return
+    feuille.append_row(["bitd_curseur", str(valeur)], value_input_option="RAW")
+
+
 def main():
-    print("=" * 60)
-    print("MOTEUR DE SIGNAUX PRIVES (BITD) - Radar Amarante")
-    print("=" * 60)
+    print("=" * 60, flush=True)
+    print("MOTEUR DE SIGNAUX PRIVES (BITD) - Radar Amarante", flush=True)
+    print("=" * 60, flush=True)
     sheet_id = os.environ.get("TED_SHEET_ID")
     fichier = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
 
     whitelist = lire_whitelist(sheet_id, fichier)
     if not whitelist:
-        print("Whitelist vide ou absente. Rien a faire.")
+        print("Whitelist vide ou absente. Rien a faire.", flush=True)
         return
-    print("Whitelist : {} entreprises.".format(len(whitelist)))
+    print("Whitelist : {} entreprises.".format(len(whitelist)), flush=True)
 
     deja_vus = ted.numeros_publication_existants(
         sheet_id, fichier, NOM_ONGLET_PRIVE, COLONNES_PRIVE)
     deja_vus |= charger_vus(sheet_id, fichier)      # + tous les articles deja analyses
     cles = cles_evenements_existantes(sheet_id, fichier)
-    print("Memoire : {} articles vus, {} evenements connus. Budget analyses : {}.".format(
-        len(deja_vus), len(cles), MAX_ANALYSES_PAR_RUN))
+    curseur = lire_curseur(sheet_id, fichier)
+    if curseur >= len(whitelist):
+        curseur = 0
+    # Rotation : on traite MAX_ENTREPRISES_PAR_RUN entreprises a partir du curseur.
+    ordre = whitelist[curseur:] + whitelist[:curseur]
+    a_traiter = ordre[:MAX_ENTREPRISES_PAR_RUN]
+    print("Memoire : {} articles vus, {} evenements connus.".format(
+        len(deja_vus), len(cles)), flush=True)
+    print("Rotation : entreprises {}..{} sur {} (budget analyses {}).".format(
+        curseur + 1, curseur + len(a_traiter), len(whitelist), MAX_ANALYSES_PAR_RUN),
+        flush=True)
 
+    _GDELT_ETAT["echecs"] = 0
+    _GDELT_ETAT["coupe"] = False
     session = ted.session_robuste()
     budget = {"reste": MAX_ANALYSES_PAR_RUN}
     vus_ce_run = set()
     tous = []
-    for i, ligne in enumerate(whitelist, 1):
+    debut = time.time()
+    for i, ligne in enumerate(a_traiter, 1):
         if budget["reste"] <= 0:
-            print("  Budget d'analyses epuise : reprise des entreprises suivantes au prochain run.")
+            print("  Budget d'analyses epuise, arret anticipe.", flush=True)
             break
+        t0 = time.time()
         res = traiter_entreprise(ligne, deja_vus, cles, session=session,
                                  budget=budget, vus_ce_run=vus_ce_run)
         for r in res:
-            cles.add(r["cle"])  # evite les doublons entre entreprises du meme run
-        if res:
-            print("  [{:>2}/{}] {} : {} signal(aux).".format(
-                i, len(whitelist), ligne.get("entreprise", ""), len(res)))
+            cles.add(r["cle"])
+        print("  [{:>2}/{}] {} : {} signal(aux), {:.1f}s".format(
+            i, len(a_traiter), ligne.get("entreprise", "")[:28], len(res),
+            time.time() - t0), flush=True)
         tous.extend(res)
         time.sleep(PAUSE_ENTRE_REQUETES)
-    print("Analyses consommees ce run : {}.".format(MAX_ANALYSES_PAR_RUN - budget["reste"]))
+
+    nb_traitees = min(len(a_traiter), i) if a_traiter else 0
+    nouveau_curseur = (curseur + nb_traitees) % len(whitelist)
+    print("Temps moteur BITD : {:.0f}s. Analyses consommees : {}. Prochain curseur : {}.".format(
+        time.time() - debut, MAX_ANALYSES_PAR_RUN - budget["reste"], nouveau_curseur),
+        flush=True)
 
     print("\nSignaux retenus : {}".format(len(tous)))
     if not (sheet_id and fichier):
@@ -662,7 +741,9 @@ def main():
     # Toujours memoriser les articles analyses (evite de les re-analyser).
     persister_vus(classeur, sorted(vus_ce_run))
     print("{} articles memorises (total plafonne a {}).".format(
-        len(vus_ce_run), MAX_VUS_MEMOIRE))
+        len(vus_ce_run), MAX_VUS_MEMOIRE), flush=True)
+    # Avancer le curseur de rotation pour le prochain run.
+    ecrire_curseur(classeur, nouveau_curseur)
 
 
 if __name__ == "__main__":
