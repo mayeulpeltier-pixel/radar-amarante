@@ -180,6 +180,16 @@ def main():
     except Exception as e:
         logger.info("(info) Enrichissement indisponible (%s). Etape ignoree.", e)
 
+    # --- 2 quater. Import du collecteur ReliefWeb (offres terrain), optionnel -
+    # Signaux de deploiement : offres d'emploi humanitaires en zones a risque.
+    # S'il manque ou echoue, cette etape ne fait rien : elle n'empeche jamais
+    # le radar public de tourner (isolee comme les autres collecteurs).
+    reliefweb = None
+    try:
+        import ted_complet_reliefweb as reliefweb
+    except Exception as e:
+        logger.info("(info) Collecteur ReliefWeb indisponible (%s). Etape ignoree.", e)
+
     # --- 3. Garde commune : cle API ------------------------------------------
     if not os.environ.get("ANTHROPIC_API_KEY"):
         logger.error("ANTHROPIC_API_KEY n'est pas definie. Les deux "
@@ -199,6 +209,9 @@ def main():
     if boamp is not None:
         resultats["BOAMP"] = lancer_collecteur(
             "ETAPE -- COLLECTEUR BOAMP (marches publics FR)", boamp)
+    if reliefweb is not None:
+        resultats["ReliefWeb"] = lancer_collecteur(
+            "ETAPE -- COLLECTEUR RELIEFWEB (offres terrain)", reliefweb)
     if bitd is not None:
         resultats["Signaux BITD"] = lancer_collecteur(
             "ETAPE -- MOTEUR SIGNAUX PRIVES (BITD)", bitd)
