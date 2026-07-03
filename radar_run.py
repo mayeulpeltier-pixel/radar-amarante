@@ -157,14 +157,15 @@ def main():
         logger.error("ted_complet_bm.py est introuvable (meme dossier requis).")
         sys.exit(1)
 
-    # --- 2 bis. Import du moteur de signaux prives (BITD), optionnel ----------
-    # S'il manque, ou si la whitelist n'est pas encore importee dans le Sheet,
-    # cette etape ne fait rien : elle n'empeche jamais le radar public de tourner.
-    bitd = None
+    # --- 2 bis. Import du moteur SIGNAUX PRIVES (multi-secteurs), optionnel ---
+    # Remplace l'ancien BITD. Reutilise bitd_signaux comme bibliotheque (news,
+    # scoring, memoire), et y ajoute la watchlist multi-secteurs, l'auto-seed
+    # des attributions et Adzuna. S'il manque, l'etape ne fait rien.
+    signaux = None
     try:
-        import bitd_signaux as bitd
+        import signaux_prives as signaux
     except Exception as e:
-        logger.info("(info) Moteur BITD indisponible (%s). Etape ignoree.", e)
+        logger.info("(info) Moteur signaux prives indisponible (%s). Etape ignoree.", e)
 
     # --- 2 ter. Import de l'enrichissement firmographique, optionnel ---------
     enrich = None
@@ -215,9 +216,9 @@ def main():
     if attributions is not None:
         resultats["Attributions"] = lancer_collecteur(
             "ETAPE -- COLLECTEUR ATTRIBUTIONS TED (qui a gagne)", attributions)
-    if bitd is not None:
-        resultats["Signaux BITD"] = lancer_collecteur(
-            "ETAPE -- MOTEUR SIGNAUX PRIVES (BITD)", bitd)
+    if signaux is not None:
+        resultats["Signaux prives"] = lancer_collecteur(
+            "ETAPE -- MOTEUR SIGNAUX PRIVES (multi-secteurs)", signaux)
     if enrich is not None:
         resultats["Enrichissement"] = lancer_collecteur(
             "ETAPE -- ENRICHISSEMENT ENTREPRISES", enrich)
