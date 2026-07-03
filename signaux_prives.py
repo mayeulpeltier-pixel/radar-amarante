@@ -36,6 +36,7 @@ Interrupteurs :
 import datetime
 import email.utils
 import os
+import re
 import time
 
 import ted_complet_v14 as ted
@@ -46,6 +47,10 @@ import bitd_signaux as bitd
 # CONFIGURATION
 # ===========================================================================
 ACTIVER = os.environ.get("RADAR_SIGNAUX_PRIVES", "1") != "0"
+
+# Anti rate-limit Google News (503) : pause entre entreprises + re-tentative.
+PAUSE_ENTREPRISE = float(os.environ.get("RADAR_PRIVES_PAUSE", "0.7"))
+PAUSE_REPLI = 2.5   # attente avant la 2e (et derniere) tentative sur 503
 
 NOM_ONGLET_WATCHLIST = "watchlist_prives"     # nouvel onglet multi-secteurs
 NOM_ONGLET_ATTRIBUTIONS = "attributions_radar"  # source d'auto-alimentation
@@ -85,6 +90,22 @@ def _mentionne_pays_risque(texte):
         if nom in t:
             return True
     return False
+
+
+# Formes juridiques quasi toujours associees a une PME purement locale (pas un
+# prospect Amarante : pas de deploiement d'expatries). On NE bloque PAS les
+# formes courantes de moyennes/grandes entreprises (GmbH, SAS, SA, Ltd, SpA,
+# AG, BV, A/S, Inc) qui incluent de vrais prospects.
+_FORMES_LOCALES = re.compile(
+    r"\b(LLC|LLP|OOO|\u041e\u041e\u041e|TOV|\u0422\u041e\u0412|FOP|"
+    r"S\.?\s?A\.?\s?de\s?C\.?\s?V\.?|Sp\.?\s*z\s*o\.?\s*o|"
+    r"Additional Liability|Limited Liability Company|Private Enterprise)\b",
+    re.I)
+
+
+def _est_pme_locale(nom):
+    """True si le nom porte une forme juridique de PME purement locale."""
+    return bool(_FORMES_LOCALES.search(nom or ""))
 
 
 # ===========================================================================
@@ -150,6 +171,8 @@ def seed_depuis_attributions(valeurs, max_comptes=150):
             nom = nom.strip()
             cle = nom.lower()
             if len(nom) < 3 or cle in vus:
+                continue
+            if _est_pme_locale(nom):     # PME purement locale -> pas un prospect
                 continue
             vus.add(cle)
             comptes.append({
@@ -316,9 +339,35 @@ def analyser(entreprise, secteur, article, appel=None):
 # PARTIE 4 -- TRAITEMENT D'UNE ENTREPRISE (Google News + Adzuna)
 # ===========================================================================
 
+def collecter_news(entreprise, requete="", session=None):
+    """Google News RSS avec repli : sur 503 (rate-limit), une seule nouvelle
+    tentative apres pause, sinon on passe sans insister. Reutilise l'URL et le
+    parseur de BITD."""
+    session = session or ted.session_robuste()
+    url = bitd.url_google_news(entreprise, requete)
+    for tentative in range(2):
+        try:
+            rep = session.get(url, timeout=30)
+            if rep.status_code == 503:
+                if tentative == 0:
+                    time.sleep(PAUSE_REPLI)
+                    continue
+                print("  (info) Google News sature (503) pour {} : ignore ce run.".format(entreprise))
+                return []
+            rep.raise_for_status()
+            return bitd.parser_rss(rep.text)[:bitd.MAX_ARTICLES_PAR_ENTREPRISE]
+        except Exception as e:
+            if tentative == 0:
+                time.sleep(PAUSE_REPLI)
+                continue
+            print("  (info) Flux indisponible pour {} ({}).".format(entreprise, str(e)[:70]))
+            return []
+    return []
+
+
 def collecter_signaux(entreprise, requete, session=None, fetch_adzuna=None):
-    """Fusionne Google News (reutilise BITD) + Adzuna, dedup par URL."""
-    articles = bitd.collecter_articles(entreprise, requete, session=session)
+    """Fusionne Google News (resilient) + Adzuna, dedup par URL."""
+    articles = collecter_news(entreprise, requete, session=session)
     articles += collecter_adzuna(entreprise, fetch=fetch_adzuna, session=session)
     vus, uniques = set(), []
     for a in articles:
@@ -428,9 +477,11 @@ def main():
     curseur = bitd.lire_curseur(sheet_id, fichier)
 
     # Fenetre de rotation : on borne le nombre d'ENTREPRISES par run (le reseau
-    # est le facteur limitant). Priorite aux attributaires (deploiement en cours).
-    comptes.sort(key=lambda c: 0 if c.get("priorite_socle") == "haute" else 1)
-    taille_fenetre = int(os.environ.get("RADAR_PRIVES_ENTREPRISES", "40"))
+    # est le facteur limitant). Priorite : watchlist curee (majors deliberement
+    # choisis, forts deployeurs) d'abord, attributaires ensuite (couverts par la
+    # rotation sur les runs suivants).
+    comptes.sort(key=lambda c: 1 if str(c.get("secteur", "")).startswith("Attributaire") else 0)
+    taille_fenetre = int(os.environ.get("RADAR_PRIVES_ENTREPRISES", "20"))
     n = len(comptes)
     debut = curseur % n if n else 0
     fenetre = [comptes[(debut + i) % n] for i in range(min(taille_fenetre, n))]
@@ -453,6 +504,7 @@ def main():
         if budget["reste"] <= 0:
             print("  (budget d'analyses epuise, on s'arrete proprement)")
             break
+        time.sleep(PAUSE_ENTREPRISE)   # respiration anti rate-limit Google News
 
     print("Temps moteur : {:.0f}s. Signaux retenus : {}. Prochain curseur : {}.".format(
         time.time() - t0, len(resultats), prochain))
