@@ -63,6 +63,11 @@ ADZUNA_ENDPOINT = "https://api.adzuna.com/v1/api/jobs/{}/search/1"
 ADZUNA_PAYS = [p.strip() for p in os.environ.get("ADZUNA_PAYS", "fr,gb").split(",") if p.strip()]
 ADZUNA_RESULTATS = 20
 
+# Diagnostic : combien d'appels/offres/erreurs Adzuna sur le run (affiche a la
+# fin). Permet de trancher : 0 appel = cles non lues ; appels mais 0 offre =
+# actif mais rien trouve ; erreurs = probleme de cle/quota.
+_ADZUNA_STATS = {"appels": 0, "offres": 0, "erreurs": 0}
+
 # Noms de pays a risque (FR + quelques alias EN), pour reperer un signal de
 # deploiement dans une offre d'emploi ou un article. Construit depuis la carte
 # de risque du coeur (PAYS_ROUGE : nom_fr -> iso3).
@@ -262,12 +267,14 @@ def collecter_adzuna(entreprise, fetch=None, session=None):
             "what_phrase": entreprise, "results_per_page": ADZUNA_RESULTATS,
             "content-type": "application/json",
         }
+        _ADZUNA_STATS["appels"] += 1
         try:
             if fetch is not None:
                 data = fetch(pays, params)
             else:
                 rep = session.get(ADZUNA_ENDPOINT.format(pays), params=params, timeout=20)
                 if rep.status_code >= 400:
+                    _ADZUNA_STATS["erreurs"] += 1
                     detail = ""
                     try:
                         detail = rep.json().get("exception") or rep.text[:200]
@@ -277,6 +284,7 @@ def collecter_adzuna(entreprise, fetch=None, session=None):
                     continue
                 data = rep.json()
         except Exception as e:
+            _ADZUNA_STATS["erreurs"] += 1
             print("  (info) Adzuna {} indisponible ({}).".format(pays, e))
             continue
 
@@ -290,6 +298,7 @@ def collecter_adzuna(entreprise, fetch=None, session=None):
             # On ne garde que les offres evoquant un pays a risque (= deploiement).
             if not _mentionne_pays_risque(texte):
                 continue
+            _ADZUNA_STATS["offres"] += 1
             articles.append({
                 "titre": "[Offre d'emploi] {} - {}".format(titre, lieu),
                 "lien": job.get("redirect_url") or job.get("id", ""),
@@ -314,6 +323,8 @@ Contenu (peut être tronqué) : {resume}
 Sont des signaux : ouverture de site/filiale/chantier, contrat ou marché à l'étranger, recrutement d'un poste basé ou déployé dans un pays à risque, mission d'assistance technique, livraison/mise en service sur place, exploration minière/pétrolière, salon ou implantation à l'étranger.
 NE sont PAS des signaux : résultats financiers, nominations internes, produits sans déploiement, actualité 100% domestique, poste télétravail/siège sans terrain, rumeur vague.
 
+IMPORTANT sur la certitude : une simple INTENTION, ANNONCE, lettre d'intention ou PROJET (mots comme "intention", "envisage", "pourrait", "projette", "en discussion", "vraisemblablement") SANS présence physique confirmée ou datée => confiance FAIBLE (0.3 à 0.55) ET imminence "indetermine". Ne réserve "immediate" ou "court_terme" qu'aux déploiements confirmés ou déjà en cours sur le terrain.
+
 Sois STRICT : dans le doute, signal=false. La confiance reflète ta certitude d'un vrai déploiement de personnel dans un pays à risque.
 
 Réponds UNIQUEMENT en JSON valide, sans texte autour :
@@ -333,6 +344,45 @@ def analyser(entreprise, secteur, article, appel=None):
     except Exception as e:
         print("  (info) Analyse LLM echouee ({}).".format(e))
         return None
+
+
+# ===========================================================================
+# SCORING CORRIGE (commercial vraiment variable + garde-fou confiance)
+# ===========================================================================
+# Bug constate : le score commercial etait fige a 8/10 (poids priorite mal
+# calibres). On le rend variable et on ajoute un garde-fou : un signal peu sur
+# ne peut pas etre promu en "contacter". Reutilise les autres poids de BITD.
+POIDS_PRIORITE_V2 = {"haute": 0.8, "moyenne": 0.5, "basse": 0.3}
+CONF_MIN_CONTACTER = 0.6   # sous ce niveau, action plafonnee a "surveiller"
+
+
+def scorer_signal(extraction, priorite_compte, iso3=None):
+    iso3 = (iso3 or extraction.get("iso3") or "").strip().upper()
+    if not iso3 or iso3 not in ted.CODES_PAYS_SUIVIS:
+        return None
+    poids_zone = ted.MULTIPLICATEUR_ZONE.get(iso3, 0.3)
+    poids_act = bitd.POIDS_ACTIVITE.get(extraction.get("type_activite"), 0.25)
+    poids_prio = POIDS_PRIORITE_V2.get((priorite_compte or "").strip().lower(), 0.5)
+    poids_imm = bitd.POIDS_IMMINENCE.get(extraction.get("imminence"), 0.7)
+    surete = round(10 * poids_zone * poids_act, 1)
+    commercial = round(10 * poids_prio, 1)
+    final = round((0.6 * surete + 0.4 * commercial) * poids_imm, 1)
+    action = ("contacter" if final >= bitd.SEUIL_CONTACTER
+              else "surveiller" if final >= bitd.SEUIL_SURVEILLER else "ignorer")
+    # Garde-fou confiance : un signal peu sur ne monte jamais en "contacter".
+    try:
+        conf = float(extraction.get("confiance") or 0)
+    except (TypeError, ValueError):
+        conf = 0
+    if action == "contacter" and conf < CONF_MIN_CONTACTER:
+        action = "surveiller"
+    paire = bitd.ZONE_PAR_ISO3.get(iso3)
+    if isinstance(paire, (tuple, list)) and len(paire) >= 2:
+        nom_fr, zone = paire[0], paire[1]
+    else:
+        nom_fr, zone = (extraction.get("pays") or ""), "Non classe"
+    return {"final": final, "surete": surete, "commercial": commercial,
+            "zone": zone, "action": action, "nom": nom_fr}
 
 
 # ===========================================================================
@@ -415,7 +465,7 @@ def traiter_entreprise(compte, deja_vus, cles_existantes, appel=None,
             continue
         iso3 = bitd.normaliser_iso3(extraction)
         extraction["iso3"] = iso3
-        sc = bitd.scorer_signal(extraction, compte.get("priorite_socle"), iso3=iso3)
+        sc = scorer_signal(extraction, compte.get("priorite_socle"), iso3=iso3)
         if not sc or sc["action"] == "ignorer":
             continue
 
@@ -427,7 +477,7 @@ def traiter_entreprise(compte, deja_vus, cles_existantes, appel=None,
                     continue
                 iso3 = bitd.normaliser_iso3(verif)
                 verif["iso3"] = iso3
-                sc2 = bitd.scorer_signal(verif, compte.get("priorite_socle"), iso3=iso3)
+                sc2 = scorer_signal(verif, compte.get("priorite_socle"), iso3=iso3)
                 if not sc2 or sc2["action"] == "ignorer":
                     continue
                 extraction, sc = verif, sc2
@@ -508,6 +558,11 @@ def main():
 
     print("Temps moteur : {:.0f}s. Signaux retenus : {}. Prochain curseur : {}.".format(
         time.time() - t0, len(resultats), prochain))
+    if ADZUNA_APP_ID and ADZUNA_APP_KEY:
+        print("Adzuna : {appels} appel(s), {offres} offre(s) zone risque, "
+              "{erreurs} erreur(s).".format(**_ADZUNA_STATS))
+    else:
+        print("Adzuna : inactif (ADZUNA_APP_ID / ADZUNA_APP_KEY absents).")
 
     # Ecriture + persistance memoire/curseur (reutilise BITD).
     if sheet_id and fichier:
