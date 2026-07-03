@@ -67,6 +67,9 @@ LIEN_NOTICE_HTML = "https://ted.europa.eu/en/notice/{}/html"
 LIMITE = getattr(ted, "LIMITE_RESULTATS", 100)
 MAX_PAGES = 20                # plafond de pages (attributions zones a risque = volume modere)
 MAX_NOTICES_LUES = int(os.environ.get("ATTRIB_BUDGET", "120"))  # lectures de notices max / run
+# On ignore les attributions trop anciennes (titulaire peu pertinent
+# commercialement aujourd'hui). Reglable ; 0 = pas de limite d'age.
+ANNEES_MAX = int(os.environ.get("ATTRIB_ANNEES", "3"))
 
 # Divisions CPV = secteur lisible (code, pas de LLM). Reutilise la logique
 # infrastructure critique du coeur pour marquer les gagnats "deployeurs".
@@ -231,44 +234,66 @@ def collecte_attributions(fetch=None, session=None):
 # anglais sur la page /en/ (structure normalisee eForms), meme quand le
 # texte libre est dans la langue du pays.
 
-_RE_TOTAL = re.compile(
+_RE_TOTAL_EFORMS = re.compile(
     r"Value of all contracts awarded in this notice\s*:\s*"
+    r"([0-9][0-9\s.,\u00a0\u202f]*)\s*([A-Z]{3})", re.I)
+_RE_TOTAL_ANCIEN = re.compile(
+    r"Total value of the (?:contract/lot|procurement)[^0-9]{0,40}?"
     r"([0-9][0-9\s.,\u00a0\u202f]*)\s*([A-Z]{3})", re.I)
 _RE_TENDER_VAL = re.compile(
     r"Value of the tender\s*:\s*([0-9][0-9\s.,\u00a0\u202f]*)\s*([A-Z]{3})", re.I)
+
+# Libelles marquant la FIN d'un nom d'organisation (coupe propre).
+_STOP_NOM = re.compile(
+    r"\s+(?:Town|Postal|NUTS|Country|Telephone|Tel\b|Fax|E-?mail|Email|"
+    r"Internet|The contractor|Registration|Roles|Tender|Value|Winner|"
+    r"Size of|Contact|National|Section)\b", re.I)
 
 
 def _nettoyer_montant(num, devise):
     return "{} {}".format(re.sub(r"[\u00a0\u202f]", " ", num).strip(), devise)
 
 
-def parser_gagnants(texte):
-    """Extrait de la notice : liste de gagnants [{nom, valeur}], montant
-    total, et flag sous-traitance. Tolerant aux variations d'espaces/retours
-    a la ligne (HTML nettoye vs PDF)."""
-    t = re.sub(r"[ \t]+", " ", texte)
+def _nom_apres_official(bloc):
+    """Nom qui suit le 1er 'Official name:' d'un bloc, coupe au libelle
+    suivant. '' si absent ou vide."""
+    m = re.search(r"Official name\s*:\s*(.+)", bloc)
+    if not m:
+        return ""
+    seg = _STOP_NOM.split(m.group(1))[0].strip(" .;-,")
+    if seg.lower() in ("", "not applicable", "n/a"):
+        return ""
+    return seg
 
-    total = ""
-    m = _RE_TOTAL.search(t)
-    if m:
-        total = _nettoyer_montant(m.group(1), m.group(2))
+
+def parser_gagnants(texte):
+    """Extrait gagnants [{nom, valeur}], montant total, flag sous-traitance.
+    Gere les DEUX formats TED, valides sur notices reelles :
+      - eForms (fin 2022+) : 'Information about winners' -> 'Official name'.
+        (ex: 302871-2026 -> Badenelektra GmbH)
+      - ancien schema F03  : 'Name and address of the contractor'
+        -> 'Official name'. (ex: 704485-2022 -> PROATEC SRL)
+    Tout l'espace (y compris retours a la ligne) est normalise en espaces
+    simples pour etre robuste aux differences PDF/HTML."""
+    t = re.sub(r"\s+", " ", texte)
 
     gagnants = []
-    # Chaque bloc "Information about winners" -> 1er "Official name" = gagnant.
+    # --- Format eForms : 1 bloc par lot gagne ---
     for bloc in re.split(r"Information about winners", t)[1:]:
-        mn = re.search(r"Official name\s*:\s*(.+)", bloc)
-        if not mn:
+        bloc = re.split(r"\b8\.\s|Notice information|Organisations\b", bloc)[0]
+        nom = _nom_apres_official(bloc)
+        if not nom:
             continue
-        nom = mn.group(1).splitlines()[0].strip(" .;-")
-        # Coupe si un autre libelle a ete colle sur la meme ligne.
-        nom = re.split(r"\s{2,}|(?:Tender|Winner|Value|Country|Registration)\s*:", nom)[0].strip()
-        if not nom or nom.lower() in ("not applicable", "n/a"):
-            continue
-        valeur = ""
         mv = _RE_TENDER_VAL.search(bloc)
-        if mv:
-            valeur = _nettoyer_montant(mv.group(1), mv.group(2))
-        gagnants.append({"nom": nom, "valeur": valeur})
+        gagnants.append({"nom": nom,
+                         "valeur": _nettoyer_montant(mv.group(1), mv.group(2)) if mv else ""})
+
+    # --- Format ancien (F03) : 1 ou plusieurs contractants ---
+    if not gagnants:
+        for m in re.finditer(r"[Nn]ame and address of the contractor(.{0,300})", t):
+            nom = _nom_apres_official(m.group(1))
+            if nom:
+                gagnants.append({"nom": nom, "valeur": ""})
 
     # Dedup en preservant l'ordre.
     vus, uniques = set(), []
@@ -277,6 +302,11 @@ def parser_gagnants(texte):
         if cle not in vus:
             vus.add(cle)
             uniques.append(g)
+
+    total = ""
+    m = _RE_TOTAL_EFORMS.search(t) or _RE_TOTAL_ANCIEN.search(t)
+    if m:
+        total = _nettoyer_montant(m.group(1), m.group(2))
 
     sous_traitance = bool(re.search(r"Subcontracting\s*:\s*yes", t, re.I))
     return {"gagnants": uniques, "total": total, "sous_traitance": sous_traitance}
@@ -439,6 +469,18 @@ def main():
         [ted.MULTIPLICATEUR_ZONE.get(c, 0.2) for c in _codes_iso3(n.get("place-of-performance"))] or [0.2]),
         reverse=True)
     print("Attributions brutes : {} | uniques : {}".format(len(bruts), len(uniques)))
+
+    # Garde-fou d'anciennete : on ecarte les attributions trop vieilles.
+    if ANNEES_MAX > 0:
+        annee_min = date.today().year - ANNEES_MAX
+        def _assez_recent(n):
+            a = _val(n.get("publication-date"))[:4]
+            return (not a.isdigit()) or int(a) >= annee_min
+        avant = len(uniques)
+        uniques = [n for n in uniques if _assez_recent(n)]
+        if avant != len(uniques):
+            print("Anciennete : {} attribution(s) anterieure(s) a {} ecartee(s).".format(
+                avant - len(uniques), annee_min))
 
     # Memoire inter-runs : ne pas relire une notice deja traitee.
     sheet_id = os.environ.get("TED_SHEET_ID")
