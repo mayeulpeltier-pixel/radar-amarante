@@ -23,7 +23,7 @@ jobs:
           python-version: "3.12"
 
       - name: Installer les dependances
-        run: pip install requests gspread google-auth python-dateutil
+        run: pip install requests gspread google-auth python-dateutil pypdf
 
       # 1) Barriere de securite : les tests d'abord. Si un test casse, on s'arrete.
       - name: Lancer les tests
