@@ -1455,28 +1455,27 @@ def main():
         len(avis_bruts), len(pertinents), len(recents)
     ))
 
-    # Mode B (EXPERIMENTAL) : acteurs internationaux dont le pays
-    # d'execution TED est absent/non pertinent, detectes par mention
-    # explicite d'un pays a tres haut risque dans le titre. Flux separe,
-    # combine apres coup -- jamais teste sur un run reel a ce stade,
-    # donc compte affiche distinctement pour pouvoir juger son apport
-    # (ou son bruit) independamment du Mode A deja valide.
-    print("\nEtape 1b/2 -- Collecte TED Mode B (infra critique, pays detecte par titre, EXPERIMENTAL)...")
-    avis_bruts_b = interroger_ted(construire_requete_mode_b())
+    # Mode B (EXPERIMENTAL, DESACTIVE PAR DEFAUT) : acteurs internationaux dont
+    # le pays d'execution TED est absent, detectes par mention d'un pays a tres
+    # haut risque dans le titre. Rendement nul constate sur les runs reels
+    # (1250 avis telecharges pour 0 retenu), donc coupe par defaut pour ne pas
+    # gaspiller du temps. Reactivable via RADAR_TED_MODE_B=1 pour re-tester.
     avis_mode_b_normalises = []
-    for a in avis_bruts_b:
-        if extraire_texte(a.get("publication-date")) < seuil:
-            continue
-        code_pays_titre = pays_rouge_detecte_dans_titre(a)
-        if not code_pays_titre:
-            continue
-        pays_struct = extraire_codes(a.get("place-of-performance")) or extraire_codes(a.get("buyer-country"))
-        if code_pays_titre in pays_struct:
-            continue  # deja capte normalement par le Mode A, pas un cas Mode B reel
-        avis_mode_b_normalises.append(normaliser(a, pays_detecte_titre=code_pays_titre))
-    print("Mode B -- Bruts : {} | retenus (pays a risque cite dans le titre, hors Mode A) : {}".format(
-        len(avis_bruts_b), len(avis_mode_b_normalises)
-    ))
+    if os.environ.get("RADAR_TED_MODE_B", "0") == "1":
+        print("\nEtape 1b/2 -- Collecte TED Mode B (infra critique, EXPERIMENTAL)...")
+        avis_bruts_b = interroger_ted(construire_requete_mode_b())
+        for a in avis_bruts_b:
+            if extraire_texte(a.get("publication-date")) < seuil:
+                continue
+            code_pays_titre = pays_rouge_detecte_dans_titre(a)
+            if not code_pays_titre:
+                continue
+            pays_struct = extraire_codes(a.get("place-of-performance")) or extraire_codes(a.get("buyer-country"))
+            if code_pays_titre in pays_struct:
+                continue  # deja capte par le Mode A, pas un cas Mode B reel
+            avis_mode_b_normalises.append(normaliser(a, pays_detecte_titre=code_pays_titre))
+        print("Mode B -- Bruts : {} | retenus : {}".format(
+            len(avis_bruts_b), len(avis_mode_b_normalises)))
 
     avis_normalises = avis_normalises + avis_mode_b_normalises
     avis_normalises, nb_doublons = dedupliquer_quasi_doublons(avis_normalises)
