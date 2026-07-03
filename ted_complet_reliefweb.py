@@ -100,29 +100,23 @@ MOTS_SIGNAL_TERRAIN_RW = [
 # PARTIE 2 -- COLLECTE (API ReliefWeb v2, POST JSON)
 # ===========================================================================
 
-# Champs demandes a l'API. On reste explicite (profile "full" renvoie trop) :
-# tout ce qui nourrit le prompt, le score, l'affichage et le contact.
+# Champs demandes a l'API. On demande des champs de HAUT NIVEAU (objets
+# complets), pas des sous-champs pointes : l'API jobs refuse (400) certains
+# sous-champs (ex: source.type, country.location, url_alias). Les extracteurs
+# defensifs du module lisent ensuite name/iso3 dans ces objets.
 _CHAMPS_RW = [
-    "title", "body", "date.created", "date.closing",
-    "source.name", "source.shortname", "source.type",
-    "country.name", "country.iso3", "country.location",
-    "city", "type", "career_categories", "experience", "theme",
-    "url", "url_alias", "how_to_apply",
+    "title", "body", "date", "source", "country",
+    "city", "type", "career_categories", "how_to_apply", "url",
 ]
 
 
 def _payload_rw(offset, seuil_iso):
-    """Corps POST : offres creees depuis `seuil_iso`, dans les pays a
-    risque suivis, les plus recentes d'abord. Filtre pays cote serveur
-    (reduit fortement le volume) ET fenetre de fraicheur cote serveur."""
+    """Corps POST : offres creees depuis `seuil_iso`, les plus recentes
+    d'abord. On filtre par DATE cote serveur uniquement (robuste) ; le tri
+    par pays a risque se fait cote client (pertinent_reliefweb), car la
+    validite du filtre pays sur l'endpoint jobs n'est pas garantie."""
     return {
-        "filter": {
-            "operator": "AND",
-            "conditions": [
-                {"field": "country.iso3", "value": sorted(CODES_RISQUE)},
-                {"field": "date.created", "value": {"from": seuil_iso}},
-            ],
-        },
+        "filter": {"field": "date.created", "value": {"from": seuil_iso}},
         "fields": {"include": _CHAMPS_RW},
         "sort": ["date.created:desc"],
         "limit": ROWS_RW,
@@ -143,7 +137,14 @@ def collecte_reliefweb(fetch=None, session=None):
         if fetch is not None:
             return fetch(url, payload)
         rep = session.post(url, json=payload, timeout=30)
-        rep.raise_for_status()
+        if rep.status_code >= 400:
+            # L'API ReliefWeb renvoie un message JSON explicite : on le montre.
+            detail = ""
+            try:
+                detail = rep.json().get("error", {}).get("message") or rep.text[:300]
+            except Exception:
+                detail = rep.text[:300]
+            raise RuntimeError("HTTP {} -- {}".format(rep.status_code, detail))
         return rep.json()
 
     bruts, total_api = [], None
