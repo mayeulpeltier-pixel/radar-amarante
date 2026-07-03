@@ -59,14 +59,21 @@ ADZUNA_APP_ID = os.environ.get("ADZUNA_APP_ID", "")
 ADZUNA_APP_KEY = os.environ.get("ADZUNA_APP_KEY", "")
 ADZUNA_ENDPOINT = "https://api.adzuna.com/v1/api/jobs/{}/search/1"
 # Adzuna couvre surtout des pays developpes : on interroge les portails ou se
-# trouvent les SIEGES qui recrutent pour l'etranger (France d'abord).
-ADZUNA_PAYS = [p.strip() for p in os.environ.get("ADZUNA_PAYS", "fr,gb").split(",") if p.strip()]
+# trouvent les SIEGES qui recrutent pour l'etranger. Elargi aux pays des
+# recruteurs internationaux (Canada, Australie, Afrique du Sud, Allemagne,
+# Pologne) en plus de France/UK. Reglable via ADZUNA_PAYS.
+ADZUNA_PAYS = [p.strip() for p in os.environ.get(
+    "ADZUNA_PAYS", "fr,gb,ca,au,za,de,pl").split(",") if p.strip()]
 ADZUNA_RESULTATS = 20
+ADZUNA_PAUSE = float(os.environ.get("ADZUNA_PAUSE", "0.3"))      # entre appels
+# Plafond d'appels par run : protege le quota gratuit meme avec 7 pays.
+ADZUNA_MAX_APPELS = int(os.environ.get("ADZUNA_MAX_APPELS", "120"))
 
 # Diagnostic : combien d'appels/offres/erreurs Adzuna sur le run (affiche a la
 # fin). Permet de trancher : 0 appel = cles non lues ; appels mais 0 offre =
-# actif mais rien trouve ; erreurs = probleme de cle/quota.
-_ADZUNA_STATS = {"appels": 0, "offres": 0, "erreurs": 0}
+# actif mais rien trouve ; erreurs = probleme de cle/quota. 'coupe' = coupe-
+# circuit apres un 429 (trop de requetes) pour proteger le quota.
+_ADZUNA_STATS = {"appels": 0, "offres": 0, "erreurs": 0, "coupe": False}
 
 # Noms de pays a risque (FR + quelques alias EN), pour reperer un signal de
 # deploiement dans une offre d'emploi ou un article. Construit depuis la carte
@@ -262,6 +269,8 @@ def collecter_adzuna(entreprise, fetch=None, session=None):
     session = session or ted.session_robuste()
     articles = []
     for pays in ADZUNA_PAYS:
+        if _ADZUNA_STATS["coupe"] or _ADZUNA_STATS["appels"] >= ADZUNA_MAX_APPELS:
+            break
         params = {
             "app_id": ADZUNA_APP_ID, "app_key": ADZUNA_APP_KEY,
             "what_phrase": entreprise, "results_per_page": ADZUNA_RESULTATS,
@@ -273,6 +282,10 @@ def collecter_adzuna(entreprise, fetch=None, session=None):
                 data = fetch(pays, params)
             else:
                 rep = session.get(ADZUNA_ENDPOINT.format(pays), params=params, timeout=20)
+                if rep.status_code == 429:   # trop de requetes -> coupe-circuit
+                    _ADZUNA_STATS["coupe"] = True
+                    print("  (info) Adzuna : quota/minute atteint (429), coupe pour ce run.")
+                    break
                 if rep.status_code >= 400:
                     _ADZUNA_STATS["erreurs"] += 1
                     detail = ""
@@ -281,8 +294,10 @@ def collecter_adzuna(entreprise, fetch=None, session=None):
                     except Exception:
                         detail = rep.text[:200]
                     print("  (info) Adzuna {} : HTTP {} -- {}".format(pays, rep.status_code, detail))
+                    time.sleep(ADZUNA_PAUSE)
                     continue
                 data = rep.json()
+                time.sleep(ADZUNA_PAUSE)
         except Exception as e:
             _ADZUNA_STATS["erreurs"] += 1
             print("  (info) Adzuna {} indisponible ({}).".format(pays, e))
@@ -389,11 +404,22 @@ def scorer_signal(extraction, priorite_compte, iso3=None):
 # PARTIE 4 -- TRAITEMENT D'UNE ENTREPRISE (Google News + Adzuna)
 # ===========================================================================
 
+# Declencheurs de DEPLOIEMENT (FR + EN) : cible l'actu de terrain plutot que
+# l'actu boursiere. Les entreprises internationales ont surtout une presse en
+# anglais, d'ou les termes bilingues.
+TRIGGERS_NEWS = (
+    'contrat OR chantier OR implantation OR filiale OR "nouveau site" OR '
+    'deploiement OR expatrie OR mine OR forage OR '
+    'contract OR "new site" OR expansion OR awarded OR drilling OR exploration OR '
+    '"field operations" OR mobilization OR "site opening" OR deployment')
+
+
 def collecter_news(entreprise, requete="", session=None):
     """Google News RSS avec repli : sur 503 (rate-limit), une seule nouvelle
-    tentative apres pause, sinon on passe sans insister. Reutilise l'URL et le
-    parseur de BITD."""
+    tentative apres pause, sinon on passe sans insister. Requete enrichie de
+    declencheurs de deploiement (FR + EN) si aucune requete personnalisee."""
     session = session or ted.session_robuste()
+    requete = requete or '"{}" ({})'.format(entreprise, TRIGGERS_NEWS)
     url = bitd.url_google_news(entreprise, requete)
     for tentative in range(2):
         try:
