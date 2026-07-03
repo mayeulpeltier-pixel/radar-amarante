@@ -1,5 +1,4 @@
 name: Radar Amarante
-
 # Quand le radar tourne :
 #  - schedule : automatiquement, lundi ET jeudi a 06h00 UTC (08h00 Paris l'ete).
 #  - workflow_dispatch : a la demande, depuis l'onglet Actions ou l'app mobile.
@@ -7,32 +6,25 @@ on:
   schedule:
     - cron: "0 6 * * 1,4"
   workflow_dispatch:
-
 jobs:
   radar:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
     steps:
       - name: Recuperer le code
         uses: actions/checkout@v4
-
       - name: Installer Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
       - name: Installer les dependances
         run: pip install requests gspread google-auth python-dateutil pypdf
-
       # 1) Barriere de securite : les tests d'abord. Si un test casse, on s'arrete.
       - name: Lancer les tests
         run: python -m unittest test_radar -v
-
       # 2) Reconstituer la cle de service Google a partir du secret.
       - name: Reconstituer la cle de service Google
         run: echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > service_account.json
-
       # 3) Lancer le radar (TED puis BM, ecriture dans le Sheet).
       - name: Lancer le radar
         env:
@@ -40,8 +32,8 @@ jobs:
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
           RADAR_LOG_FILE: radar.log
+          RELIEFWEB_APPNAME: radar-amarante.pages.dev
         run: python radar_run.py
-
       # 4) Generer le tableau de bord depuis le Sheet (public/index.html).
       #    if: always() => le dashboard se rafraichit meme si le radar a eu un
       #    souci, en lisant le dernier etat du Sheet. L'echec radar reste visible
@@ -53,7 +45,6 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
           DASHBOARD_OUTPUT: public/index.html
         run: python radar_dashboard.py
-
       # 5) Publier la page sur Cloudflare Pages (hebergement statique gratuit).
       - name: Publier sur Cloudflare Pages
         if: always()
@@ -62,7 +53,6 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: pages deploy public --project-name=radar-amarante
-
       # 6) Archiver le journal du run (90 jours), meme en cas d'echec.
       - name: Archiver le journal
         if: always()
