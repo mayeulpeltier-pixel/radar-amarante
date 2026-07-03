@@ -249,10 +249,24 @@ _RE_TENDER_VAL = re.compile(
     r"Value of the tender\s*:\s*([0-9][0-9\s.,\u00a0\u202f]*)\s*([A-Z]{3})", re.I)
 
 # Libelles marquant la FIN d'un nom d'organisation (coupe propre).
-_STOP_NOM = re.compile(
-    r"\s+(?:Town|Postal|NUTS|Country|Telephone|Tel\b|Fax|E-?mail|Email|"
-    r"Internet|The contractor|Registration|Roles|Tender|Value|Winner|"
-    r"Size of|Contact|National|Section)\b", re.I)
+# Libelles de champ (eForms/F03) qui suivent un nom d'organisation. On coupe
+# le nom au PROCHAIN "Libelle :". Exiger les deux-points distingue un vrai
+# libelle d'un mot present dans un nom (ex: "GROUP", "Value" sans deux-points
+# ne coupent pas "NIRAS GROUP (UK) LTD").
+_LABELS = (
+    r"Subcontractor|Official name|Registration number|Registration|"
+    r"Postal address|Post ?code|Town|City|Country subdivision|Country|"
+    r"NUTS(?: code)?|Telephone|Phone|Fax|E-?mail|Internet address|Internet|"
+    r"Website|Tender identifier|Tender|Value of the tender|Value|Contract|"
+    r"Roles of|Winner of|Winner selection|The tenderer|The contractor|"
+    r"This organisation|Size of|Contact|Identifier of|Group Lead|Section|VAT|"
+    r"Type of|Lot"
+)
+_RE_STOP = re.compile(r"\s+(?:" + _LABELS + r")\s*:", re.I)
+_RE_STREET = re.compile(
+    r"\s+(?:Avenue|Rue|Boulevard|Bd|Street|Stra(?:ss|\u00df)e|Via|Calle|"
+    r"Piazza|Platz|Route|Road|Rond-point|Am)\b", re.I)
+_MOTS_VIDES = {"the", "a", "an", "le", "la", "les", "el", "der", "die", "das", "l"}
 
 
 def _nettoyer_montant(num, devise):
@@ -260,15 +274,20 @@ def _nettoyer_montant(num, devise):
 
 
 def _nom_apres_official(bloc):
-    """Nom qui suit le 1er 'Official name:' d'un bloc, coupe au libelle
-    suivant. '' si absent ou vide."""
+    """Nom qui suit le 1er 'Official name:' d'un bloc, nettoye :
+    coupe au prochain libelle, coupe une adresse, ecarte les debris."""
     m = re.search(r"Official name\s*:\s*(.+)", bloc)
     if not m:
         return ""
-    seg = _STOP_NOM.split(m.group(1))[0].strip(" .;-,")
-    if seg.lower() in ("", "not applicable", "n/a"):
+    seg = m.group(1)
+    seg = _RE_STOP.split(seg)[0]              # coupe au prochain "Libelle :"
+    seg = _RE_STREET.split(seg)[0]            # coupe une adresse sans libelle
+    seg = re.split(r",\s*\d", seg)[0]         # coupe "..., 4, 1040 ..."
+    seg = re.sub(r"\s*\([A-Z]{1,3}$", "", seg)  # fragment pays pendouillant "(B"
+    nom = seg.strip(" .,;:-\u2013")
+    if len(nom) < 3 or nom.lower() in _MOTS_VIDES or nom.lower() in ("not applicable", "n/a"):
         return ""
-    return seg
+    return nom
 
 
 def parser_gagnants(texte):
