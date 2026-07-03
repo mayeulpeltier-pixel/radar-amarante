@@ -64,6 +64,11 @@ CODES_CPV = list(ted.CODES_CPV)
 CODES_PAYS = list(ted.CODES_PAYS_SUIVIS)
 
 LIEN_NOTICE_HTML = "https://ted.europa.eu/en/notice/{}/html"
+# La page /html est rendue par JavaScript (coquille vide en telechargement
+# brut). On LIT donc la notice au format PDF, rendu cote serveur (texte
+# propre et complet). Le lien /html reste affiche a l'humain (lisible dans
+# le navigateur).
+LIEN_NOTICE_PDF = "https://ted.europa.eu/en/notice/{}/pdf"
 LIMITE = getattr(ted, "LIMITE_RESULTATS", 100)
 MAX_PAGES = 20                # plafond de pages (attributions zones a risque = volume modere)
 MAX_NOTICES_LUES = int(os.environ.get("ATTRIB_BUDGET", "120"))  # lectures de notices max / run
@@ -312,17 +317,33 @@ def parser_gagnants(texte):
     return {"gagnants": uniques, "total": total, "sous_traitance": sous_traitance}
 
 
+def _pdf_en_texte(octets):
+    """Extrait le texte d'un PDF (octets) via pypdf. Renvoie '' si pypdf est
+    absent ou si le PDF est illisible (jamais bloquant)."""
+    try:
+        import io
+        from pypdf import PdfReader
+    except Exception:
+        print("  (info) pypdf absent : ajoute 'pypdf' aux dependances pour "
+              "extraire les gagnants. Etape gagnant ignoree ce run.")
+        return ""
+    try:
+        lecteur = PdfReader(io.BytesIO(octets))
+        return "\n".join((p.extract_text() or "") for p in lecteur.pages)
+    except Exception:
+        return ""
+
+
 def lire_notice(pub, fetch=None, session=None):
-    """Renvoie le texte lisible d'une notice (HTML nettoye). `fetch`
-    injectable pour tests : callable(pub)->texte brut HTML."""
+    """Renvoie le texte lisible d'une notice. On telecharge le PDF (rendu
+    cote serveur, contrairement a /html qui est du JavaScript) et on en
+    extrait le texte. `fetch` injectable pour tests : callable(pub)->texte."""
     if fetch is not None:
-        brut = fetch(pub)
-    else:
-        session = session or ted.session_robuste()
-        rep = session.get(LIEN_NOTICE_HTML.format(pub), timeout=45)
-        rep.raise_for_status()
-        brut = rep.text
-    return ted._nettoyer_html(brut)
+        return fetch(pub)          # les tests injectent directement du texte
+    session = session or ted.session_robuste()
+    rep = session.get(LIEN_NOTICE_PDF.format(pub), timeout=60)
+    rep.raise_for_status()
+    return _pdf_en_texte(rep.content)
 
 
 # ===========================================================================
