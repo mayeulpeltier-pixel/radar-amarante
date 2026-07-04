@@ -52,6 +52,17 @@ ACTIVER = os.environ.get("RADAR_SIGNAUX_PRIVES", "1") != "0"
 PAUSE_ENTREPRISE = float(os.environ.get("RADAR_PRIVES_PAUSE", "0.7"))
 PAUSE_REPLI = 2.5   # attente avant la 2e (et derniere) tentative sur 503
 
+# Mode diagnostic (RADAR_PRIVES_DEBUG=1) : affiche la decision LLM pour chaque
+# offre Adzuna analysee (gardee/rejetee + raison). N'ecrit rien de plus.
+DEBUG = os.environ.get("RADAR_PRIVES_DEBUG", "0") == "1"
+
+
+def _dbg(article, msg):
+    """Trace de diagnostic, ciblee sur les offres d'emploi Adzuna."""
+    if DEBUG and str(article.get("titre", "")).startswith("[Offre d'emploi]"):
+        print("      [diag adzuna] {:60} | {}".format(
+            article.get("titre", "")[:60], msg))
+
 NOM_ONGLET_WATCHLIST = "watchlist_prives"     # nouvel onglet multi-secteurs
 NOM_ONGLET_ATTRIBUTIONS = "attributions_radar"  # source d'auto-alimentation
 
@@ -469,11 +480,14 @@ def traiter_entreprise(compte, deja_vus, cles_existantes, appel=None,
     for article in collecter_signaux(entreprise, requete, session=session,
                                      fetch_adzuna=fetch_adzuna):
         if not bitd.article_frais(article):
+            _dbg(article, "rejetee: annonce trop ancienne")
             continue
         pub = bitd.id_article(article.get("lien", ""))
         if pub in deja_vus:
+            _dbg(article, "deja vue (run precedent)")
             continue
         if bitd.bruit_evident(article):
+            _dbg(article, "rejetee: bruit evident (financier/RH/produit)")
             deja_vus.add(pub)
             if vus_ce_run is not None:
                 vus_ce_run.add(pub)
@@ -488,11 +502,14 @@ def traiter_entreprise(compte, deja_vus, cles_existantes, appel=None,
 
         extraction = analyser(entreprise, secteur, article, appel=appel)
         if not extraction or not extraction.get("signal"):
+            _dbg(article, "rejetee LLM: pas un signal de deploiement")
             continue
         iso3 = bitd.normaliser_iso3(extraction)
         extraction["iso3"] = iso3
         sc = scorer_signal(extraction, compte.get("priorite_socle"), iso3=iso3)
         if not sc or sc["action"] == "ignorer":
+            _dbg(article, "rejetee: pays hors univers risque" if not sc
+                 else "rejetee: score trop bas (final {})".format(sc["final"]))
             continue
 
         # Escalade Sonnet sur signaux a fort enjeu (reutilise BITD).
@@ -500,19 +517,24 @@ def traiter_entreprise(compte, deja_vus, cles_existantes, appel=None,
             verif = bitd.verifier_signal_sonnet(entreprise, article, appel=appel_verif)
             if verif is not None:
                 if not verif.get("signal"):
+                    _dbg(article, "rejetee (Sonnet): non confirme")
                     continue
                 iso3 = bitd.normaliser_iso3(verif)
                 verif["iso3"] = iso3
                 sc2 = scorer_signal(verif, compte.get("priorite_socle"), iso3=iso3)
                 if not sc2 or sc2["action"] == "ignorer":
+                    _dbg(article, "rejetee (Sonnet): score trop bas")
                     continue
                 extraction, sc = verif, sc2
 
         cle = bitd.clef_evenement(entreprise, sc["nom"], extraction.get("type_activite"))
         if cle in cles_existantes:
+            _dbg(article, "rejetee: evenement deja connu (anti-doublon)")
             continue
         modele = ted.MODELE_RAFFINEMENT if sc["final"] >= bitd.SEUIL_CONTACTER else ted.MODELE
         ligne = bitd.ligne_prive(compte, article, extraction, sc, modele)
+        _dbg(article, "GARDEE: final {} | action {} | {}".format(
+            sc["final"], sc["action"], sc["nom"]))
         # on garde le meilleur signal par evenement
         if cle not in retenus or sc["final"] > retenus[cle]["final"]:
             retenus[cle] = {"final": sc["final"], "ligne": ligne, "sc": sc,
@@ -535,6 +557,8 @@ def main():
     print("=" * 60)
     print("MOTEUR SIGNAUX PRIVES (multi-secteurs) - Radar Amarante")
     print("=" * 60)
+    if DEBUG:
+        print("(mode diagnostic actif : decision LLM affichee pour chaque offre Adzuna)")
     if not (ADZUNA_APP_ID and ADZUNA_APP_KEY):
         print("(info) Adzuna inactif (ADZUNA_APP_ID / ADZUNA_APP_KEY absents) : "
               "Google News + attributions seulement.")
