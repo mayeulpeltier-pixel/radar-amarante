@@ -21,7 +21,9 @@ LANCEMENT :  python radar_dashboard.py
 
 import json
 import os
+import re
 import sys
+import unicodedata
 from datetime import date
 
 NOM_ONGLET_TED = "ted_radar"
@@ -272,6 +274,9 @@ def ligne_vers_lead(row, source):
         "conf": _txt(row.get("confiance")),
         "modele": _txt(row.get("modele")),
         "pub": _txt(row.get("publication_number")),
+        # Nom de l'entreprise cible (pour la lentille Entreprises). Cote PRIVÉ,
+        # c'est l'entreprise surveillee ; ailleurs le gagnant est inconnu.
+        "entreprise": (_txt(row.get("acheteur")) or "n.c.") if source == "PRIVÉ" else "",
     }
 
 
@@ -304,7 +309,39 @@ def attribution_vers_lead(row):
         "date_det": date_det, "statut": _txt(row.get("statut_prospection")) or "nouveau",
         "deadline": "", "conf": "", "modele": "",
         "pub": _txt(row.get("publication_number")),
+        "entreprise": gagnant or "Titulaire",
     }
+
+
+def _norm_ent(s):
+    """Normalisation PRUDENTE d'un nom d'entreprise (miroir Python du JS) :
+    minuscules, sans accents, ponctuation et formes juridiques retirees.
+    Sert a matcher l'enrichissement malgre les variantes (« SA », casse...)."""
+    s = unicodedata.normalize("NFD", str(s or "").lower())
+    s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+    s = re.sub(r"[.,'()]", " ", s)
+    s = re.sub(r"\b(sa|sas|sarl|sasu|eurl|spa|srl|gmbh|ltd|llc|inc|plc|bv|nv|ag|"
+               r"co|company|corp|group|groupe|holding|international|intl)\b", " ", s)
+    s = re.sub(r"[^a-z0-9 ]", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _attacher_enrichissement(lead, enrichissement, cle_entreprise):
+    """Rattache dirigeant / email pro / SIREN / CA a un lead, depuis la table
+    d'enrichissement. Essaie la clef exacte (minuscules), puis une clef
+    normalisee (formes juridiques retirees). No-op si rien ne matche."""
+    info = enrichissement.get((cle_entreprise or "").lower()) \
+        or enrichissement.get(_norm_ent(cle_entreprise))
+    if not info:
+        return
+    dirigeant = _txt(info.get("dirigeant_principal"))
+    if dirigeant and lead["nom"] in ("", "n.c."):
+        lead["nom"] = dirigeant
+    email = _txt(info.get("email_pro"))
+    if email:
+        lead["email"] = email           # contact Hunter -> pre-remplit le mailto
+    lead["siren"] = _txt(info.get("siren"))
+    lead["ca"] = _txt(info.get("chiffre_affaires"))
 
 
 def construire_leads(lignes_ted, lignes_bm, lignes_boamp=None, lignes_prive=None,
@@ -316,23 +353,26 @@ def construire_leads(lignes_ted, lignes_bm, lignes_boamp=None, lignes_prive=None
     leads += [ligne_vers_lead(r, "BOAMP") for r in (lignes_boamp or [])]
     leads_prive = [ligne_vers_lead(r, "PRIVÉ") for r in (lignes_prive or [])]
 
-    enrichissement = enrichissement or {}
+    # Index d'enrichissement : clefs brutes (minuscules) + alias normalises,
+    # pour matcher malgre les variantes de nom (« SA », casse, accents...).
+    enrichissement = dict(enrichissement or {})
+    for k in list(enrichissement.keys()):
+        nk = _norm_ent(k)
+        if nk and nk not in enrichissement:
+            enrichissement[nk] = enrichissement[k]
+
     for l in leads_prive:
-        info = enrichissement.get(l["agence"].lower())
-        if info:
-            dirigeant = _txt(info.get("dirigeant_principal"))
-            if dirigeant and l["nom"] in ("", "n.c."):
-                l["nom"] = dirigeant
-            email = _txt(info.get("email_pro"))
-            if email:
-                l["email"] = email          # contact Hunter -> pre-remplit le mailto
-            l["siren"] = _txt(info.get("siren"))
-            l["ca"] = _txt(info.get("chiffre_affaires"))
+        _attacher_enrichissement(l, enrichissement, l["entreprise"])
     leads += leads_prive
 
     # Attributions (titulaires de marches gagnes) : registre de prospects.
-    leads += [attribution_vers_lead(r) for r in (lignes_attrib or [])
-              if _txt(r.get("gagnant")) and "non publie" not in _txt(r.get("gagnant")).lower()]
+    # Enrichis AUSSI (dirigeant / email / SIREN) quand l'entreprise est connue,
+    # pour que la fiche entreprise ait un contact si le titulaire est francais.
+    attribs = [attribution_vers_lead(r) for r in (lignes_attrib or [])
+               if _txt(r.get("gagnant")) and "non publie" not in _txt(r.get("gagnant")).lower()]
+    for l in attribs:
+        _attacher_enrichissement(l, enrichissement, l["entreprise"])
+    leads += attribs
 
     leads = [l for l in leads if l["titre"]]  # avis exploitables seulement
 
@@ -780,6 +820,29 @@ GABARIT_HTML = r"""<!DOCTYPE html>
     border-bottom:1px solid rgba(255,255,255,.05);font-size:12px}
   .modal .tlrow .tld{color:var(--bone-dim)}
   .modal .tlrow .tls{color:var(--fort);text-align:right;font-weight:600}
+  .lensseg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-top:20px}
+  .lensseg button{background:var(--ink-2);border:none;color:var(--bone-dim);font-family:var(--mono);font-size:0.72rem;letter-spacing:0.06em;padding:11px 18px;cursor:pointer;transition:.15s}
+  .lensseg button span{opacity:.55;font-size:0.64rem}
+  .lensseg button+button{border-left:1px solid var(--line)}
+  .lensseg button[aria-pressed="true"]{background:var(--oxblood);color:var(--bone)}
+  .fiche{background:var(--ink-2);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-bottom:12px}
+  .fiche .fhead{display:flex;align-items:flex-start;gap:12px}
+  .fiche .fav{width:38px;height:38px;border-radius:50%;background:var(--oxblood);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;color:var(--bone);flex-shrink:0}
+  .fiche .fnom{font-weight:600;font-size:15px;color:var(--bone)}
+  .fiche .fmeta{color:var(--bone-dim);font-size:12px;margin-top:2px;font-family:var(--mono);letter-spacing:.03em}
+  .fiche .fprio{font-family:var(--mono);font-size:0.56rem;letter-spacing:.1em;text-transform:uppercase;padding:3px 8px;border-radius:4px;white-space:nowrap}
+  .fiche .fprio.contacter{background:var(--fort-soft);color:var(--fort);border:1px solid rgba(192,39,58,.4)}
+  .fiche .fprio.surveiller{background:var(--watch-soft);color:#dcb079;border:1px solid rgba(200,137,59,.4)}
+  .fiche .fprio.ignorer{border:1px solid var(--line);color:var(--bone-dim)}
+  .fiche .fsig{border-top:1px solid var(--line);margin-top:12px;padding-top:10px;display:flex;flex-direction:column;gap:7px}
+  .fiche .fsr{display:flex;align-items:center;gap:10px;font-size:12.5px}
+  .fiche .fsr .fsi{color:var(--bone);flex:1;min-width:0}
+  .fiche .fsr .fsd{color:var(--bone-faint);font-family:var(--mono);font-size:11px;white-space:nowrap}
+  .fiche .fenr{border-top:1px solid var(--line);margin-top:10px;padding-top:10px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:5px 16px;font-size:12.5px}
+  .fiche .fenr .er{display:flex;justify-content:space-between;gap:8px;color:var(--bone)}
+  .fiche .fenr .er .ek{color:var(--bone-dim)}
+  .fiche .fmiss{border-top:1px solid var(--line);margin-top:10px;padding-top:10px;color:var(--watch);font-size:12px}
+  .fiche .facts{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
 </style>
 </head>
 <body>
@@ -791,6 +854,10 @@ GABARIT_HTML = r"""<!DOCTYPE html>
         <div><h1>Radar Amarante</h1><div class="sub">Tableau de situation, BU Escorte</div></div>
       </div>
       <div class="runmeta" id="runmeta"></div>
+    </div>
+    <div class="lensseg" id="lensseg" role="group" aria-label="Vue">
+      <button data-lens="avis" aria-pressed="true">Opportunités <span>· avis</span></button>
+      <button data-lens="entreprises" aria-pressed="false">Entreprises <span>· prospects</span></button>
     </div>
     <div class="stats" id="stats"></div>
     <div class="exec" id="exec"></div>
@@ -817,7 +884,6 @@ GABARIT_HTML = r"""<!DOCTYPE html>
       <button data-src="BM" aria-pressed="false">Banque Mondiale</button>
       <button data-src="TED" aria-pressed="false">TED</button>
       <button data-src="BOAMP" aria-pressed="false">BOAMP</button>
-      <button data-src="PRIVÉ" aria-pressed="false">Privé (BITD)</button>
     </div>
     <div class="seg" id="triseg" role="group" aria-label="Tri">
       <button data-tri="score" aria-pressed="true">Importance</button>
@@ -905,22 +971,14 @@ function mailtoHref(l){
   const to=(l.email&&l.email!=='n.c.')?encodeURIComponent(l.email):'';
   return `mailto:${to}?subject=${encodeURIComponent(e.subject)}&body=${encodeURIComponent(e.body)}`;
 }
-let state={zone:null,src:'all',q:'',action:'contacter',mois:null,tri:'score'};
+let state={zone:null,src:'all',q:'',action:'contacter',mois:null,tri:'score',lens:'avis'};
 
-// Filtre commun. `ignore` permet de compter en ignorant un critere donne
-// (ex: compter les zones sans s'auto-filtrer sur la zone selectionnee).
+// Filtre de la VUE AVIS (appels d'offres). Les entreprises (PRIVÉ, ATTRIB)
+// vivent dans la lentille Entreprises et sont exclues ici.
 function match(l, ignore){
   ignore = ignore || {};
-  const isAttrib = l.src==='ATTRIB';
-  // Les titulaires (ATTRIB) sont un registre a part : visibles UNIQUEMENT via
-  // la tuile "Titulaires" (state.action==='titulaires'). Jamais comptes dans
-  // les KPI d'avis, la carte ni le graphe de zones.
-  if(state.action==='titulaires'){
-    if(!isAttrib) return false;
-  }else{
-    if(isAttrib) return false;
-    if(!ignore.action && state.action!=='all' && l.action!==state.action) return false;
-  }
+  if(l.src==='PRIVÉ' || l.src==='ATTRIB') return false;
+  if(!ignore.action && state.action!=='all' && l.action!==state.action) return false;
   if(!ignore.mois && state.mois && l.mois!==state.mois) return false;
   if(!ignore.zone && state.zone && l.zone!==state.zone) return false;
   if(!ignore.src && state.src!=='all' && l.src!==state.src) return false;
@@ -928,12 +986,91 @@ function match(l, ignore){
   return true;
 }
 
+// --- Lentille Entreprises : regroupe PRIVÉ + ATTRIB par entreprise ---
+// Normalisation PRUDENTE (decision validee) : minuscules, ponctuation, formes
+// juridiques. On prefere deux fiches a fusionner a la main qu'une fusion abusive.
+function normEntreprise(s){
+  return sansAccent(s)
+    .replace(/[.,'()]/g,' ')
+    .replace(/\b(sa|sas|sarl|sasu|eurl|spa|srl|gmbh|ltd|llc|inc|plc|bv|nv|ag|co|company|corp|group|groupe|holding|international|intl)\b/g,' ')
+    .replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
+}
+const RANG_ACTION={contacter:3,surveiller:2,ignorer:1};
+// Choix du libelle de fiche : on prefere une forme en casse mixte (plus
+// lisible qu'un nom tout en majuscules), puis la plus complete.
+function meilleurNom(a,b){
+  if(!a)return b; if(!b)return a;
+  const au=a===a.toUpperCase(), bu=b===b.toUpperCase();
+  if(au!==bu) return au?b:a;
+  return b.length>a.length?b:a;
+}
+function agregerEntreprises(){
+  const parCle={};
+  LEADS.filter(l=>l.src==='PRIVÉ'||l.src==='ATTRIB').forEach(l=>{
+    const nom=(l.entreprise&&l.entreprise!=='n.c.')?l.entreprise:(l.agence||'?');
+    const cle=normEntreprise(nom)||sansAccent(nom);
+    if(!parCle[cle]) parCle[cle]={cle,nom,signaux:[],zones:new Set(),secteurs:new Set()};
+    const f=parCle[cle];
+    f.signaux.push(l);
+    f.nom=meilleurNom(f.nom,nom);
+    if(l.zone&&l.zone!=='Non classé') f.zones.add(l.zone);
+    if(l.grp&&l.grp!=='signal'&&l.grp!=='AT') f.secteurs.add(l.grp.replace(/_/g,' '));
+  });
+  return Object.values(parCle).map(f=>{
+    let prio='ignorer';
+    f.signaux.forEach(s=>{ if((RANG_ACTION[s.action]||0)>(RANG_ACTION[prio]||0)) prio=s.action; });
+    if(!(prio in RANG_ACTION)) prio='surveiller';
+    let enr={nom:'',email:'',siren:'',ca:''};
+    f.signaux.forEach(s=>{
+      if(!enr.nom && s.nom && s.nom!=='n.c.') enr.nom=s.nom;
+      if(!enr.email && s.email && s.email!=='n.c.') enr.email=s.email;
+      if(!enr.siren && s.siren) enr.siren=s.siren;
+      if(!enr.ca && s.ca) enr.ca=s.ca;
+    });
+    const repr=f.signaux.find(s=>s.email&&s.email!=='n.c.')||f.signaux[0];
+    const meilleur=f.signaux.reduce((a,b)=>b.final>a.final?b:a);
+    const dernier=f.signaux.reduce((a,b)=>((b.date_det||'')>(a.date_det||'')?b:a)).date_det||'';
+    return Object.assign(f,{zones:[...f.zones],secteurs:[...f.secteurs],
+      prio,enr,repr,meilleur,dernier,n:f.signaux.length});
+  }).sort((a,b)=>(RANG_ACTION[b.prio]-RANG_ACTION[a.prio])||(b.meilleur.final-a.meilleur.final)||((b.dernier||'').localeCompare(a.dernier||'')));
+}
+// Un signal passe les filtres transverses (zone / mois / recherche) ?
+function signalOK(s, ignore){
+  ignore = ignore || {};
+  if(!ignore.zone && state.zone && s.zone!==state.zone) return false;
+  if(!ignore.mois && state.mois && s.mois!==state.mois) return false;
+  if(!ignore.q && state.q){const hay=(s.pays+' '+(s.entreprise||s.agence)+' '+s.titre+' '+s.zone+' '+s.grp).toLowerCase(); if(!hay.includes(state.q)) return false;}
+  return true;
+}
+// Une fiche est visible si sa priorite matche l'action ET qu'au moins un signal
+// passe les filtres transverses.
+function ficheOK(f, ignore){
+  ignore = ignore || {};
+  if(!ignore.action && state.action!=='all' && f.prio!==state.action) return false;
+  return f.signaux.some(s=>signalOK(s, ignore));
+}
+// Liste des unites courantes (avis en vue avis, signaux d'entreprises en vue
+// entreprises) pour alimenter la carte, le graphe de zones et les periodes.
+function signauxCourants(ignore){
+  ignore = ignore || {};
+  if(state.lens==='entreprises'){
+    const out=[];
+    agregerEntreprises().forEach(f=>{
+      if(!ignore.action && state.action!=='all' && f.prio!==state.action) return;
+      f.signaux.forEach(s=>{ if(signalOK(s, ignore)) out.push(s); });
+    });
+    return out;
+  }
+  return LEADS.filter(l=>match(l, ignore));
+}
+
 // Onglets periode (mois). Construits depuis META.mois (du plus recent au plus ancien).
 function buildPeriod(){
   const box=document.getElementById('period');
   const chips=[{cle:null,label:'Toute la période'}].concat(META.mois);
+  const base=signauxCourants({mois:true});
   box.innerHTML=chips.map(m=>{
-    const c=LEADS.filter(l=>(m.cle===null||l.mois===m.cle)&&match(l,{mois:true})).length;
+    const c=base.filter(l=>(m.cle===null||l.mois===m.cle)).length;
     const pressed=(state.mois===m.cle)?'true':'false';
     return `<button class="chip" data-mois="${m.cle===null?'':m.cle}" aria-pressed="${pressed}">${m.label} · ${c}</button>`;
   }).join('');
@@ -950,22 +1087,39 @@ const SRC_PRESENTES=[...new Set(LEADS.map(l=>l.src))].map(s=>SRC_NOMS_META[s]||s
 document.getElementById('runmeta').innerHTML =
   'Run du <b>'+META.date+'</b><br>'+META.total+' avis analysés<br>Sources : '+(SRC_PRESENTES.join(', ')||'aucune');
 
-// Stat tiles (cliquables = filtre par action)
-const statsDef=[
-  {k:'contacter',cls:'act',n:META.contacter,l:'À contacter'},
-  {k:'surveiller',cls:'wat',n:META.surveiller,l:'À surveiller'},
-  {k:'ignorer',cls:'low',n:META.ignorer,l:'Faibles'},
-  {k:'all',cls:'',n:META.total,l:'Tous les avis'},
-  {k:'titulaires',cls:'att',n:META.titulaires||0,l:'Titulaires'}
-];
-const statsBox=document.getElementById('stats');
-statsBox.innerHTML=statsDef.map(s=>
-  `<button class="tile ${s.cls}" data-action="${s.k}" aria-pressed="${s.k===state.action}"><div class="n">${s.n}</div><div class="l">${s.l}</div></button>`).join('');
-statsBox.querySelectorAll('.tile').forEach(t=>t.addEventListener('click',()=>{
-  state.action=t.dataset.action;
-  statsBox.querySelectorAll('.tile').forEach(x=>x.setAttribute('aria-pressed',x===t?'true':'false'));
-  render();
-}));
+// Stat tiles (cliquables = filtre par action / priorite). Reconstruites au
+// changement de lentille : en vue avis on compte les appels d'offres par
+// action ; en vue entreprises on compte les fiches par priorite.
+function buildStats(){
+  const box=document.getElementById('stats');
+  let defs;
+  if(state.lens==='entreprises'){
+    const fiches=agregerEntreprises();
+    const c=a=>fiches.filter(f=>f.prio===a).length;
+    defs=[
+      {k:'contacter',cls:'act',n:c('contacter'),l:'À contacter'},
+      {k:'surveiller',cls:'wat',n:c('surveiller'),l:'À surveiller'},
+      {k:'ignorer',cls:'low',n:c('ignorer'),l:'Faibles'},
+      {k:'all',cls:'',n:fiches.length,l:'Toutes les entreprises'}
+    ];
+  }else{
+    const av=LEADS.filter(l=>l.src==='TED'||l.src==='BM'||l.src==='BOAMP');
+    const c=a=>av.filter(l=>l.action===a).length;
+    defs=[
+      {k:'contacter',cls:'act',n:c('contacter'),l:'À contacter'},
+      {k:'surveiller',cls:'wat',n:c('surveiller'),l:'À surveiller'},
+      {k:'ignorer',cls:'low',n:c('ignorer'),l:'Faibles'},
+      {k:'all',cls:'',n:av.length,l:'Tous les avis'}
+    ];
+  }
+  box.innerHTML=defs.map(s=>
+    `<button class="tile ${s.cls}" data-action="${s.k}" aria-pressed="${s.k===state.action}"><div class="n">${s.n}</div><div class="l">${s.l}</div></button>`).join('');
+  box.querySelectorAll('.tile').forEach(t=>t.addEventListener('click',()=>{
+    state.action=t.dataset.action;
+    box.querySelectorAll('.tile').forEach(x=>x.setAttribute('aria-pressed',x===t?'true':'false'));
+    render();
+  }));
+}
 
 // Coordonnees (lat,lng) par pays affiche, pour la carte mondiale.
 const COORDS={
@@ -1000,7 +1154,7 @@ function buildExec(){
 // Graphique repartition par zone (respecte les filtres sauf la zone)
 function buildZoneChart(){
   const counts={};
-  LEADS.forEach(l=>{ if(match(l,{zone:true})){counts[l.zone]=(counts[l.zone]||0)+1;} });
+  signauxCourants({zone:true}).forEach(l=>{ counts[l.zone]=(counts[l.zone]||0)+1; });
   const zones=ORDRE_ZONES.filter(z=>counts[z]);
   const maxZ=Math.max(1,...zones.map(z=>counts[z]));
   const box=document.getElementById('zonechart');
@@ -1059,6 +1213,18 @@ document.querySelectorAll('#triseg button').forEach(b=>b.addEventListener('click
   document.querySelectorAll('#triseg button').forEach(x=>x.setAttribute('aria-pressed',x===b?'true':'false'));
   render();
 }));
+// Interrupteur de lentille : bascule toute la vue avis <-> entreprises.
+document.querySelectorAll('#lensseg button').forEach(b=>b.addEventListener('click',()=>{
+  if(state.lens===b.dataset.lens)return;
+  state.lens=b.dataset.lens;
+  document.querySelectorAll('#lensseg button').forEach(x=>x.setAttribute('aria-pressed',x===b?'true':'false'));
+  state.action='contacter';          // reset du filtre d'action au changement de vue
+  const ent=state.lens==='entreprises';
+  document.getElementById('srcseg').style.display=ent?'none':'';   // source = notion avis
+  const comptes=document.getElementById('comptes'); if(comptes) comptes.style.display=ent?'none':'';
+  document.querySelector('.geo .phead').textContent=ent?'Carte des entreprises':'Carte des opportunités';
+  buildStats(); buildPeriod(); render();
+}));
 document.getElementById('search').addEventListener('input',e=>{state.q=e.target.value.toLowerCase().trim();render();});
 
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -1086,6 +1252,7 @@ function badgeDeadline(l){
 
 function render(){
   buildZoneChart();
+  if(state.lens==='entreprises'){ renderEntreprises(); return; }
   const box=document.getElementById('leads');
   let filtered=LEADS.filter(l=>match(l));
   if(state.tri==='date'){
@@ -1103,9 +1270,8 @@ function render(){
   }
   updateMap(filtered);
   const moisLabel = state.mois ? (META.mois.find(m=>m.cle===state.mois)||{}).label : null;
-  const noun = state.action==='titulaires' ? 'titulaire' : 'avis';
   document.getElementById('count').textContent=
-    `${filtered.length} ${noun} affiché${filtered.length>1?'s':''}`+
+    `${filtered.length} avis affiché${filtered.length>1?'s':''}`+
     (moisLabel?`, ${moisLabel}`:'')+
     (state.zone?`, zone ${state.zone}`:'')+(state.src!=='all'?`, source ${state.src}`:'');
   if(!filtered.length){box.innerHTML='<div class="empty">Aucun avis ne correspond à ce filtre.</div>';return;}
@@ -1136,6 +1302,88 @@ function render(){
       ${l.justif?`<details class="just"><summary><span class="chev">▸</span> Justification sûreté</summary><p>${esc(l.justif)}</p></details>`:''}
       </div><div class="foot"><span class="grp">Groupe ${esc(l.grp)}</span><span class="footacts">${SUIVI_ON?`<button class="act contact${done?' done':''}" type="button" data-contact="${i}"${done?' disabled':''}>${done?'✓ Contacté':'☎ Je contacte'}</button>`:''}<button class="act" type="button" data-fiche="${i}">Fiche ↗</button><a class="act mail" href="${mailtoHref(l)}">✉ Rédiger email</a>${l.lien?`<a class="act" href="${esc(l.lien)}" target="_blank" rel="noopener">Voir l'avis ↗</a>`:''}</span></div></article>`;
   }).join('');
+}
+
+// --- Rendu de la lentille Entreprises ---
+let FICHES=[];
+function ficheSignalRow(s){
+  const attrib=s.src==='ATTRIB';
+  const desc=attrib?`Titulaire d'un marché · ${esc(s.pays)}`:esc(s.titre||'Signal');
+  const typ=attrib?'attribution':((s.grp&&s.grp!=='signal')?s.grp.replace(/_/g,' '):'signal');
+  const sc=attrib?'indicatif':('signal '+s.final.toFixed(1));
+  const date=s.date_det||s.mois_label||'—';
+  return `<div class="fsr"><span class="fsi">${desc}</span><span class="fsd">${esc(date)} · ${esc(typ)} ${esc(sc)}</span></div>`;
+}
+function ficheCard(f,i){
+  const initiales=((f.nom||'?').split(/\s+/).slice(0,2).map(w=>w[0]||'').join('')||'?').toUpperCase();
+  const prioLabel={contacter:'à contacter',surveiller:'à surveiller',ignorer:'faible'}[f.prio]||f.prio;
+  const meta=[(f.secteurs[0]||'secteur n.c.'),f.n+' signal'+(f.n>1?'s':''),(f.zones.join(', ')||'zone n.c.')].join(' · ');
+  const sig=f.signaux.slice().sort((a,b)=>(b.date_det||'').localeCompare(a.date_det||'')).slice(0,4).map(ficheSignalRow).join('');
+  const hasEnr=f.enr.nom||f.enr.email||f.enr.siren||f.enr.ca;
+  const enr=hasEnr?`<div class="fenr">
+     ${f.enr.nom?`<div class="er"><span class="ek">Dirigeant</span><span>${esc(f.enr.nom)}</span></div>`:''}
+     ${f.enr.email?`<div class="er"><span class="ek">Email</span><span>${esc(f.enr.email)}</span></div>`:''}
+     ${f.enr.siren?`<div class="er"><span class="ek">SIREN</span><span>${esc(f.enr.siren)}</span></div>`:''}
+     ${f.enr.ca?`<div class="er"><span class="ek">CA</span><span>${esc(f.enr.ca)} €</span></div>`:''}
+   </div>`:`<div class="fmiss">⚠ Contact non enrichi (entreprise probablement hors France). À rechercher manuellement.</div>`;
+  return `<article class="fiche" data-fidx="${i}">
+    <div class="fhead"><div class="fav">${esc(initiales)}</div>
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="fnom">${esc(f.nom)}</span><span class="fprio ${f.prio}">${prioLabel}</span></div>
+        <div class="fmeta">${esc(meta)}</div>
+      </div></div>
+    <div class="fsig">${sig}</div>
+    ${enr}
+    <div class="facts">
+      <a class="act mail" href="${mailtoHref(f.repr)}">✉ Rédiger l'email</a>
+      <button class="act" type="button" data-fiche-ent="${i}">Voir les ${f.n} signal${f.n>1?'s':''} ↗</button>
+    </div>
+  </article>`;
+}
+function renderEntreprises(){
+  const box=document.getElementById('leads');
+  let fiches=agregerEntreprises().filter(f=>ficheOK(f));
+  if(state.tri==='date') fiches.sort((a,b)=>(b.dernier||'').localeCompare(a.dernier||''));
+  FICHES=fiches;
+  const moisLabel=state.mois?(META.mois.find(m=>m.cle===state.mois)||{}).label:null;
+  document.getElementById('count').textContent=
+    `${fiches.length} entreprise${fiches.length>1?'s':''}`+
+    (moisLabel?`, ${moisLabel}`:'')+(state.zone?`, zone ${state.zone}`:'');
+  if(!fiches.length){box.innerHTML='<div class="empty">Aucune entreprise ne correspond à ce filtre.</div>';updateMap([]);return;}
+  box.innerHTML=fiches.map((f,i)=>ficheCard(f,i)).join('');
+  const sigVis=[]; fiches.forEach(f=>f.signaux.forEach(s=>{ if(signalOK(s)) sigVis.push(s); }));
+  updateMap(sigVis);
+}
+function openFicheEnt(i){
+  const f=FICHES[i]; if(!f)return;
+  const sigs=f.signaux.slice().sort((a,b)=>(b.date_det||'').localeCompare(a.date_det||''));
+  const tl=sigs.map(s=>{
+    const typ=s.src==='ATTRIB'?'attribution':'signal';
+    return `<div class="tlrow"><span class="tld">${esc(s.date_det||'—')}</span><span>${esc(s.pays)}</span><span>${esc(typ)}</span><span class="tls">${s.final.toFixed(1)}</span></div>`;
+  }).join('');
+  const prioLabel={contacter:'à contacter',surveiller:'à surveiller',ignorer:'faible'}[f.prio]||f.prio;
+  const manque=!f.enr.nom&&!f.enr.email;
+  document.getElementById('modalcard').innerHTML=`
+   <div class="mhead"><button class="mclose" type="button" onclick="closeFiche()" aria-label="Fermer">×</button>
+     <div class="msrc">Fiche entreprise · ${esc(prioLabel)}</div>
+     <h2>${esc(f.nom)}</h2>
+     <div class="mscore"><span class="big">${f.n}</span><span class="sub">signal(aux) · ${f.zones.length} zone(s)</span></div>
+   </div>
+   <div class="mbody">
+     ${f.secteurs.length?`<div class="frow"><span class="fk">Secteur(s)</span><span class="fv">${f.secteurs.map(esc).join(', ')}</span></div>`:''}
+     ${f.zones.length?`<div class="frow"><span class="fk">Zone(s)</span><span class="fv">${f.zones.map(esc).join(', ')}</span></div>`:''}
+     ${f.enr.nom?`<div class="frow"><span class="fk">Dirigeant</span><span class="fv">${esc(f.enr.nom)}</span></div>`:''}
+     ${f.enr.email?`<div class="frow"><span class="fk">Email</span><span class="fv"><a href="mailto:${esc(f.enr.email)}">${esc(f.enr.email)}</a></span></div>`:''}
+     ${f.enr.siren?`<div class="frow"><span class="fk">SIREN</span><span class="fv">${esc(f.enr.siren)}</span></div>`:''}
+     ${manque?`<div class="frow"><span class="fk">Contact</span><span class="fv" style="color:var(--watch)">non enrichi (hors France), à rechercher</span></div>`:''}
+     <div class="tlhead">Signaux regroupés</div>
+     <div class="timeline">${tl}</div>
+   </div>
+   <div class="mactions">
+     <a class="mbtn primary" href="${mailtoHref(f.repr)}">✉ Rédiger l'email</a>
+     <button class="mbtn ghost" type="button" onclick="closeFiche()">Fermer</button>
+   </div>`;
+  document.getElementById('modal').classList.add('open');
 }
 document.getElementById('foot').innerHTML=
   'Généré automatiquement après le run du radar. Les contacts proviennent des avis Banque Mondiale.<br>Le destinataire commercial réel est le titulaire du marché, pas l\'agence acheteuse.';
@@ -1182,7 +1430,9 @@ document.getElementById('leads').addEventListener('click',e=>{
   const bc=e.target.closest('[data-contact]');
   if(bc){e.preventDefault();marquerContacte(+bc.getAttribute('data-contact'),bc);return;}
   const b=e.target.closest('[data-fiche]');
-  if(b){e.preventDefault();openFiche(AFFICHES[+b.getAttribute('data-fiche')]);}
+  if(b){e.preventDefault();openFiche(AFFICHES[+b.getAttribute('data-fiche')]);return;}
+  const be=e.target.closest('[data-fiche-ent]');
+  if(be){e.preventDefault();openFicheEnt(+be.getAttribute('data-fiche-ent'));}
 });
 document.getElementById('modal').addEventListener('click',e=>{if(e.target.id==='modal')closeFiche();});
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeFiche();});
@@ -1260,6 +1510,7 @@ document.getElementById('modalcard').addEventListener('click',e=>{
 
 buildExec();
 initMap();
+buildStats();
 buildPeriod();
 buildComptes();
 render();
