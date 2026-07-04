@@ -359,84 +359,6 @@ def construire_requete():
     }
 
 
-# MODE B (EXPERIMENTAL, V8 -- suite a une revue critique). Hypothese :
-# un acteur international (siege en Europe) peut deployer du personnel
-# dans un pays a tres haut risque (Mali, Afghanistan...) alors que le
-# champ place-of-performance de l'avis TED est absent, incomplet, ou ne
-# reflete que le siege de l'acheteur -- le filtre principal (Mode A,
-# construire_requete) l'exclurait a tort puisqu'il exige ce champ. Le
-# Mode B retire la contrainte de pays et la remplace par une exigence
-# de mention EXPLICITE d'un nom de pays a tres haut risque dans le
-# TITRE, restreint aux divisions infrastructure critique (un acteur
-# d'aide humanitaire pure, hors infra, est deja couvert par le Mode A
-# normal sur la plupart des cas reels observes).
-#
-# Limite assumee, jamais teste sur un run reel a ce stade : la liste de
-# noms n'est volontairement restreinte qu'aux pays de PAYS_ROUGE (les
-# plus critiques), pas aux 120 pays suivis -- une liste bilingue complete
-# serait un travail bien plus lourd, a faire si ce mode prouve sa valeur.
-# CORRECTION (revue critique) : ne contenait que des noms anglais, alors
-# que les titres TED des acteurs francophones (AFD, Expertise France)
-# melangent souvent anglais et francais dans le meme champ -- observe
-# directement sur un avis deja vu dans ce pipeline ("...Programme (WaDIS
-# Fourniture de service d'un.e expert.e institutionnel.le pour une...").
-# Un dictionnaire anglais seul aurait rate exactement les avis
-# francophones les plus accessibles pour une societe francaise.
-NOMS_PAYS_ROUGE_MODE_B = {
-    "LBY": ["libya", "libye"],
-    "MLI": ["mali"],
-    "NER": ["niger"],
-    "BFA": ["burkina faso"],
-    "COD": ["democratic republic of the congo", "dr congo", "drc",
-            "république démocratique du congo", "republique democratique du congo", "rdc"],
-    "SSD": ["south sudan", "soudan du sud"],
-    "YEM": ["yemen", "yémen"],
-    "SOM": ["somalia", "somalie"],
-    "IRQ": ["iraq", "irak"],
-    "UKR": ["ukraine"],
-    "MEX": ["mexico", "mexique"],
-    "PSE": ["palestine", "west bank", "gaza", "territoires palestiniens", "cisjordanie"],
-    "AFG": ["afghanistan"],
-    "HTI": ["haiti", "haïti"],
-}
-
-
-def construire_requete_mode_b():
-    codes_infra = [c for c in CODES_CPV if c[:2] in DIVISIONS_INFRASTRUCTURE_CRITIQUE]
-    query = "classification-cpv IN ({})".format(" ".join(codes_infra))
-    return {
-        "query": query,
-        "fields": [
-            "publication-number", "notice-title", "buyer-name",
-            "buyer-country", "place-of-performance", "classification-cpv",
-            "publication-date", "deadline", "notice-type",
-        ],
-        "page": 1,
-        "limit": LIMITE_RESULTATS,
-        "scope": "ACTIVE",
-        "checkQuerySyntax": False,
-        "paginationMode": "PAGE_NUMBER",
-    }
-
-
-def pays_rouge_detecte_dans_titre(avis):
-    """Mode B uniquement : renvoie le code pays si un nom de PAYS_ROUGE
-    apparait explicitement dans le titre, sinon None.
-
-    V13 : correctif faux positifs. L'ancien 'nom in titre' matchait des
-    fragments : 'niger' etait trouve dans 'nigeria', 'mali' dans 'somalia'.
-    On exige desormais un mot entier (frontieres \\b), ce qui evite de
-    classer a tort un avis Nigeria comme Niger. re.escape protege les
-    noms a caracteres speciaux ; \\b gere aussi les noms multi-mots
-    (ex: 'burkina faso') car les frontieres encadrent toute la phrase."""
-    titre = extraire_texte(avis.get("notice-title")).lower()
-    for code, noms in NOMS_PAYS_ROUGE_MODE_B.items():
-        for nom in noms:
-            if re.search(r"\b" + re.escape(nom) + r"\b", titre):
-                return code
-    return None
-
-
 MAX_PAGES = 5  # plafond de securite (jusqu'a 5 x LIMITE_RESULTATS resultats
                 # par mode). Empeche une boucle infinie si la pagination
                 # TED se comporte de facon inattendue, tout en couvrant un
@@ -806,12 +728,9 @@ def acheteur_etranger(avis):
 
 
 def normaliser(avis, pays_detecte_titre=None):
-    """pays_detecte_titre : reserve au Mode B (voir
-    pays_rouge_detecte_dans_titre). Quand fourni, prevaut sur le repli
-    habituel buyer-country -- c'est un signal plus direct (le pays est
-    explicitement nomme dans le titre) que le pays du siege de
-    l'acheteur, mais reste une inference textuelle, donc marque comme
-    incertain comme tout repli."""
+    """pays_detecte_titre : ancien parametre du Mode B (retire). Conserve
+    pour compatibilite du schema de sortie ; en pratique toujours None,
+    donc source_mode_b reste False."""
     cpv = extraire_codes(avis.get("classification-cpv"))
     pays_exec = extraire_codes(avis.get("place-of-performance"))
     pays_ach = extraire_codes(avis.get("buyer-country"))
@@ -1455,29 +1374,6 @@ def main():
         len(avis_bruts), len(pertinents), len(recents)
     ))
 
-    # Mode B (EXPERIMENTAL, DESACTIVE PAR DEFAUT) : acteurs internationaux dont
-    # le pays d'execution TED est absent, detectes par mention d'un pays a tres
-    # haut risque dans le titre. Rendement nul constate sur les runs reels
-    # (1250 avis telecharges pour 0 retenu), donc coupe par defaut pour ne pas
-    # gaspiller du temps. Reactivable via RADAR_TED_MODE_B=1 pour re-tester.
-    avis_mode_b_normalises = []
-    if os.environ.get("RADAR_TED_MODE_B", "0") == "1":
-        print("\nEtape 1b/2 -- Collecte TED Mode B (infra critique, EXPERIMENTAL)...")
-        avis_bruts_b = interroger_ted(construire_requete_mode_b())
-        for a in avis_bruts_b:
-            if extraire_texte(a.get("publication-date")) < seuil:
-                continue
-            code_pays_titre = pays_rouge_detecte_dans_titre(a)
-            if not code_pays_titre:
-                continue
-            pays_struct = extraire_codes(a.get("place-of-performance")) or extraire_codes(a.get("buyer-country"))
-            if code_pays_titre in pays_struct:
-                continue  # deja capte par le Mode A, pas un cas Mode B reel
-            avis_mode_b_normalises.append(normaliser(a, pays_detecte_titre=code_pays_titre))
-        print("Mode B -- Bruts : {} | retenus : {}".format(
-            len(avis_bruts_b), len(avis_mode_b_normalises)))
-
-    avis_normalises = avis_normalises + avis_mode_b_normalises
     avis_normalises, nb_doublons = dedupliquer_quasi_doublons(avis_normalises)
 
     print("\nTotal combine apres dedup : {} avis".format(len(avis_normalises)))
@@ -1615,9 +1511,8 @@ def main():
             suffixe = " (relu par {} ; Haiku avait {:.1f})".format(MODELE_RAFFINEMENT, r["final_haiku"])
             if r["divergence"]:
                 suffixe += "  /!\\ ECART NOTABLE -- lire les deux justifications"
-        print("\n{} Score final {:.1f}/10 (surete {:.1f} | commercial {:.1f}){}{}".format(
+        print("\n{} Score final {:.1f}/10 (surete {:.1f} | commercial {:.1f}){}".format(
             etiquette, score, r["surete"], r["commercial"], suffixe,
-            " [MODE B -- pays detecte par titre, a verifier]" if avis.get("source_mode_b") else "",
         ))
         print("  Action recommandee : {} | Fenetre : {}".format(
             calculer_action_recommandee(score, extraction, surete=r["surete"]),
