@@ -18,7 +18,9 @@ jamais deux fois de suite -> reste dans les quotas gratuits. Tolerant aux pannes
 """
 
 import os
+import re
 import datetime
+import unicodedata
 
 import ted_complet_v14 as ted
 
@@ -36,6 +38,9 @@ except Exception:
 NOM_ONGLET_ENRICHIES = "entreprises_enrichies"
 API_GOUV = "https://recherche-entreprises.api.gouv.fr/search"
 API_PAPPERS = "https://api.pappers.fr/v2/entreprise"
+# Repli international (societes absentes du registre FR) : GLEIF, gratuit, sans
+# cle. Identite officielle + pays + siege. https://api.gleif.org/api/v1/
+API_GLEIF = "https://api.gleif.org/api/v1/lei-records"
 DELAI_RAFRAICHISSEMENT_JOURS = 120     # au-dela, on re-enrichit
 PAUSE = 0.4                            # politesse API (7 req/s max cote gouv)
 
@@ -46,6 +51,7 @@ PAUSE = 0.4                            # politesse API (7 req/s max cote gouv)
 # RGPD : email pro nominatif = donnee personnelle. Prospection B2B en France
 # autorisee si la personne est informee et peut s'opposer AU PREMIER CONTACT.
 API_HUNTER_FINDER = "https://api.hunter.io/v2/email-finder"
+API_HUNTER_DOMAIN = "https://api.hunter.io/v2/domain-search"   # par nom d'entreprise (international)
 API_HUNTER_ACCOUNT = "https://api.hunter.io/v2/account"
 NOM_ONGLET_CONTACTS = "contacts_bitd"
 COLONNES_CONTACTS = ["entreprise", "email_pro", "confiance", "source", "date_contact"]
@@ -123,6 +129,65 @@ def _extraire_dirigeants(dirigeants):
 
 
 # ===========================================================================
+# GLEIF (repli international, gratuit, sans cle)
+# ===========================================================================
+def _norm_nom(s):
+    """Normalisation PRUDENTE d'un nom d'entreprise pour le matching :
+    minuscules, sans accents, ponctuation et formes juridiques (FR + courantes
+    a l'international) retirees."""
+    s = unicodedata.normalize("NFD", str(s or "").lower())
+    s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+    s = re.sub(r"[.,'()]", " ", s)
+    s = re.sub(r"\b(sa|sas|sarl|sasu|eurl|spa|srl|gmbh|ltd|llc|inc|plc|bv|nv|ag|"
+               r"co|company|corp|group|groupe|holding|international|intl|as|"
+               r"anonim|sirketi|ticaret|ve|jsc|ooo|pjsc|llp|pvt)\b", " ", s)
+    s = re.sub(r"[^a-z0-9 ]", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def rechercher_entreprise_gleif(nom, session=None, fetch=None):
+    """Identite officielle d'une entreprise via GLEIF (mondial). Renvoie un dict
+    {nom_officiel, ville, pays, lei, statut} ou None. Matching PRUDENT : le nom
+    officiel doit correspondre (egalite normalisee ou l'un prefixe l'autre),
+    sinon on renvoie None plutot que de deviner (cf. decision B de l'item 6)."""
+    if not nom:
+        return None
+    donnees = _get_json(API_GLEIF,
+                        {"filter[entity.legalName]": nom, "page[size]": 10},
+                        session=session, fetch=fetch)
+    if not donnees:
+        return None
+    records = donnees.get("data") or []
+    if not records:
+        return None
+    cible = _norm_nom(nom)
+    if not cible:
+        return None
+    candidats = []
+    for r in records:
+        ent = (r.get("attributes") or {}).get("entity") or {}
+        nom_off = ((ent.get("legalName") or {}).get("name") or "").strip()
+        n = _norm_nom(nom_off)
+        if not n:
+            continue
+        if n == cible or n.startswith(cible + " ") or cible.startswith(n + " "):
+            candidats.append((len(n), r, nom_off, ent))
+    if not candidats:
+        return None
+    candidats.sort(key=lambda c: c[0])          # le plus court = le plus proche
+    _, r, nom_off, ent = candidats[0]
+    hq = ent.get("headquartersAddress") or {}
+    la = ent.get("legalAddress") or {}
+    return {
+        "nom_officiel": nom_off,
+        "ville": hq.get("city") or la.get("city") or "",
+        "pays": hq.get("country") or la.get("country") or ent.get("jurisdiction") or "",
+        "lei": (r.get("attributes") or {}).get("lei") or r.get("id") or "",
+        "statut": ent.get("status") or "",
+    }
+
+
+# ===========================================================================
 # PAPPERS (optionnel : chiffre d'affaires)
 # ===========================================================================
 def enrichir_pappers(siren, session=None, fetch=None):
@@ -163,17 +228,28 @@ def _get_json(url, params, session=None, fetch=None):
 # ===========================================================================
 # ORCHESTRATION
 # ===========================================================================
-def enrichir_une(entreprise_row, session=None, fetch_gouv=None, fetch_pappers=None):
+def enrichir_une(entreprise_row, session=None, fetch_gouv=None, fetch_pappers=None,
+                 fetch_gleif=None):
     nom = entreprise_row.get("entreprise", "").strip()
     if not nom:
         return None
     gouv = rechercher_entreprise_gouv(nom, session=session, fetch=fetch_gouv)
     aujourd = datetime.date.today().isoformat()
     if not gouv:
-        # Entreprise non trouvee (ex. societe etrangere) : ligne minimale.
+        # Repli international : GLEIF (gratuit, sans cle). Donne l'identite
+        # officielle, le pays et le siege des societes absentes du registre FR.
         base = {c: "" for c in COLONNES_ENRICHIES}
-        base.update({"entreprise": nom, "source": "non trouvée",
-                     "date_enrichissement": aujourd})
+        gleif = rechercher_entreprise_gleif(nom, session=session, fetch=fetch_gleif)
+        if gleif:
+            ville = gleif["ville"]
+            if gleif["pays"]:                    # pays code dans la ville (decision 2A)
+                ville = "{} ({})".format(ville, gleif["pays"]) if ville else "({})".format(gleif["pays"])
+            base.update({"entreprise": nom, "nom_officiel": gleif["nom_officiel"],
+                         "ville": ville, "source": "gleif",
+                         "date_enrichissement": aujourd})
+        else:
+            base.update({"entreprise": nom, "source": "non trouvée",
+                         "date_enrichissement": aujourd})
         return [str(base.get(c, "")) for c in COLONNES_ENRICHIES]
     ca = enrichir_pappers(gouv.get("siren", ""), session=session, fetch=fetch_pappers)
     valeurs = {
@@ -277,6 +353,50 @@ def trouver_contact_hunter(entreprise, dirigeant, fetch=None):
             "source": source}
 
 
+def meilleur_email_domaine(emails):
+    """Choisit le meilleur email d'une liste Hunter Domain Search : email
+    NOMINATIF (personnel) de plus haute confiance en priorite, sinon email
+    generique (contact@...). {} si liste vide."""
+    if not emails:
+        return {}
+    persos = [e for e in emails if e.get("type") == "personal" and e.get("value")]
+    generiques = [e for e in emails if e.get("type") != "personal" and e.get("value")]
+    pool = persos or generiques
+    if not pool:
+        return {}
+
+    def conf(e):
+        c = e.get("confidence")
+        return c if isinstance(c, (int, float)) else -1
+    best = max(pool, key=conf)
+    contact = ((best.get("first_name") or "").strip() + " "
+               + (best.get("last_name") or "").strip()).strip()
+    return {"email": best.get("value", ""), "type": best.get("type", ""),
+            "confiance": "" if best.get("confidence") is None else str(best.get("confidence")),
+            "contact": contact}
+
+
+def trouver_contact_domaine_hunter(entreprise, fetch=None):
+    """Email de contact via Hunter Domain Search par NOM d'entreprise. Marche a
+    l'international (Hunter resout le domaine lui-meme). {} si rien / pas de cle.
+    Cout : 1 credit de recherche par entreprise (1 a 10 emails renvoyes)."""
+    cle = os.environ.get("HUNTER_API_KEY", "")
+    if not (cle and entreprise):
+        return {}
+    donnees = _get_json(API_HUNTER_DOMAIN,
+                        {"company": entreprise, "api_key": cle, "limit": 10}, fetch=fetch)
+    data = (donnees or {}).get("data") or {}
+    meilleur = meilleur_email_domaine(data.get("emails") or [])
+    if not meilleur.get("email"):
+        return {}
+    statut = "hunter/domaine" + ("/" + meilleur["type"] if meilleur.get("type") else "")
+    conf = meilleur.get("confiance", "")
+    if conf.isdigit() and int(conf) < SEUIL_CONF_EMAIL:
+        statut += " (a verifier)"
+    return {"email": meilleur["email"], "confiance": conf, "source": statut,
+            "contact": meilleur.get("contact", ""), "domaine": data.get("domain", "")}
+
+
 def contacts_existants(classeur):
     """Entreprises deja tentees (evite de re-consommer du quota)."""
     import gspread
@@ -288,8 +408,11 @@ def contacts_existants(classeur):
     return {str(r[0]).strip().lower() for r in valeurs[debut:] if r and str(r[0]).strip()}
 
 
-def _dirigeants_par_entreprise(classeur):
-    """Mappe entreprise -> dirigeant_principal depuis entreprises_enrichies."""
+def _infos_par_entreprise(classeur):
+    """Mappe entreprise -> (dirigeant_principal, source) depuis
+    entreprises_enrichies. La source ('gouv', 'gleif', 'non trouvée'...) permet
+    de choisir la bonne methode Hunter : Email Finder (FR, dirigeant connu) ou
+    Domain Search (etranger identifie par GLEIF)."""
     import gspread
     try:
         valeurs = classeur.worksheet(NOM_ONGLET_ENRICHIES).get_all_values()
@@ -297,11 +420,35 @@ def _dirigeants_par_entreprise(classeur):
         return {}
     i_ent = COLONNES_ENRICHIES.index("entreprise")
     i_dir = COLONNES_ENRICHIES.index("dirigeant_principal")
+    i_src = COLONNES_ENRICHIES.index("source")
     m = {}
     for r in valeurs:
-        if len(r) > max(i_ent, i_dir) and str(r[i_ent]).strip().lower() != "entreprise":
-            m[str(r[i_ent]).strip().lower()] = str(r[i_dir]).strip()
+        if len(r) > max(i_ent, i_dir, i_src) and str(r[i_ent]).strip().lower() != "entreprise":
+            m[str(r[i_ent]).strip().lower()] = (str(r[i_dir]).strip(), str(r[i_src]).strip())
     return m
+
+
+def selectionner_cibles_hunter(whitelist, infos, deja, budget):
+    """Repartit le budget Hunter (plafond global) entre :
+    - cibles FR : dirigeant connu -> Email Finder (contact nominatif, prioritaire) ;
+    - cibles etrangeres : identifiees par GLEIF, sans dirigeant -> Domain Search.
+    Ne cible QUE la priorite 'Haute', jamais deja tentee. Renvoie une liste de
+    tuples (nom, methode, dirigeant) plafonnee au budget. Fonction pure (testable)."""
+    cibles = []
+    for w in whitelist:
+        if w.get("priorite_socle", "").strip() != "Haute":
+            continue
+        nom = w.get("entreprise", "").strip()
+        if not nom or nom.lower() in deja:
+            continue
+        dirigeant, source = infos.get(nom.lower(), ("", ""))
+        if dirigeant:
+            cibles.append((nom, "finder", dirigeant))
+        elif source == "gleif":
+            cibles.append((nom, "domaine", ""))
+        # sinon (pas encore enrichie, ou 'non trouvée' pure) : on ne gaspille pas de credit
+    cibles.sort(key=lambda c: 0 if c[1] == "finder" else 1)   # FR d'abord
+    return cibles[:max(0, budget)]
 
 
 def pass_contacts_hunter(classeur, whitelist, fetch=None):
@@ -316,22 +463,22 @@ def pass_contacts_hunter(classeur, whitelist, fetch=None):
         print("Hunter : quota epuise ou indisponible, passe ignoree.")
         return
     deja = contacts_existants(classeur)
-    dirigeants = _dirigeants_par_entreprise(classeur)
-    cibles = [w for w in whitelist
-              if (w.get("priorite_socle", "").strip() == "Haute"
-                  and w.get("entreprise", "").strip().lower() not in deja
-                  and dirigeants.get(w.get("entreprise", "").strip().lower()))]
-    print("Hunter : {} credits utilisables, {} cible(s) Haute sans contact.".format(
-        budget, len(cibles)))
+    infos = _infos_par_entreprise(classeur)
+    cibles = selectionner_cibles_hunter(whitelist, infos, deja, budget)
+    n_fr = sum(1 for c in cibles if c[1] == "finder")
+    n_int = sum(1 for c in cibles if c[1] == "domaine")
+    print("Hunter : {} credit(s) utilisable(s), {} cible(s) : {} FR (finder), "
+          "{} etranger (domaine).".format(budget, len(cibles), n_fr, n_int))
     aujourd = datetime.date.today().isoformat()
     nouveaux = []
-    for w in cibles[:budget]:
-        nom = w["entreprise"].strip()
-        dirigeant = dirigeants.get(nom.lower(), "")
-        c = trouver_contact_hunter(nom, dirigeant, fetch=fetch)
+    for nom, methode, dirigeant in cibles:
+        if methode == "finder":
+            c = trouver_contact_hunter(nom, dirigeant, fetch=fetch)
+        else:
+            c = trouver_contact_domaine_hunter(nom, fetch=fetch)
         nouveaux.append([nom, c.get("email", ""), c.get("confiance", ""),
                          c.get("source", "non trouve"), aujourd])
-        print("  {} : {}".format(nom, c.get("email") or "aucun email trouve"))
+        print("  [{}] {} : {}".format(methode, nom, c.get("email") or "aucun email trouve"))
         time.sleep(0.3)
     if not nouveaux:
         return
