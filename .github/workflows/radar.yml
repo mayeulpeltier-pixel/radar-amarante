@@ -48,6 +48,10 @@ jobs:
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
           DASHBOARD_OUTPUT: public/index.html
+          # Bouton "Je contacte" : secrets, plus aucun token en clair dans le
+          # depot. Ajoute ces deux secrets de depot dans Settings > Secrets.
+          SUIVI_WEBAPP_URL: ${{ secrets.SUIVI_WEBAPP_URL }}
+          SUIVI_TOKEN: ${{ secrets.SUIVI_TOKEN }}
         run: python radar_dashboard.py
       # 5) Publier la page sur Cloudflare Pages (hebergement statique gratuit).
       - name: Publier sur Cloudflare Pages
