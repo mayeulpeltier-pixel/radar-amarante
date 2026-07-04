@@ -472,12 +472,18 @@ def lire_onglets(sheet_id, fichier_cs):
 
 def generer_html(leads):
     """Produit la page HTML autonome (situation board) a partir des leads."""
+    # Les titulaires (ATTRIB) sont un REGISTRE DE PROSPECTS, pas des avis
+    # analyses : on les EXCLUT des KPI d'action pour ne pas gonfler
+    # artificiellement "a surveiller" ni le total. Ils ont leur propre
+    # compteur "titulaires" et leur propre tuile dans le dashboard.
+    analyses = [l for l in leads if l["src"] != "ATTRIB"]
     meta = {
         "date": date.today().strftime("%d/%m/%Y"),
-        "total": len(leads),
-        "contacter": sum(1 for l in leads if l["action"] == "contacter"),
-        "surveiller": sum(1 for l in leads if l["action"] == "surveiller"),
-        "ignorer": sum(1 for l in leads if l["action"] == "ignorer"),
+        "total": len(analyses),
+        "contacter": sum(1 for l in analyses if l["action"] == "contacter"),
+        "surveiller": sum(1 for l in analyses if l["action"] == "surveiller"),
+        "ignorer": sum(1 for l in analyses if l["action"] == "ignorer"),
+        "titulaires": sum(1 for l in leads if l["src"] == "ATTRIB"),
     }
     # Mois presents, du plus recent au plus ancien (pour les onglets periode).
     labels = {}
@@ -487,14 +493,19 @@ def generer_html(leads):
     meta["mois"] = [{"cle": c, "label": labels[c]} for c in sorted(labels, reverse=True)]
     leads_json = json.dumps(leads, ensure_ascii=False)
     meta_json = json.dumps(meta, ensure_ascii=False)
-    # Config du bouton "Je contacte" : lue dans suivi_config.py (optionnel).
-    # Absente ou vide -> le bouton ne s'affiche pas (le dashboard reste intact).
-    try:
-        import suivi_config
-        surl = getattr(suivi_config, "SUIVI_WEBAPP_URL", "") or ""
-        stok = getattr(suivi_config, "SUIVI_TOKEN", "") or ""
-    except Exception:
-        surl, stok = "", ""
+    # Config du bouton "Je contacte". PRIORITE aux variables d'environnement
+    # (secrets GitHub Actions), pour ne plus stocker AUCUN secret dans le
+    # depot. Repli sur suivi_config.py uniquement pour un usage local. Si les
+    # deux restent vides, le bouton ne s'affiche pas (dashboard intact).
+    surl = os.environ.get("SUIVI_WEBAPP_URL", "") or ""
+    stok = os.environ.get("SUIVI_TOKEN", "") or ""
+    if not (surl and stok):
+        try:
+            import suivi_config
+            surl = surl or (getattr(suivi_config, "SUIVI_WEBAPP_URL", "") or "")
+            stok = stok or (getattr(suivi_config, "SUIVI_TOKEN", "") or "")
+        except Exception:
+            pass
     return (GABARIT_HTML
             .replace("__LEADS_JSON__", leads_json)
             .replace("__META_JSON__", meta_json)
@@ -579,6 +590,8 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .tile.act{border-color:rgba(192,39,58,0.45)} .tile.act .n{color:var(--fort)}
   .tile.act::after{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--fort)}
   .tile.wat .n{color:var(--watch)} .tile.low .n{color:var(--bone-dim)}
+  .tile.att .n{color:var(--bone-dim)}
+  .tile.att::after{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--bone-faint)}
   .tile[aria-pressed="true"]{outline:2px solid var(--bone-dim);outline-offset:-1px}
   section.zones{margin-top:26px}
   .eyebrow{font-family:var(--mono);font-size:0.64rem;letter-spacing:0.24em;text-transform:uppercase;color:var(--bone-dim);margin-bottom:12px;display:flex;align-items:center;gap:10px}
@@ -804,7 +817,6 @@ GABARIT_HTML = r"""<!DOCTYPE html>
       <button data-src="TED" aria-pressed="false">TED</button>
       <button data-src="BOAMP" aria-pressed="false">BOAMP</button>
       <button data-src="PRIVÉ" aria-pressed="false">Privé (BITD)</button>
-      <button data-src="ATTRIB" aria-pressed="false">Titulaires</button>
     </div>
     <div class="seg" id="triseg" role="group" aria-label="Tri">
       <button data-tri="score" aria-pressed="true">Importance</button>
@@ -889,7 +901,16 @@ let state={zone:null,src:'all',q:'',action:'contacter',mois:null,tri:'score'};
 // (ex: compter les zones sans s'auto-filtrer sur la zone selectionnee).
 function match(l, ignore){
   ignore = ignore || {};
-  if(!ignore.action && state.action!=='all' && l.action!==state.action) return false;
+  const isAttrib = l.src==='ATTRIB';
+  // Les titulaires (ATTRIB) sont un registre a part : visibles UNIQUEMENT via
+  // la tuile "Titulaires" (state.action==='titulaires'). Jamais comptes dans
+  // les KPI d'avis, la carte ni le graphe de zones.
+  if(state.action==='titulaires'){
+    if(!isAttrib) return false;
+  }else{
+    if(isAttrib) return false;
+    if(!ignore.action && state.action!=='all' && l.action!==state.action) return false;
+  }
   if(!ignore.mois && state.mois && l.mois!==state.mois) return false;
   if(!ignore.zone && state.zone && l.zone!==state.zone) return false;
   if(!ignore.src && state.src!=='all' && l.src!==state.src) return false;
@@ -902,7 +923,7 @@ function buildPeriod(){
   const box=document.getElementById('period');
   const chips=[{cle:null,label:'Toute la période'}].concat(META.mois);
   box.innerHTML=chips.map(m=>{
-    const c=m.cle===null ? LEADS.length : LEADS.filter(l=>l.mois===m.cle).length;
+    const c=LEADS.filter(l=>(m.cle===null||l.mois===m.cle)&&match(l,{mois:true})).length;
     const pressed=(state.mois===m.cle)?'true':'false';
     return `<button class="chip" data-mois="${m.cle===null?'':m.cle}" aria-pressed="${pressed}">${m.label} · ${c}</button>`;
   }).join('');
@@ -922,7 +943,8 @@ const statsDef=[
   {k:'contacter',cls:'act',n:META.contacter,l:'À contacter'},
   {k:'surveiller',cls:'wat',n:META.surveiller,l:'À surveiller'},
   {k:'ignorer',cls:'low',n:META.ignorer,l:'Faibles'},
-  {k:'all',cls:'',n:META.total,l:'Tous les avis'}
+  {k:'all',cls:'',n:META.total,l:'Tous les avis'},
+  {k:'titulaires',cls:'att',n:META.titulaires||0,l:'Titulaires'}
 ];
 const statsBox=document.getElementById('stats');
 statsBox.innerHTML=statsDef.map(s=>
@@ -1069,8 +1091,9 @@ function render(){
   }
   updateMap(filtered);
   const moisLabel = state.mois ? (META.mois.find(m=>m.cle===state.mois)||{}).label : null;
+  const noun = state.action==='titulaires' ? 'titulaire' : 'avis';
   document.getElementById('count').textContent=
-    `${filtered.length} avis affiché${filtered.length>1?'s':''}`+
+    `${filtered.length} ${noun} affiché${filtered.length>1?'s':''}`+
     (moisLabel?`, ${moisLabel}`:'')+
     (state.zone?`, zone ${state.zone}`:'')+(state.src!=='all'?`, source ${state.src}`:'');
   if(!filtered.length){box.innerHTML='<div class="empty">Aucun avis ne correspond à ce filtre.</div>';return;}
