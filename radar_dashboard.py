@@ -657,6 +657,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .lead[data-tier="surveiller"] .sf{color:var(--watch)}
   .lead[data-tier="ignorer"] .sf{color:var(--bone-dim)}
   .scorebox .sd{font-family:var(--mono);font-size:0.58rem;color:var(--bone-dim);letter-spacing:0.06em;margin-top:3px;white-space:nowrap}
+  .scorebox .se{font-family:var(--mono);font-size:0.5rem;color:var(--bone-faint);letter-spacing:0.12em;text-transform:uppercase;margin-top:2px;white-space:nowrap}
   .ltitle{font-family:var(--display);font-weight:500;font-size:1.02rem;line-height:1.3;margin:11px 0 12px;color:var(--bone)}
   .badges{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:13px}
   .badge{font-family:var(--mono);font-size:0.58rem;letter-spacing:0.1em;text-transform:uppercase;padding:4px 8px;border-radius:4px;display:inline-flex;align-items:center;gap:5px}
@@ -855,6 +856,15 @@ function marquerContacte(idx,btn){
 const ORDRE_ZONES = ["Afrique de l'Ouest","Sahel","Afrique centrale","Afrique de l'Est","Afrique australe","Afrique du Nord","Proche-Orient","Péninsule arabique","Asie centrale","Asie du Sud","Asie du Sud-Est","Caucase","Balkans","Europe de l'Est","Caraïbes","Amérique latine","Europe de l'Ouest","Outre-mer","Non classé"];
 const winLabel={immediate:'Fenêtre immédiate',court_terme:'Court terme',indetermine:'Fenêtre indéterminée'};
 const SRC_LABEL={BM:'Banque Mondiale',TED:'TED',BOAMP:'BOAMP','PRIVÉ':'Privé · BITD',ATTRIB:'Titulaire'};
+// Etiquette d'echelle de score. Les scores marche (TED/BM/BOAMP, barème
+// additif) et les scores signal (privé, barème multiplicatif) NE sont PAS sur
+// la même échelle : un 6 marché ne vaut pas un 6 signal. On l'affiche pour
+// éviter toute comparaison directe trompeuse.
+function echelleLabel(src){
+  if(src==='PRIVÉ') return 'échelle signal';
+  if(src==='ATTRIB') return 'score indicatif';
+  return 'échelle avis';
+}
 let AFFICHES=[];
 
 // Pays francophones (choix de la langue du mail). Les entreprises BITD et les
@@ -935,8 +945,10 @@ function buildPeriod(){
   }));
 }
 
+const SRC_NOMS_META={TED:'TED',BM:'Banque Mondiale',BOAMP:'BOAMP','PRIVÉ':'Privé (BITD)',ATTRIB:'Titulaires'};
+const SRC_PRESENTES=[...new Set(LEADS.map(l=>l.src))].map(s=>SRC_NOMS_META[s]||s);
 document.getElementById('runmeta').innerHTML =
-  'Run du <b>'+META.date+'</b><br>'+META.total+' avis analysés<br>Sources, TED + Banque Mondiale';
+  'Run du <b>'+META.date+'</b><br>'+META.total+' avis analysés<br>Sources : '+(SRC_PRESENTES.join(', ')||'aucune');
 
 // Stat tiles (cliquables = filtre par action)
 const statsDef=[
@@ -1116,7 +1128,7 @@ function render(){
           <div class="row"><span class="k">Tél</span><span class="v">${tel}</span></div>` : '';
     return `<article class="lead" data-tier="${tier}" data-idx="${i}"><span class="spine"></span><div class="body">
       <div class="lhead"><div class="lmeta"><span class="src ${l.src.toLowerCase()}">${SRC_LABEL[l.src]||l.src}</span><span class="pays">${esc(l.pays)}</span><span>· ${esc(l.zone)}</span></div>
-      <div class="scorebox"><div class="sf">${l.final.toFixed(1)}</div><div class="sd">sûreté ${l.surete.toFixed(1)} · com ${l.comm.toFixed(1)}</div></div></div>
+      <div class="scorebox"><div class="sf">${l.final.toFixed(1)}</div><div class="sd">sûreté ${l.surete.toFixed(1)} · com ${l.comm.toFixed(1)}</div><div class="se">${echelleLabel(l.src)}</div></div></div>
       <h3 class="ltitle">${esc(l.titre)}</h3>
       <div class="badges"><span class="badge win-${win}">${winLabel[win]}</span>${badgeDeadline(l)}${ecart}${statut}${dateChip}</div>
       <div class="contact"><div class="row"><span class="k">Agence</span><span class="v">${esc(l.agence)}</span></div>${contactRows}</div>
