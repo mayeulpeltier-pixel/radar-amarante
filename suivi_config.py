@@ -1,15 +1,27 @@
 # -*- coding: utf-8 -*-
 # =============================================================================
 # CONFIG DU BOUTON « Je contacte » du dashboard.
-# Remplis les DEUX lignes ci-dessous, puis dépose ce fichier dans ton dépôt,
-# à côté de radar_dashboard.py.
 #
-# Tant qu'une des deux est vide, le bouton ne s'affiche pas (dashboard intact).
+# SECURITE : plus aucun secret n'est stocke en clair dans ce fichier. Les deux
+# valeurs sont lues depuis les VARIABLES D'ENVIRONNEMENT (secrets GitHub
+# Actions en production). Le dashboard lit d'abord ces memes variables ; ce
+# fichier ne sert que de repli local optionnel.
+#
+# EN PRODUCTION (GitHub Actions) : definis deux secrets de depot
+#   - SUIVI_WEBAPP_URL  : l'URL de l'app web Apps Script (finit par /exec)
+#   - SUIVI_TOKEN       : le MEME mot de passe que la variable TOKEN du script
+# puis passe-les en env a l'etape "Generer le tableau de bord" du workflow
+# (deja cable dans radar.yml).
+#
+# EN LOCAL (test a la main) : exporte les deux variables avant de lancer, ex.
+#   export SUIVI_WEBAPP_URL="https://script.google.com/macros/s/XXXX/exec"
+#   export SUIVI_TOKEN="ton-nouveau-token"
+#
+# Tant que l'une des deux est vide, le bouton ne s'affiche pas (dashboard
+# intact). Si les deux sont vides, tout fonctionne comme avant, sans suivi.
 # =============================================================================
 
-# 1) URL de l'application web Apps Script (celle qui finit par /exec),
-#    obtenue à l'étape « Déployer » du script.
-SUIVI_WEBAPP_URL = "https://script.google.com/macros/s/AKfycby_UBZQxtyrNhiFG-OgPUE9kxyv8SyOKGkwqHpKxDWDTyGFDR6EiPi14HPSd-HUQxT7/exec"
+import os
 
-# 2) Le MÊME mot de passe que la variable TOKEN dans le script Apps Script.
-SUIVI_TOKEN = "Amarante2026"
+SUIVI_WEBAPP_URL = os.environ.get("SUIVI_WEBAPP_URL", "")
+SUIVI_TOKEN = os.environ.get("SUIVI_TOKEN", "")
