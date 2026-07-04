@@ -275,8 +275,40 @@ def ligne_vers_lead(row, source):
     }
 
 
+def attribution_vers_lead(row):
+    """Transforme une ligne 'attributions_radar' (titulaire d'un marche gagne)
+    en lead ATTRIB. Score INDICATIF (registre de prospects, PAS une analyse
+    surete). Filtrable via le bouton 'Titulaires'."""
+    gagnant = _txt(row.get("gagnant"))
+    secteur = _txt(row.get("secteur")) or "Attribution"
+    nom_pays, zone = resoudre_pays(_txt(row.get("pays_execution")), "BM")
+    valeur = _txt(row.get("valeur_attribuee"))
+    marche = _txt(row.get("titre"))
+    date_det = _txt(row.get("date_detection")) or _txt(row.get("date_maj"))
+    mois_cle, mois_label = _mois_depuis_date(date_det)
+    justif = ("Titulaire d'un marché gagné ({}){}. Marché : {}. "
+              "Prospect à démarcher (déploie du personnel). "
+              "Score indicatif, pas une analyse sûreté.").format(
+        nom_pays, " · " + valeur if valeur else "", marche or "n.c.")
+    return {
+        "src": "ATTRIB", "pays": nom_pays, "zone": zone,
+        "titre": (gagnant or "Titulaire") + (" · " + secteur if secteur else ""),
+        "agence": _txt(row.get("acheteur")) or "n.c.",
+        "final": 5.0, "surete": 5.0, "comm": 5.0,
+        "action": "surveiller", "win": "indetermine",
+        "nom": "n.c.", "email": "n.c.", "tel": "n.c.",
+        "cible": ("Titulaire du marché : entreprise qui déploie du personnel en "
+                  "zone à risque. À démarcher (direction sûreté / opérations)."),
+        "justif": justif, "grp": secteur, "lien": _txt(row.get("lien")),
+        "ecart": False, "secu": False, "mois": mois_cle, "mois_label": mois_label,
+        "date_det": date_det, "statut": _txt(row.get("statut_prospection")) or "nouveau",
+        "deadline": "", "conf": "", "modele": "",
+        "pub": _txt(row.get("publication_number")),
+    }
+
+
 def construire_leads(lignes_ted, lignes_bm, lignes_boamp=None, lignes_prive=None,
-                     enrichissement=None):
+                     enrichissement=None, lignes_attrib=None):
     """Fusionne les onglets (TED, Banque Mondiale, BOAMP, PRIVÉ/BITD), deduplique,
     trie. Pour les leads PRIVÉ, remonte le dirigeant (enrichissement) comme contact."""
     leads = [ligne_vers_lead(r, "TED") for r in lignes_ted]
@@ -297,6 +329,10 @@ def construire_leads(lignes_ted, lignes_bm, lignes_boamp=None, lignes_prive=None
             l["siren"] = _txt(info.get("siren"))
             l["ca"] = _txt(info.get("chiffre_affaires"))
     leads += leads_prive
+
+    # Attributions (titulaires de marches gagnes) : registre de prospects.
+    leads += [attribution_vers_lead(r) for r in (lignes_attrib or [])
+              if _txt(r.get("gagnant")) and "non publie" not in _txt(r.get("gagnant")).lower()]
 
     leads = [l for l in leads if l["titre"]]  # avis exploitables seulement
 
@@ -386,6 +422,21 @@ def lire_onglets(sheet_id, fichier_cs):
             "date_publication", "statut_suivi", "date_detection"]
     lignes_prive = _lignes_vers_dicts(valeurs(onglet_prive), colonnes_prive)
 
+    # Registre des attributions (titulaires de marches gagnes). Schema fourni
+    # par le collecteur d'attributions.
+    try:
+        import ted_complet_attributions as att
+        colonnes_attrib = att.TOUTES_COLONNES
+        onglet_attrib = att.NOM_ONGLET
+    except Exception:
+        onglet_attrib = "attributions_radar"
+        colonnes_attrib = [
+            "date_maj", "gagnant", "secteur", "pays_execution", "valeur_attribuee",
+            "acheteur", "titre", "cpv", "sous_traitance", "date_publication",
+            "publication_number", "lien", "a_demarcher", "statut_prospection",
+            "date_detection"]
+    lignes_attrib = _lignes_vers_dicts(valeurs(onglet_attrib), colonnes_attrib)
+
     # Enrichissement firmographique (dirigeants), pour remonter le contact.
     try:
         import enrichir_entreprises as ee
@@ -416,7 +467,7 @@ def lire_onglets(sheet_id, fichier_cs):
         if nom and email:
             enrichissement.setdefault(nom, {})["email_pro"] = email
 
-    return lignes_ted, lignes_bm, lignes_boamp, lignes_prive, enrichissement
+    return lignes_ted, lignes_bm, lignes_boamp, lignes_prive, lignes_attrib, enrichissement
 
 
 def generer_html(leads):
@@ -461,8 +512,8 @@ def main():
         sys.exit(1)
 
     print("Lecture des onglets du Sheet...")
-    lignes_ted, lignes_bm, lignes_boamp, lignes_prive, enrichissement = lire_onglets(sheet_id, fichier_cs)
-    leads = construire_leads(lignes_ted, lignes_bm, lignes_boamp, lignes_prive, enrichissement)
+    lignes_ted, lignes_bm, lignes_boamp, lignes_prive, lignes_attrib, enrichissement = lire_onglets(sheet_id, fichier_cs)
+    leads = construire_leads(lignes_ted, lignes_bm, lignes_boamp, lignes_prive, enrichissement, lignes_attrib)
     print("  TED : {} avis | BM : {} avis | total exploitable : {}".format(
         len(lignes_ted), len(lignes_bm), len(leads)))
 
@@ -584,6 +635,8 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .src{padding:2px 6px;border-radius:3px;border:1px solid var(--line);color:var(--bone-dim)}
   .src.bm{border-color:rgba(192,39,58,0.4);color:#d98a96}
   .src.ted{border-color:rgba(200,137,59,0.4);color:#dcb079}
+  .src.attrib{border-color:rgba(120,190,150,0.45);color:#7fae8f}
+  .src.privé,.src.prive{border-color:rgba(150,150,200,0.4);color:#a9a9d9}
   .pays{color:var(--bone);font-weight:600}
   .scorebox{text-align:right;flex-shrink:0}
   .scorebox .sf{font-family:var(--display);font-weight:700;font-size:1.5rem;line-height:1}
@@ -751,6 +804,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
       <button data-src="TED" aria-pressed="false">TED</button>
       <button data-src="BOAMP" aria-pressed="false">BOAMP</button>
       <button data-src="PRIVÉ" aria-pressed="false">Privé (BITD)</button>
+      <button data-src="ATTRIB" aria-pressed="false">Titulaires</button>
     </div>
     <div class="seg" id="triseg" role="group" aria-label="Tri">
       <button data-tri="score" aria-pressed="true">Importance</button>
@@ -788,7 +842,7 @@ function marquerContacte(idx,btn){
 }
 const ORDRE_ZONES = ["Afrique de l'Ouest","Sahel","Afrique centrale","Afrique de l'Est","Afrique australe","Afrique du Nord","Proche-Orient","Péninsule arabique","Asie centrale","Asie du Sud","Asie du Sud-Est","Caucase","Balkans","Europe de l'Est","Caraïbes","Amérique latine","Europe de l'Ouest","Outre-mer","Non classé"];
 const winLabel={immediate:'Fenêtre immédiate',court_terme:'Court terme',indetermine:'Fenêtre indéterminée'};
-const SRC_LABEL={BM:'Banque Mondiale',TED:'TED',BOAMP:'BOAMP','PRIVÉ':'Privé · BITD'};
+const SRC_LABEL={BM:'Banque Mondiale',TED:'TED',BOAMP:'BOAMP','PRIVÉ':'Privé · BITD',ATTRIB:'Titulaire'};
 let AFFICHES=[];
 
 // Pays francophones (choix de la langue du mail). Les entreprises BITD et les
