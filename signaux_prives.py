@@ -338,7 +338,7 @@ def collecter_adzuna(entreprise, fetch=None, session=None):
 # ===========================================================================
 # PARTIE 3 -- PROMPT NEUTRE (tous secteurs, meme schema que BITD)
 # ===========================================================================
-# Meme schema de sortie que bitd.PROMPT_SIGNAL pour reutiliser bitd.scorer_signal.
+# Meme schema de sortie que bitd.PROMPT_SIGNAL, exploite par scorer_signal (ci-dessous).
 PROMPT_NEUTRE = """Tu analyses une actualité ou une offre d'emploi concernant une entreprise privée, pour une société française de protection de personnes en zones à risque. Objectif : repérer si l'entreprise VA DÉPLOYER ou DÉPLOIE DÉJÀ des personnels (cadres, experts, techniciens, chefs de projet, équipes) DANS UN PAYS À RISQUE, ce qui crée un besoin probable de sûreté (escorte, protection rapprochée, chauffeur sécurité, sécurisation de déplacements).
 
 Secteur de l'entreprise : {secteur}
@@ -359,7 +359,7 @@ Réponds UNIQUEMENT en JSON valide, sans texte autour :
 
 def analyser(entreprise, secteur, article, appel=None):
     """Tri LLM (Haiku) avec le prompt neutre. Meme schema de sortie que BITD,
-    donc bitd.scorer_signal / normaliser_iso3 s'appliquent tels quels."""
+    donc scorer_signal (local, unique) / bitd.normaliser_iso3 s'appliquent tels quels."""
     prompt = PROMPT_NEUTRE.format(
         secteur=secteur or "non precise", entreprise=entreprise,
         titre=article.get("titre", ""),
