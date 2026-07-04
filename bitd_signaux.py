@@ -68,15 +68,6 @@ NOM_ONGLET_WHITELIST = "comptes_cibles_bitd"
 NOM_ONGLET_PRIVE = "prive_radar"
 
 GNEWS_BASE = "https://news.google.com/rss/search"
-# GDELT DOC 2.0 API : base evenementielle mondiale gratuite, multilingue,
-# maj toutes les 15 min. Complete Google News (couverture presse etrangere).
-GDELT_ENDPOINT = "https://api.gdeltproject.org/api/v2/doc/doc"
-GDELT_TIMESPAN = "3m"          # fenetre glissante (max ~3 mois cote GDELT)
-GDELT_MAXRECORDS = 8
-GDELT_TIMEOUT_HTTP = 10           # court : GDELT est parfois lent/rate-limite
-GDELT_MAX_ECHECS = 3             # apres N echecs d'affilee, on coupe GDELT du run
-_GDELT_ETAT = {"echecs": 0, "coupe": False}
-ACTIVER_GDELT = os.environ.get("RADAR_GDELT", "1") != "0"  # coupe-circuit
 DECLENCHEURS = ("contrat OR export OR implantation OR usine OR filiale OR livraison "
                 "OR chantier OR essais OR démonstration OR formation OR déploiement")
 MAX_ARTICLES_PAR_ENTREPRISE = 6
@@ -86,7 +77,7 @@ JOURS_FRAICHEUR = 120                 # on ignore les articles plus vieux
 # temps imparti (le backlog s'etale sur plusieurs runs grace a la memoire).
 MAX_ANALYSES_PAR_RUN = int(os.environ.get("RADAR_BITD_BUDGET", "200"))
 # Levier de temps PRINCIPAL : nb d'entreprises traitees par run. Chaque
-# entreprise = 2 collectes reseau (Google News + GDELT), c'est ca qui prend du
+# entreprise = une collecte reseau (Google News), c'est ca qui prend du
 # temps, pas les analyses. On borne donc au niveau entreprise, avec un curseur
 # de reprise (rotation sur toute la whitelist en quelques runs).
 MAX_ENTREPRISES_PAR_RUN = int(os.environ.get("RADAR_BITD_MAX_ENTREPRISES", "15"))
@@ -113,7 +104,6 @@ POIDS_ACTIVITE = {
     "autre": 0.25,
 }
 POIDS_IMMINENCE = {"immediate": 1.0, "court_terme": 0.85, "indetermine": 0.7}
-POIDS_PRIORITE = {"Haute": 1.0, "Moyenne": 0.8, "Basse": 0.6}
 
 # Pre-filtre anti-bruit : titres manifestement hors sujet (evite un appel LLM).
 MOTIFS_BRUIT = re.compile(
@@ -177,17 +167,6 @@ def url_google_news(entreprise, requete_perso=""):
     return GNEWS_BASE + "?" + urllib.parse.urlencode(params)
 
 
-def collecter_articles(entreprise, requete_perso="", session=None):
-    session = session or ted.session_robuste()
-    try:
-        rep = session.get(url_google_news(entreprise, requete_perso), timeout=30)
-        rep.raise_for_status()
-        return parser_rss(rep.text)[:MAX_ARTICLES_PAR_ENTREPRISE]
-    except Exception as e:
-        print("  (info) Flux indisponible pour {} ({}).".format(entreprise, e))
-        return []
-
-
 def parser_rss(xml_texte):
     articles = []
     try:
@@ -207,84 +186,6 @@ def parser_rss(xml_texte):
 
 def _nettoyer(html):
     return re.sub(r"<[^>]+>", " ", html or "").replace("&nbsp;", " ").strip()
-
-
-# --- GDELT DOC 2.0 (source presse mondiale multilingue) --------------------
-def url_ou_requete_gdelt(entreprise, requete_perso=""):
-    return requete_perso.strip() or '"{}"'.format(entreprise)
-
-
-def collecter_gdelt(entreprise, requete_perso="", session=None):
-    """Articles GDELT pour une entreprise. Tolerant : erreur -> liste vide.
-    Coupe-circuit : apres GDELT_MAX_ECHECS echecs d'affilee, GDELT est desactive
-    pour le reste du run (evite de perdre du temps sur une source en panne)."""
-    if not ACTIVER_GDELT or _GDELT_ETAT["coupe"]:
-        return []
-    session = session or ted.session_robuste()
-    params = {"query": url_ou_requete_gdelt(entreprise, requete_perso),
-              "mode": "artlist", "format": "json",
-              "maxrecords": str(GDELT_MAXRECORDS), "timespan": GDELT_TIMESPAN,
-              "sort": "datedesc"}
-    try:
-        rep = session.get(GDELT_ENDPOINT, params=params, timeout=GDELT_TIMEOUT_HTTP)
-        rep.raise_for_status()
-        articles = parser_gdelt(rep.json())
-        _GDELT_ETAT["echecs"] = 0
-        return articles
-    except Exception as e:
-        _GDELT_ETAT["echecs"] += 1
-        if _GDELT_ETAT["echecs"] >= GDELT_MAX_ECHECS:
-            _GDELT_ETAT["coupe"] = True
-            print("  (info) GDELT coupe pour ce run apres {} echecs.".format(
-                _GDELT_ETAT["echecs"]), flush=True)
-        else:
-            print("  (info) GDELT indisponible pour {} ({}).".format(entreprise, e),
-                  flush=True)
-        return []
-
-
-def parser_gdelt(donnees):
-    articles = []
-    for a in (donnees or {}).get("articles", []):
-        titre = (a.get("title") or "").strip()
-        lien = (a.get("url") or "").strip()
-        if titre and lien:
-            articles.append({"titre": titre, "lien": lien,
-                             "date": _date_gdelt(a.get("seendate", "")),
-                             "resume": titre})
-    return articles[:MAX_ARTICLES_PAR_ENTREPRISE]
-
-
-def _date_gdelt(s):
-    """'20260615T120000Z' -> date RFC822 (lisible par article_frais)."""
-    s = (s or "").strip()
-    try:
-        dt = datetime.datetime.strptime(s, "%Y%m%dT%H%M%SZ").replace(
-            tzinfo=datetime.timezone.utc)
-        return email.utils.format_datetime(dt)
-    except Exception:
-        return ""
-
-
-def collecter_sources(entreprise, requete_perso="", session=None):
-    """Fusionne Google News + GDELT, dedoublonne par URL. Chronometre chaque
-    source et signale les lenteurs (diagnostic du temps de run)."""
-    t0 = time.time()
-    articles = collecter_articles(entreprise, requete_perso, session)
-    t_gn = time.time() - t0
-    t1 = time.time()
-    articles += collecter_gdelt(entreprise, requete_perso, session)
-    t_gd = time.time() - t1
-    if t_gn > 5 or t_gd > 5:
-        print("    (temps) {} : GoogleNews {:.1f}s, GDELT {:.1f}s".format(
-            entreprise, t_gn, t_gd), flush=True)
-    vus, uniques = set(), []
-    for a in articles:
-        k = id_article(a.get("lien", ""))
-        if k and k not in vus:
-            vus.add(k)
-            uniques.append(a)
-    return uniques
 
 
 def article_frais(article, aujourd=None):
@@ -407,30 +308,6 @@ def normaliser_iso3(extraction):
 # ===========================================================================
 # SCORING
 # ===========================================================================
-def scorer_signal(extraction, priorite_compte, iso3=None):
-    iso3 = (iso3 or extraction.get("iso3") or "").strip().upper()
-    if not iso3 or iso3 not in ted.CODES_PAYS_SUIVIS:
-        return None
-    poids_zone = ted.MULTIPLICATEUR_ZONE.get(iso3, 0.3)
-    poids_act = POIDS_ACTIVITE.get(extraction.get("type_activite"), 0.25)
-    poids_prio = POIDS_PRIORITE.get((priorite_compte or "").strip(), 0.8)
-    poids_imm = POIDS_IMMINENCE.get(extraction.get("imminence"), 0.7)
-
-    surete = round(10 * poids_zone * poids_act, 1)
-    commercial = round(10 * poids_prio, 1)
-    final = round((0.6 * surete + 0.4 * commercial) * poids_imm, 1)
-
-    action = ("contacter" if final >= SEUIL_CONTACTER
-              else "surveiller" if final >= SEUIL_SURVEILLER else "ignorer")
-    paire = ZONE_PAR_ISO3.get(iso3)
-    if isinstance(paire, (tuple, list)) and len(paire) >= 2:
-        nom_fr, zone = paire[0], paire[1]
-    else:
-        nom_fr, zone = (extraction.get("pays") or ""), "Non classé"
-    return {"final": final, "surete": surete, "commercial": commercial,
-            "zone": zone, "action": action, "nom": nom_fr}
-
-
 def clef_evenement(entreprise, nom_pays, type_activite):
     return "|".join([str(entreprise).strip().lower(),
                      str(nom_pays).strip().lower(),
@@ -514,82 +391,6 @@ def ecrire_resultats(feuille, resultats):
 # ===========================================================================
 # ORCHESTRATION
 # ===========================================================================
-def traiter_entreprise(entreprise_row, deja_vus, cles_existantes=None,
-                       appel=None, session=None, budget=None, vus_ce_run=None):
-    """Renvoie les signaux retenus pour une entreprise (dedup par evenement inclus).
-    `budget` = {'reste': n} plafonne les analyses LLM du run (garantit la fin dans
-    les temps). `vus_ce_run` collecte les articles examines (persistes ensuite)."""
-    entreprise = entreprise_row.get("entreprise", "").strip()
-    if not entreprise:
-        return []
-    cles_existantes = cles_existantes if cles_existantes is not None else set()
-    prio = entreprise_row.get("priorite_socle")
-    requete = entreprise_row.get("requete_personnalisee", "")
-    retenus = {}  # clef_evenement -> meilleur signal (dedup intra-run)
-
-    for article in collecter_sources(entreprise, requete, session=session):
-        if not article_frais(article):
-            continue
-        pub = id_article(article.get("lien", ""))
-        if pub in deja_vus:
-            continue
-        if bruit_evident(article):
-            deja_vus.add(pub)
-            if vus_ce_run is not None:
-                vus_ce_run.add(pub)          # bruit memorise -> plus jamais re-examine
-            continue
-        if budget is not None and budget.get("reste", 0) <= 0:
-            break                            # budget epuise : non marque, repris au prochain run
-        deja_vus.add(pub)
-        if vus_ce_run is not None:
-            vus_ce_run.add(pub)
-        if budget is not None:
-            budget["reste"] -= 1
-
-        ex = analyser_signal_llm(entreprise, article, appel=appel)
-        if not ex or not ex.get("signal"):
-            continue
-        iso3 = normaliser_iso3(ex)
-        if iso3 not in ted.CODES_PAYS_SUIVIS:
-            continue
-
-        sc = scorer_signal(ex, prio, iso3=iso3)
-        if not sc:
-            continue
-        modele = "haiku"
-
-        # Escalade Sonnet sur les signaux a fort enjeu (candidats "contacter"
-        # ou confiance limite) : precision maximale la ou ca compte.
-        conf = float(ex.get("confiance") or 0)
-        if sc["action"] == "contacter" or (BANDE_ESCALADE[0] <= conf < BANDE_ESCALADE[1]):
-            ver = verifier_signal_sonnet(entreprise, article, appel=appel)
-            if not ver or not ver.get("confirme"):
-                continue  # Sonnet infirme -> ecarte (barriere anti faux positif)
-            ex = {**ex, **{k: ver[k] for k in
-                           ("iso3", "pays", "type_activite", "imminence", "confiance",
-                            "resume") if ver.get(k) not in (None, "")}}
-            iso3 = normaliser_iso3(ex)
-            if iso3 not in ted.CODES_PAYS_SUIVIS:
-                continue
-            sc = scorer_signal(ex, prio, iso3=iso3)
-            if not sc:
-                continue
-            modele = "sonnet"
-
-        if float(ex.get("confiance") or 0) < SEUIL_CONFIANCE_MIN:
-            continue
-
-        cle = clef_evenement(entreprise, sc["nom"], ex.get("type_activite"))
-        if cle in cles_existantes:
-            continue  # evenement deja connu (run precedent)
-        signal = {"ligne": ligne_prive(entreprise_row, article, ex, sc, modele),
-                  "entreprise": entreprise, "score": sc["final"], "cle": cle}
-        if cle not in retenus or signal["score"] > retenus[cle]["score"]:
-            retenus[cle] = signal  # dedup intra-run : 1 evenement = 1 lead
-
-    return list(retenus.values())
-
-
 def charger_vus(sheet_id, fichier_cs):
     """Set des hash d'articles deja analyses (memoire persistante)."""
     if not (sheet_id and fichier_cs):
@@ -663,88 +464,3 @@ def ecrire_curseur(classeur, valeur):
             feuille.update_cell(i, 2, str(valeur))
             return
     feuille.append_row(["bitd_curseur", str(valeur)], value_input_option="RAW")
-
-
-def main():
-    print("=" * 60, flush=True)
-    print("MOTEUR DE SIGNAUX PRIVES (BITD) - Radar Amarante", flush=True)
-    print("=" * 60, flush=True)
-    sheet_id = os.environ.get("TED_SHEET_ID")
-    fichier = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
-
-    whitelist = lire_whitelist(sheet_id, fichier)
-    if not whitelist:
-        print("Whitelist vide ou absente. Rien a faire.", flush=True)
-        return
-    print("Whitelist : {} entreprises.".format(len(whitelist)), flush=True)
-
-    deja_vus = ted.numeros_publication_existants(
-        sheet_id, fichier, NOM_ONGLET_PRIVE, COLONNES_PRIVE)
-    deja_vus |= charger_vus(sheet_id, fichier)      # + tous les articles deja analyses
-    cles = cles_evenements_existantes(sheet_id, fichier)
-    curseur = lire_curseur(sheet_id, fichier)
-    if curseur >= len(whitelist):
-        curseur = 0
-    # Rotation : on traite MAX_ENTREPRISES_PAR_RUN entreprises a partir du curseur.
-    ordre = whitelist[curseur:] + whitelist[:curseur]
-    a_traiter = ordre[:MAX_ENTREPRISES_PAR_RUN]
-    print("Memoire : {} articles vus, {} evenements connus.".format(
-        len(deja_vus), len(cles)), flush=True)
-    print("Rotation : entreprises {}..{} sur {} (budget analyses {}).".format(
-        curseur + 1, curseur + len(a_traiter), len(whitelist), MAX_ANALYSES_PAR_RUN),
-        flush=True)
-
-    _GDELT_ETAT["echecs"] = 0
-    _GDELT_ETAT["coupe"] = False
-    session = ted.session_robuste()
-    budget = {"reste": MAX_ANALYSES_PAR_RUN}
-    vus_ce_run = set()
-    tous = []
-    debut = time.time()
-    for i, ligne in enumerate(a_traiter, 1):
-        if budget["reste"] <= 0:
-            print("  Budget d'analyses epuise, arret anticipe.", flush=True)
-            break
-        t0 = time.time()
-        res = traiter_entreprise(ligne, deja_vus, cles, session=session,
-                                 budget=budget, vus_ce_run=vus_ce_run)
-        for r in res:
-            cles.add(r["cle"])
-        print("  [{:>2}/{}] {} : {} signal(aux), {:.1f}s".format(
-            i, len(a_traiter), ligne.get("entreprise", "")[:28], len(res),
-            time.time() - t0), flush=True)
-        tous.extend(res)
-        time.sleep(PAUSE_ENTRE_REQUETES)
-
-    nb_traitees = min(len(a_traiter), i) if a_traiter else 0
-    nouveau_curseur = (curseur + nb_traitees) % len(whitelist)
-    print("Temps moteur BITD : {:.0f}s. Analyses consommees : {}. Prochain curseur : {}.".format(
-        time.time() - debut, MAX_ANALYSES_PAR_RUN - budget["reste"], nouveau_curseur),
-        flush=True)
-
-    print("\nSignaux retenus : {}".format(len(tous)))
-    if not (sheet_id and fichier):
-        print("(dry-run) Pas de Sheet, ecriture ignoree.")
-        return
-    import gspread
-    from google.oauth2.service_account import Credentials
-    portee = ["https://www.googleapis.com/auth/spreadsheets"]
-    creds = Credentials.from_service_account_file(fichier, scopes=portee)
-    classeur = gspread.authorize(creds).open_by_key(sheet_id)
-
-    if tous:
-        feuille = ouvrir_ou_creer_onglet(classeur)
-        n = ecrire_resultats(feuille, tous)
-        print("{} nouveaux signaux ecrits dans '{}'.".format(n, NOM_ONGLET_PRIVE))
-    else:
-        print("Aucun nouveau signal prive ce run.")
-    # Toujours memoriser les articles analyses (evite de les re-analyser).
-    persister_vus(classeur, sorted(vus_ce_run))
-    print("{} articles memorises (total plafonne a {}).".format(
-        len(vus_ce_run), MAX_VUS_MEMOIRE), flush=True)
-    # Avancer le curseur de rotation pour le prochain run.
-    ecrire_curseur(classeur, nouveau_curseur)
-
-
-if __name__ == "__main__":
-    main()
