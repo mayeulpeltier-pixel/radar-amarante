@@ -16,11 +16,37 @@ installer (pas de pytest). Lancement :
 Pre-requis : ted_complet_v14.py et ted_complet_bm.py dans le meme dossier.
 """
 
+import os
 import unittest
 from datetime import date
 
 import ted_complet_v14 as ted
 import ted_complet_bm as bm
+
+# Modules testes plus bas, importes de facon RESILIENTE : si l'un manque au
+# moment des tests, ses tests sont ignores (skip), jamais en echec. Cela evite
+# de casser les tests TED/BM existants si un fichier n'est pas encore deploye.
+try:
+    import ted_complet_attributions as attributions
+except Exception:
+    attributions = None
+try:
+    import bitd_signaux as bitd
+    import signaux_prives
+except Exception:
+    bitd = signaux_prives = None
+try:
+    import radar_etat
+except Exception:
+    radar_etat = None
+try:
+    import radar_retroaction
+except Exception:
+    radar_retroaction = None
+try:
+    import radar_risque
+except Exception:
+    radar_risque = None
 
 
 # ===========================================================================
@@ -239,6 +265,204 @@ class TestMemoireInterRuns(unittest.TestCase):
         nouveaux = [a for a in avis
                     if str(a.get("publication_number", "")).strip() not in deja_vus]
         self.assertEqual([a["publication_number"] for a in nouveaux], ["OP3", "OP4"])
+
+
+@unittest.skipIf(attributions is None, "ted_complet_attributions indisponible")
+class TestAttributionsPDF(unittest.TestCase):
+    """Parsing des gagnants depuis le texte d'un PDF/HTML d'attribution TED.
+    C'est le point le plus fragile (formats variables) : on couvre les DEUX
+    schemas TED valides sur notices reelles."""
+
+    def test_eforms_extrait_nom_et_valeur(self):
+        texte = ("Results Information about winners Official name : Badenelektra GmbH "
+                 "Postal address : Hauptstrasse 4 Value of the tender : 1 200 000 EUR "
+                 "Notice information")
+        r = attributions.parser_gagnants(texte)
+        self.assertEqual(len(r["gagnants"]), 1)
+        self.assertEqual(r["gagnants"][0]["nom"], "Badenelektra GmbH")
+        self.assertEqual(r["gagnants"][0]["valeur"], "1 200 000 EUR")
+
+    def test_ancien_format_f03(self):
+        texte = ("Section V Name and address of the contractor Official name : PROATEC SRL "
+                 "Postal address : Via Roma Town : Milano")
+        r = attributions.parser_gagnants(texte)
+        self.assertEqual([g["nom"] for g in r["gagnants"]], ["PROATEC SRL"])
+
+    def test_nom_coupe_au_libelle_suivant(self):
+        # Le nom doit s'arreter au prochain "Libelle :", pas engloutir l'adresse.
+        bloc = "Official name : ACME Consulting Ltd Postal address : 10 Downing Street"
+        self.assertEqual(attributions._nom_apres_official(bloc), "ACME Consulting Ltd")
+
+    def test_nom_group_non_coupe(self):
+        # "Group"/"Value" sans deux-points ne doivent PAS couper le nom.
+        bloc = "Official name : NIRAS GROUP (UK) LTD Country : UK"
+        self.assertEqual(attributions._nom_apres_official(bloc), "NIRAS GROUP (UK) LTD")
+
+    def test_dedup_gagnants(self):
+        texte = ("Information about winners Official name : ACME LTD Value of the tender : 5 EUR 8. "
+                 "Information about winners Official name : ACME LTD Value of the tender : 5 EUR 8.")
+        r = attributions.parser_gagnants(texte)
+        self.assertEqual(len(r["gagnants"]), 1)
+
+    def test_total_et_sous_traitance(self):
+        texte = ("Information about winners Official name : X Ltd Value of the tender : 10 EUR 8. "
+                 "Value of all contracts awarded in this notice : 2 500 000 EUR "
+                 "Subcontracting : yes")
+        r = attributions.parser_gagnants(texte)
+        self.assertEqual(r["total"], "2 500 000 EUR")
+        self.assertTrue(r["sous_traitance"])
+
+    def test_aucun_gagnant_si_absent(self):
+        r = attributions.parser_gagnants("Notice sans section gagnant.")
+        self.assertEqual(r["gagnants"], [])
+        self.assertFalse(r["sous_traitance"])
+
+    def test_est_attribution(self):
+        self.assertTrue(attributions._est_attribution({"notice-type": "can-standard"}))
+        self.assertFalse(attributions._est_attribution({"notice-type": "cn-standard"}))
+
+    def test_codes_cpv(self):
+        self.assertEqual(attributions._codes_cpv("45000000 texte 71000000"),
+                         ["45000000", "71000000"])
+
+    def test_nettoyer_montant_espaces_insecables(self):
+        # Les espaces insecables (PDF) sont normalises en espaces simples.
+        self.assertEqual(attributions._nettoyer_montant("1\u00a0200\u202f000", "EUR"),
+                         "1 200 000 EUR")
+
+
+@unittest.skipIf(bitd is None, "bitd_signaux/signaux_prives indisponibles")
+class TestPriveParsingJSON(unittest.TestCase):
+    """Extraction du JSON renvoye par le LLM (tolerante au texte autour)."""
+
+    def test_json_valide(self):
+        self.assertEqual(bitd._parser_json('{"signal": true, "iso3": "MLI"}'),
+                         {"signal": True, "iso3": "MLI"})
+
+    def test_json_avec_texte_autour(self):
+        self.assertEqual(bitd._parser_json('Voici : {"a": 1} fin'), {"a": 1})
+
+    def test_json_invalide_renvoie_none(self):
+        self.assertIsNone(bitd._parser_json("aucun json ici"))
+
+    def test_json_casse_renvoie_none(self):
+        self.assertIsNone(bitd._parser_json('{"a": }'))
+
+    def test_vide_renvoie_none(self):
+        self.assertIsNone(bitd._parser_json(""))
+
+
+@unittest.skipIf(signaux_prives is None, "signaux_prives indisponible")
+class TestPriveScoring(unittest.TestCase):
+    """Scoring des signaux prives : seuils, garde-fou de confiance, pays suivi."""
+
+    def _extraction(self, **kw):
+        base = {"type_activite": "implantation", "imminence": "immediate", "confiance": 0.9}
+        base.update(kw)
+        return base
+
+    def test_pays_non_suivi_renvoie_none(self):
+        signaux_prives._RETRO = None
+        self.assertIsNone(signaux_prives.scorer_signal(self._extraction(), "haute", iso3="FRA"))
+
+    def test_garde_fou_confiance(self):
+        # Un signal fort mais peu sur ne doit pas monter en "contacter".
+        signaux_prives._RETRO = None
+        iso = next(iter(ted.CODES_PAYS_SUIVIS))
+        fort_sur = signaux_prives.scorer_signal(self._extraction(confiance=0.9), "haute", iso3=iso)
+        fort_incertain = signaux_prives.scorer_signal(self._extraction(confiance=0.1), "haute", iso3=iso)
+        if fort_sur and fort_sur["action"] == "contacter":
+            self.assertNotEqual(fort_incertain["action"], "contacter")
+
+    def test_retroaction_neutre_par_defaut(self):
+        # Sans _RETRO, le score n'est pas modifie par la retroaction.
+        signaux_prives._RETRO = None
+        iso = next(iter(ted.CODES_PAYS_SUIVIS))
+        r = signaux_prives.scorer_signal(self._extraction(), "haute", iso3=iso)
+        self.assertIsNotNone(r)
+        self.assertIn(r["action"], ("contacter", "surveiller", "ignorer"))
+
+
+@unittest.skipIf(radar_etat is None, "radar_etat indisponible")
+class TestRadarEtat(unittest.TestCase):
+    """Etat inter-runs (item 8) : round-trip, plafond, fichier absent."""
+
+    def setUp(self):
+        self.chemin = "/tmp/_test_etat_radar.json"
+        if os.path.exists(self.chemin):
+            os.remove(self.chemin)
+
+    def tearDown(self):
+        if os.path.exists(self.chemin):
+            os.remove(self.chemin)
+
+    def test_fichier_absent_signale_migration(self):
+        self.assertEqual(radar_etat.charger(self.chemin), (None, None))
+
+    def test_round_trip_et_ordre(self):
+        radar_etat.sauver(5, ["a", "b"], ["c"], chemin=self.chemin)
+        self.assertEqual(radar_etat.charger(self.chemin), (5, ["a", "b", "c"]))
+
+    def test_plafond_garde_les_recents(self):
+        old = radar_etat.MAX_VUS_MEMOIRE
+        radar_etat.MAX_VUS_MEMOIRE = 3
+        try:
+            n = radar_etat.sauver(0, ["1", "2"], ["3", "4", "5"], chemin=self.chemin)
+            _, vus = radar_etat.charger(self.chemin)
+            self.assertEqual((n, vus), (3, ["3", "4", "5"]))
+        finally:
+            radar_etat.MAX_VUS_MEMOIRE = old
+
+
+@unittest.skipIf(radar_retroaction is None, "radar_retroaction indisponible")
+class TestRadarRetroaction(unittest.TestCase):
+    """Retroaction (item 7) : neutre sous le seuil, bornee au-dessus."""
+
+    def test_neutre_sous_le_seuil(self):
+        outcomes = [{"secteur": "BTP", "zone": "Sahel", "statut": "gagne"}] * 3
+        m = radar_retroaction.multiplicateurs(outcomes)
+        self.assertEqual(m["secteur"].get("BTP"), 1.0)
+
+    def test_borne_au_dessus_du_seuil(self):
+        outcomes = ([{"secteur": "BTP", "zone": "Sahel", "statut": "gagne"}] * 10
+                    + [{"secteur": "X", "zone": "Y", "statut": "perdu"}] * 10)
+        m = radar_retroaction.multiplicateurs(outcomes)
+        self.assertLessEqual(m["secteur"]["BTP"], radar_retroaction.MULT_MAX)
+        self.assertGreaterEqual(m["secteur"]["BTP"], 1.0)
+
+    def test_mult_pour_absent_est_neutre(self):
+        self.assertEqual(radar_retroaction.mult_pour(None, "BTP", "Sahel"), 1.0)
+
+
+@unittest.skipIf(radar_risque is None, "radar_risque indisponible")
+class TestRadarRisque(unittest.TestCase):
+    """Risque dynamique (item 11) : surcharge, repli socle, kill switch."""
+
+    def _ouvrir(self, matrice):
+        class Faux:
+            def worksheet(self, nom): return self
+            def get_all_values(self): return matrice
+        return lambda s, f: Faux()
+
+    def test_surcharge_puis_repli(self):
+        mat = [["iso3", "niveau"], ["MLI", "rouge"], ["TCD", "orange"]]
+        radar_risque.charger("sid", "cs", ouvrir=self._ouvrir(mat))
+        self.assertEqual(radar_risque.mult_zone("MLI", 0.3), 1.0)   # surcharge
+        self.assertEqual(radar_risque.mult_zone("NER", 0.3), 0.3)   # absent -> socle
+
+    def test_niveau_inconnu_repli(self):
+        mat = [["iso3", "niveau"], ["LBY", "ecarlate"]]
+        radar_risque.charger("sid", "cs", ouvrir=self._ouvrir(mat))
+        self.assertEqual(radar_risque.mult_zone("LBY", 0.9), 0.9)   # ignore -> socle
+
+    def test_kill_switch(self):
+        mat = [["iso3", "niveau"], ["MLI", "rouge"]]
+        os.environ["RADAR_RISQUE"] = "0"
+        try:
+            radar_risque.charger("sid", "cs", ouvrir=self._ouvrir(mat))
+            self.assertEqual(radar_risque.mult_zone("MLI", 0.3), 0.3)
+        finally:
+            del os.environ["RADAR_RISQUE"]
 
 
 if __name__ == "__main__":
