@@ -42,6 +42,7 @@ import time
 import ted_complet_v14 as ted
 import bitd_signaux as bitd
 import radar_etat
+import radar_retroaction
 
 
 # ===========================================================================
@@ -380,6 +381,11 @@ def analyser(entreprise, secteur, article, appel=None):
 # calibres). On le rend variable et on ajoute un garde-fou : un signal peu sur
 # ne peut pas etre promu en "contacter". Reutilise les autres poids de BITD.
 POIDS_PRIORITE_V2 = {"haute": 0.8, "moyenne": 0.5, "basse": 0.3}
+
+# Multiplicateurs de retroaction (item 7), charges dans main() si le flag
+# RADAR_RETROACTION est actif. None = retroaction desactivee (comportement par
+# defaut, scoring inchange).
+_RETRO = None
 CONF_MIN_CONTACTER = 0.6   # sous ce niveau, action plafonnee a "surveiller"
 
 
@@ -394,6 +400,19 @@ def scorer_signal(extraction, priorite_compte, iso3=None):
     surete = round(10 * poids_zone * poids_act, 1)
     commercial = round(10 * poids_prio, 1)
     final = round((0.6 * surete + 0.4 * commercial) * poids_imm, 1)
+    # Zone (calculee ici car la retroaction en a besoin avant de fixer l'action).
+    paire = bitd.ZONE_PAR_ISO3.get(iso3)
+    if isinstance(paire, (tuple, list)) and len(paire) >= 2:
+        nom_fr, zone = paire[0], paire[1]
+    else:
+        nom_fr, zone = (extraction.get("pays") or ""), "Non classe"
+    # Retroaction (item 7) : nuance le score final selon la conversion observee
+    # (secteur x zone). NEUTRE si desactivee (flag off) ou donnees insuffisantes.
+    # On ne touche qu'au versant commercial via le score final, jamais a la
+    # surete (evaluation de risque objective).
+    if _RETRO:
+        final = round(final * radar_retroaction.mult_pour(
+            _RETRO, extraction.get("type_activite"), zone), 1)
     action = ("contacter" if final >= bitd.SEUIL_CONTACTER
               else "surveiller" if final >= bitd.SEUIL_SURVEILLER else "ignorer")
     # Garde-fou confiance : un signal peu sur ne monte jamais en "contacter".
@@ -403,11 +422,6 @@ def scorer_signal(extraction, priorite_compte, iso3=None):
         conf = 0
     if action == "contacter" and conf < CONF_MIN_CONTACTER:
         action = "surveiller"
-    paire = bitd.ZONE_PAR_ISO3.get(iso3)
-    if isinstance(paire, (tuple, list)) and len(paire) >= 2:
-        nom_fr, zone = paire[0], paire[1]
-    else:
-        nom_fr, zone = (extraction.get("pays") or ""), "Non classe"
     return {"final": final, "surete": surete, "commercial": commercial,
             "zone": zone, "action": action, "nom": nom_fr}
 
@@ -547,6 +561,28 @@ def traiter_entreprise(compte, deja_vus, cles_existantes, appel=None,
 # PARTIE 5 -- POINT D'ENTREE
 # ===========================================================================
 
+def _charger_outcomes_prive(sheet_id, fichier_cs):
+    """Lit l'onglet des signaux prives et extrait les issues (secteur, zone,
+    statut) pour la boucle de retroaction. Lecture SEULE, best-effort : en cas
+    d'echec, renvoie une liste vide (la retroaction reste alors neutre)."""
+    try:
+        classeur = _ouvrir_classeur(sheet_id, fichier_cs)
+        valeurs = classeur.worksheet(bitd.NOM_ONGLET_PRIVE).get_all_values()
+    except Exception as e:
+        print("(retroaction) lecture '{}' impossible : {}".format(bitd.NOM_ONGLET_PRIVE, e))
+        return []
+    if not valeurs or len(valeurs) < 2:
+        return []
+    idx = {c: i for i, c in enumerate(valeurs[0])}
+
+    def col(row, nom):
+        i = idx.get(nom)
+        return row[i] if (i is not None and i < len(row)) else ""
+
+    return [{"secteur": col(r, "type_activite"), "zone": col(r, "zone"),
+             "statut": col(r, bitd.COLONNE_STATUT)} for r in valeurs[1:]]
+
+
 def main():
     if not ACTIVER:
         print("(info) Moteur signaux prives desactive (RADAR_SIGNAUX_PRIVES=0).")
@@ -588,6 +624,19 @@ def main():
             print("radar_etat : demarrage a froid (ni fichier d'etat ni Sheet).")
     deja_vus = set(vus_list)
     cles_existantes = bitd.cles_evenements_existantes(sheet_id, fichier)
+
+    # Boucle de retroaction (item 7), DESACTIVEE par defaut (RADAR_RETROACTION=1
+    # pour l'activer). Apprend des issues gagne/perdu pour nuancer le scoring,
+    # secteur x zone. Prudente : neutre tant qu'une categorie n'a pas assez
+    # d'issues. Lecture seule du Sheet, ne cree aucun point de defaillance.
+    global _RETRO
+    _RETRO = None
+    if os.environ.get("RADAR_RETROACTION", "0") == "1" and sheet_id and fichier:
+        _RETRO = radar_retroaction.multiplicateurs(_charger_outcomes_prive(sheet_id, fichier))
+        ajustees = sum(1 for d in radar_retroaction.DIMENSIONS
+                       for m in _RETRO[d].values() if m != 1.0)
+        print("Retroaction ACTIVE : {} issue(s), taux de base {:.0%}, "
+              "{} categorie(s) ajustee(s).".format(_RETRO["n"], _RETRO["base"], ajustees))
 
     # Fenetre de rotation : on borne le nombre d'ENTREPRISES par run (le reseau
     # est le facteur limitant). Priorite : watchlist curee (majors deliberement
