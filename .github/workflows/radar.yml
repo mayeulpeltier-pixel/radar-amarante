@@ -6,6 +6,18 @@ on:
   schedule:
     - cron: "0 6 * * 1,4"
   workflow_dispatch:
+
+# Droit d'ecrire dans le depot : necessaire pour committer radar_etat.json
+# (l'etat inter-runs, desormais decouple du Google Sheet).
+permissions:
+  contents: write
+
+# Un seul run du radar a la fois : evite que deux executions (ex. un cron et un
+# lancement manuel) ne se marchent dessus sur le fichier d'etat.
+concurrency:
+  group: radar-amarante
+  cancel-in-progress: false
+
 jobs:
   radar:
     runs-on: ubuntu-latest
@@ -38,6 +50,23 @@ jobs:
           ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
           ADZUNA_APP_KEY: ${{ secrets.ADZUNA_APP_KEY }}
         run: python radar_run.py
+      # 3b) Sauvegarder l'etat inter-runs (curseur + articles vus) dans le depot.
+      #     C'est ce qui remplace le stockage dans le Sheet (fin du SPOF).
+      #     if: always() => on garde l'etat meme si une etape suivante echoue.
+      #     [skip ci] => ce commit ne redeclenche pas le workflow.
+      - name: Sauvegarder l'etat du radar
+        if: always()
+        run: |
+          if [ -z "$(git status --porcelain radar_etat.json)" ]; then
+            echo "Etat inchange, rien a committer."
+            exit 0
+          fi
+          git config user.name "radar-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add radar_etat.json
+          git commit -m "chore(radar): etat inter-runs [skip ci]"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
       # 4) Generer le tableau de bord depuis le Sheet (public/index.html).
       #    if: always() => le dashboard se rafraichit meme si le radar a eu un
       #    souci, en lisant le dernier etat du Sheet. L'echec radar reste visible
@@ -48,10 +77,6 @@ jobs:
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
           DASHBOARD_OUTPUT: public/index.html
-          # Bouton "Je contacte" : secrets, plus aucun token en clair dans le
-          # depot. Ajoute ces deux secrets de depot dans Settings > Secrets.
-          SUIVI_WEBAPP_URL: ${{ secrets.SUIVI_WEBAPP_URL }}
-          SUIVI_TOKEN: ${{ secrets.SUIVI_TOKEN }}
         run: python radar_dashboard.py
       # 5) Publier la page sur Cloudflare Pages (hebergement statique gratuit).
       - name: Publier sur Cloudflare Pages
