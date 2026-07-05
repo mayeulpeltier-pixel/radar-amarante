@@ -24,6 +24,7 @@ import os
 import re
 import sys
 import unicodedata
+import radar_retroaction
 from datetime import date
 
 NOM_ONGLET_TED = "ted_radar"
@@ -520,6 +521,13 @@ def generer_html(leads):
     meta["mois"] = [{"cle": c, "label": labels[c]} for c in sorted(labels, reverse=True)]
     leads_json = json.dumps(leads, ensure_ascii=False)
     meta_json = json.dumps(meta, ensure_ascii=False)
+    # Boucle de retroaction (item 7), volet VISIBILITE : taux de conversion
+    # gagne/perdu par secteur et par zone, calcule sur toutes les sources. La
+    # zone est comparable partout ; le secteur melange les taxonomies (avis vs
+    # signaux) mais reste informatif.
+    outcomes = [{"secteur": (l.get("grp") or ""), "zone": (l.get("zone") or ""),
+                 "statut": (l.get("statut") or "")} for l in leads]
+    conversion_json = json.dumps(radar_retroaction.table_conversion(outcomes), ensure_ascii=False)
     # Config du bouton "Je contacte". PRIORITE aux variables d'environnement
     # (secrets GitHub Actions), pour ne plus stocker AUCUN secret dans le
     # depot. Repli sur suivi_config.py uniquement pour un usage local. Si les
@@ -536,6 +544,7 @@ def generer_html(leads):
     return (GABARIT_HTML
             .replace("__LEADS_JSON__", leads_json)
             .replace("__META_JSON__", meta_json)
+            .replace("__CONVERSION_JSON__", conversion_json)
             .replace("__SUIVI_URL__", json.dumps(surl))
             .replace("__SUIVI_TOKEN__", json.dumps(stok)))
 
@@ -830,6 +839,18 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .fiche .fenr .er .ek{color:var(--bone-dim)}
   .fiche .fmiss{border-top:1px solid var(--line);margin-top:10px;padding-top:10px;color:var(--watch);font-size:12px}
   .fiche .facts{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+  .conv{margin:14px 0 4px;border:1px solid var(--line);border-radius:8px;background:var(--ink-2);font-size:0.8rem}
+  .conv>summary{cursor:pointer;padding:10px 14px;font-family:var(--mono);font-size:0.62rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--bone-dim)}
+  .conv[open]>summary{border-bottom:1px solid var(--line);color:var(--bone)}
+  .conv .convmeta,.conv .convempty{padding:10px 14px;color:var(--bone-dim);line-height:1.5}
+  .conv .convtitre{padding:8px 14px 4px;font-family:var(--mono);font-size:0.56rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--bone-faint)}
+  .conv .convtab{width:100%;border-collapse:collapse;font-size:0.78rem}
+  .conv .convtab th,.conv .convtab td{text-align:right;padding:5px 14px;border-top:1px solid var(--line)}
+  .conv .convtab th:first-child,.conv .convtab td:first-child{text-align:left}
+  .conv .convtab thead th{color:var(--bone-faint);font-weight:400;font-family:var(--mono);font-size:0.56rem;letter-spacing:0.08em;text-transform:uppercase}
+  .conv .convneutre td{color:var(--bone-dim)}
+  .conv .convactif td{color:var(--bone)}
+  .conv .convmute{font-family:var(--mono);font-size:0.5rem;color:var(--bone-faint);letter-spacing:0.05em}
 </style>
 </head>
 <body>
@@ -848,6 +869,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
     </div>
     <div class="stats" id="stats"></div>
     <div class="exec" id="exec"></div>
+    <details class="conv" id="conv"><summary>Conversion observée (gagné / perdu)</summary><div id="convbody"></div></details>
   </header>
   <section class="geo">
     <div class="panel">
@@ -888,6 +910,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
 <script>
 const LEADS = __LEADS_JSON__;
 const META = __META_JSON__;
+const CONVERSION = __CONVERSION_JSON__;
 const SUIVI_URL = __SUIVI_URL__;
 const SUIVI_TOKEN = __SUIVI_TOKEN__;
 const SUIVI_ON = !!SUIVI_URL;
@@ -1135,6 +1158,35 @@ function buildExec(){
     `<span class="lead-strong">${aContacter.length} opportunités prioritaires</span> détectées dans `+
     `<b>${zonesRisque} zones</b> à enjeu sûreté, dont <b>${immediat}</b> en fenêtre immédiate. `+
     `<b>${avecContact}</b> disposent d'un contact direct identifié, en amont de la concurrence.`;
+}
+
+// Retroaction (item 7), volet visibilite : tableau de conversion gagne/perdu
+// par secteur et par zone. Rempli une seule fois (les issues bougent lentement).
+function renderConversion(){
+  const box=document.getElementById('convbody');
+  if(!box) return;
+  if(!CONVERSION || !CONVERSION.n){
+    box.innerHTML='<div class="convempty">Renseigne des statuts <b>gagné</b> / <b>perdu</b> '+
+      'dans le Sheet pour voir quels secteurs et zones convertissent le mieux.</div>';
+    return;
+  }
+  const bloc=(titre,lignes)=>{
+    if(!lignes.length) return '';
+    const rows=lignes.map(l=>{
+      const pct=Math.round(l.taux*100);
+      const cls=l.actif?'convactif':'convneutre';
+      const tag=l.actif?'':'<span class="convmute">n&lt;'+CONVERSION.n_min+'</span>';
+      return `<tr class="${cls}"><td>${esc(l.val)}</td><td>${l.g}</td><td>${l.p}</td>`+
+             `<td>${l.n}</td><td>${pct}% ${tag}</td></tr>`;
+    }).join('');
+    return `<div class="convtitre">${titre}</div><table class="convtab">`+
+      `<thead><tr><th>${titre==='Par secteur'?'Secteur':'Zone'}</th><th>G</th><th>P</th><th>n</th><th>taux lissé</th></tr></thead>`+
+      `<tbody>${rows}</tbody></table>`;
+  };
+  box.innerHTML=
+    `<div class="convmeta">${CONVERSION.n} issue(s) renseignée(s), taux de base ${Math.round(CONVERSION.base*100)}%. `+
+    `Une catégorie influe sur le scoring (si la rétroaction est activée) à partir de ${CONVERSION.n_min} issues.</div>`+
+    bloc('Par secteur', CONVERSION.secteur)+bloc('Par zone', CONVERSION.zone);
 }
 
 // Graphique repartition par zone (respecte les filtres sauf la zone)
@@ -1495,6 +1547,7 @@ document.getElementById('modalcard').addEventListener('click',e=>{
 });
 
 buildExec();
+renderConversion();
 initMap();
 buildStats();
 buildPeriod();
