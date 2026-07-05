@@ -227,10 +227,6 @@ def ligne_vers_lead(row, source):
         cible = _txt(row.get("cible_commerciale_reelle")) or \
             "Titulaire du marché qui déploie les équipes, pas l'agence acheteuse."
         groupe = _txt(row.get("procurement_group")) or "n.c."
-    elif source == "BOAMP":
-        cible = _txt(row.get("cible_commerciale_reelle")) or \
-            "Acheteur public ou titulaire du marché ; vérifier qui expose du personnel."
-        groupe = _txt(row.get("procurement_method")) or "MP"
     elif source == "PRIVÉ":
         cible = _txt(row.get("cible_commerciale_reelle")) or \
             "Contact via réseau : direction sûreté / export / MCO."
@@ -344,13 +340,12 @@ def _attacher_enrichissement(lead, enrichissement, cle_entreprise):
     lead["ca"] = _txt(info.get("chiffre_affaires"))
 
 
-def construire_leads(lignes_ted, lignes_bm, lignes_boamp=None, lignes_prive=None,
+def construire_leads(lignes_ted, lignes_bm, lignes_prive=None,
                      enrichissement=None, lignes_attrib=None):
-    """Fusionne les onglets (TED, Banque Mondiale, BOAMP, PRIVÉ/BITD), deduplique,
+    """Fusionne les onglets (TED, Banque Mondiale, PRIVÉ/BITD), deduplique,
     trie. Pour les leads PRIVÉ, remonte le dirigeant (enrichissement) comme contact."""
     leads = [ligne_vers_lead(r, "TED") for r in lignes_ted]
     leads += [ligne_vers_lead(r, "BM") for r in lignes_bm]
-    leads += [ligne_vers_lead(r, "BOAMP") for r in (lignes_boamp or [])]
     leads_prive = [ligne_vers_lead(r, "PRIVÉ") for r in (lignes_prive or [])]
 
     # Index d'enrichissement : clefs brutes (minuscules) + alias normalises,
@@ -438,14 +433,6 @@ def lire_onglets(sheet_id, fichier_cs):
     lignes_ted = _lignes_vers_dicts(valeurs(NOM_ONGLET_TED), ted.TOUTES_COLONNES_SHEET)
     lignes_bm = _lignes_vers_dicts(valeurs(NOM_ONGLET_BM), bm.TOUTES_COLONNES_BM)
 
-    # BOAMP (marches publics FR) : meme schema que la Banque Mondiale.
-    try:
-        import ted_complet_boamp as boamp
-        onglet_boamp = boamp.NOM_ONGLET_BOAMP
-    except Exception:
-        onglet_boamp = "boamp_radar"
-    lignes_boamp = _lignes_vers_dicts(valeurs(onglet_boamp), bm.TOUTES_COLONNES_BM)
-
     # Onglet des signaux prives (BITD), s'il existe. Schema fourni par le moteur.
     try:
         import bitd_signaux as bitd
@@ -507,7 +494,7 @@ def lire_onglets(sheet_id, fichier_cs):
         if nom and email:
             enrichissement.setdefault(nom, {})["email_pro"] = email
 
-    return lignes_ted, lignes_bm, lignes_boamp, lignes_prive, lignes_attrib, enrichissement
+    return lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement
 
 
 def generer_html(leads):
@@ -563,8 +550,8 @@ def main():
         sys.exit(1)
 
     print("Lecture des onglets du Sheet...")
-    lignes_ted, lignes_bm, lignes_boamp, lignes_prive, lignes_attrib, enrichissement = lire_onglets(sheet_id, fichier_cs)
-    leads = construire_leads(lignes_ted, lignes_bm, lignes_boamp, lignes_prive, enrichissement, lignes_attrib)
+    lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement = lire_onglets(sheet_id, fichier_cs)
+    leads = construire_leads(lignes_ted, lignes_bm, lignes_prive, enrichissement, lignes_attrib)
     print("  TED : {} avis | BM : {} avis | total exploitable : {}".format(
         len(lignes_ted), len(lignes_bm), len(leads)))
 
@@ -883,7 +870,6 @@ GABARIT_HTML = r"""<!DOCTYPE html>
       <button data-src="all" aria-pressed="true">Toutes</button>
       <button data-src="BM" aria-pressed="false">Banque Mondiale</button>
       <button data-src="TED" aria-pressed="false">TED</button>
-      <button data-src="BOAMP" aria-pressed="false">BOAMP</button>
     </div>
     <div class="seg" id="triseg" role="group" aria-label="Tri">
       <button data-tri="score" aria-pressed="true">Importance</button>
@@ -906,7 +892,7 @@ const SUIVI_URL = __SUIVI_URL__;
 const SUIVI_TOKEN = __SUIVI_TOKEN__;
 const SUIVI_ON = !!SUIVI_URL;
 const CONTACTES = new Set((()=>{try{return JSON.parse(localStorage.getItem('suivi_contactes')||'[]')}catch(e){return[]}})());
-const SRC_SUIVI = {TED:'TED',BM:'Banque Mondiale',BOAMP:'BOAMP','PRIVÉ':'Privé BITD',RW:'ReliefWeb',ONG:'ReliefWeb'};
+const SRC_SUIVI = {TED:'TED',BM:'Banque Mondiale','PRIVÉ':'Privé BITD',RW:'ReliefWeb',ONG:'ReliefWeb'};
 function leadId(l){return l.pub||l.lien||(l.src+'|'+l.pays+'|'+l.agence+'|'+l.titre);}
 function marquerContacte(idx,btn){
   const l=AFFICHES[idx]; if(!l||!SUIVI_ON)return;
@@ -921,8 +907,8 @@ function marquerContacte(idx,btn){
 }
 const ORDRE_ZONES = ["Afrique de l'Ouest","Sahel","Afrique centrale","Afrique de l'Est","Afrique australe","Afrique du Nord","Proche-Orient","Péninsule arabique","Asie centrale","Asie du Sud","Asie du Sud-Est","Caucase","Balkans","Europe de l'Est","Caraïbes","Amérique latine","Europe de l'Ouest","Outre-mer","Non classé"];
 const winLabel={immediate:'Fenêtre immédiate',court_terme:'Court terme',indetermine:'Fenêtre indéterminée'};
-const SRC_LABEL={BM:'Banque Mondiale',TED:'TED',BOAMP:'BOAMP','PRIVÉ':'Privé · BITD',ATTRIB:'Titulaire'};
-// Etiquette d'echelle de score. Les scores marche (TED/BM/BOAMP, barème
+const SRC_LABEL={BM:'Banque Mondiale',TED:'TED','PRIVÉ':'Privé · BITD',ATTRIB:'Titulaire'};
+// Etiquette d'echelle de score. Les scores marche (TED/BM, barème
 // additif) et les scores signal (privé, barème multiplicatif) NE sont PAS sur
 // la même échelle : un 6 marché ne vaut pas un 6 signal. On l'affiche pour
 // éviter toute comparaison directe trompeuse.
@@ -933,15 +919,15 @@ function echelleLabel(src){
 }
 let AFFICHES=[];
 
-// Pays francophones (choix de la langue du mail). Les entreprises BITD et les
-// acheteurs BOAMP sont francophones par nature.
+// Pays francophones (choix de la langue du mail). Les entreprises BITD sont
+// francophones par nature.
 const FRANCO=['france','mali','niger','tchad','senegal','ivoire','burkina','benin','togo',
 'guinee','cameroun','gabon','congo','rdc','centrafrique','djibouti','madagascar','maroc','algerie',
 'tunisie','mauritanie','liban','haiti','belgique','suisse','luxembourg','monaco','comores','burundi',
 'rwanda','seychelles','vanuatu'];
 function sansAccent(s){return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');}
 function langue(l){
-  if(l.src==='PRIVÉ'||l.src==='BOAMP')return 'fr';
+  if(l.src==='PRIVÉ')return 'fr';
   // Match par MOT entier (évite "niger" ⊂ "nigeria").
   const p=' '+sansAccent(l.pays).replace(/[^a-z ]/g,' ').replace(/\s+/g,' ').trim()+' ';
   return FRANCO.some(f=>p.includes(' '+f+' '))?'fr':'en';
@@ -959,7 +945,7 @@ function buildEmail(l){
     return{subject:`Security for your deployed teams — ${pays}`,
       body:`Dear Sir or Madam,\n\nWe are following ${l.agence}'s international development. Deploying your teams to ${pays} (${act}) may raise security considerations for your personnel on the ground.\n\nAmarante International protects defence-industry staff in complex environments: close protection, secure transport, site assessment and security advisory.\n\nIf this is relevant to your upcoming missions, I would welcome a brief call.\n\nKind regards,\n[Your name]\nAmarante International`};
   }
-  // Marches publics (TED / BM / BOAMP)
+  // Marches publics (TED / BM)
   const titre=l.titre||(fr?'votre projet':'your project');
   if(fr)return{subject:`Sûreté des équipes — ${pays}`,
     body:`Madame, Monsieur,\n\nJe me permets de vous contacter au sujet de « ${titre} », en ${pays}.\n\nAmarante International accompagne les organisations déployant du personnel en environnement complexe : protection rapprochée, escorte sécurisée, chauffeurs de sécurité et conseil sûreté. Nous intervenons régulièrement en ${zone}.\n\nSi la sûreté des équipes mobilisées sur ce projet est un sujet, je serais ravi d'échanger quelques minutes.\n\nBien cordialement,\n[Votre nom]\nAmarante International`};
@@ -1082,7 +1068,7 @@ function buildPeriod(){
   }));
 }
 
-const SRC_NOMS_META={TED:'TED',BM:'Banque Mondiale',BOAMP:'BOAMP','PRIVÉ':'Privé (BITD)',ATTRIB:'Titulaires'};
+const SRC_NOMS_META={TED:'TED',BM:'Banque Mondiale','PRIVÉ':'Privé (BITD)',ATTRIB:'Titulaires'};
 const SRC_PRESENTES=[...new Set(LEADS.map(l=>l.src))].map(s=>SRC_NOMS_META[s]||s);
 document.getElementById('runmeta').innerHTML =
   'Run du <b>'+META.date+'</b><br>'+META.total+' avis analysés<br>Sources : '+(SRC_PRESENTES.join(', ')||'aucune');
@@ -1103,7 +1089,7 @@ function buildStats(){
       {k:'all',cls:'',n:fiches.length,l:'Toutes les entreprises'}
     ];
   }else{
-    const av=LEADS.filter(l=>l.src==='TED'||l.src==='BM'||l.src==='BOAMP');
+    const av=LEADS.filter(l=>l.src==='TED'||l.src==='BM');
     const c=a=>av.filter(l=>l.action===a).length;
     defs=[
       {k:'contacter',cls:'act',n:c('contacter'),l:'À contacter'},
