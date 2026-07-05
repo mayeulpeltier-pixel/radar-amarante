@@ -41,6 +41,7 @@ import time
 
 import ted_complet_v14 as ted
 import bitd_signaux as bitd
+import radar_etat
 
 
 # ===========================================================================
@@ -571,10 +572,22 @@ def main():
         return
     print("Watchlist : {} entreprises (multi-secteurs + defense + attributaires).".format(len(comptes)))
 
-    # Memoire + rotation (reutilise BITD).
-    deja_vus = bitd.charger_vus(sheet_id, fichier)
+    # Memoire inter-runs (curseur + articles vus) : DECOUPLEE du Sheet, lue
+    # depuis radar_etat.json (versionne dans le depot). Au tout premier run, le
+    # fichier n'existe pas encore : migration douce depuis l'ancien etat du
+    # Sheet pour ne pas repartir de zero (et donc ne pas tout retraiter).
+    curseur, vus_list = radar_etat.charger()
+    if curseur is None:
+        if sheet_id and fichier:
+            curseur = bitd.lire_curseur(sheet_id, fichier)
+            vus_list = sorted(bitd.charger_vus(sheet_id, fichier))
+            print("radar_etat : migration initiale depuis le Sheet "
+                  "({} vus, curseur {}).".format(len(vus_list), curseur))
+        else:
+            curseur, vus_list = 0, []
+            print("radar_etat : demarrage a froid (ni fichier d'etat ni Sheet).")
+    deja_vus = set(vus_list)
     cles_existantes = bitd.cles_evenements_existantes(sheet_id, fichier)
-    curseur = bitd.lire_curseur(sheet_id, fichier)
 
     # Fenetre de rotation : on borne le nombre d'ENTREPRISES par run (le reseau
     # est le facteur limitant). Priorite : watchlist curee (majors deliberement
@@ -614,7 +627,8 @@ def main():
     else:
         print("Adzuna : inactif (ADZUNA_APP_ID / ADZUNA_APP_KEY absents).")
 
-    # Ecriture + persistance memoire/curseur (reutilise BITD).
+    # Ecriture des RESULTATS dans le Sheet (le livrable, lu par le dashboard et
+    # le bouton "Je contacte"). L'ETAT inter-runs, lui, ne va plus dans le Sheet.
     if sheet_id and fichier:
         try:
             import gspread
@@ -625,12 +639,17 @@ def main():
             feuille = bitd.ouvrir_ou_creer_onglet(classeur_rw)
             n_ecrits = bitd.ecrire_resultats(feuille, resultats)
             print("-> {} signal(aux) ecrit(s) dans '{}'.".format(n_ecrits, bitd.NOM_ONGLET_PRIVE))
-            bitd.persister_vus(classeur_rw, vus_ce_run)
-            bitd.ecrire_curseur(classeur_rw, prochain)
         except Exception as e:
             print("ERREUR ecriture Sheet : {}".format(e))
     else:
         print("(dry-run : pas de Sheet configure)")
+
+    # Persistance de l'ETAT inter-runs dans un fichier versionne, INDEPENDAMMENT
+    # du Sheet (survit meme si le Sheet est indisponible). Le workflow commite
+    # radar_etat.json en fin de run.
+    n_vus = radar_etat.sauver(prochain, vus_list, vus_ce_run)
+    print("radar_etat : {} vus memorises (plafond {}), curseur -> {} (fichier {}).".format(
+        n_vus, radar_etat.MAX_VUS_MEMOIRE, prochain, radar_etat.CHEMIN_ETAT))
 
 
 if __name__ == "__main__":
