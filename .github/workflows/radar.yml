@@ -21,7 +21,7 @@ concurrency:
 jobs:
   radar:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Recuperer le code
         uses: actions/checkout@v4
@@ -33,18 +33,20 @@ jobs:
         run: pip install requests gspread google-auth python-dateutil pypdf
       # 1) Barriere de securite : les tests d'abord. Si un test casse, on s'arrete.
       - name: Lancer les tests
-        run: python -m unittest test_radar -v
+        run: python -m unittest discover -p "test_*.py" -v
       # 2) Reconstituer la cle de service Google a partir du secret.
       - name: Reconstituer la cle de service Google
         run: echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > service_account.json
-      # 3) Lancer le radar (TED puis BM, ecriture dans le Sheet).
+      # 3) Lancer le radar (TED, BM, AfDB, ADB, EBRD, ReliefWeb, signaux prives).
+      #    ADB_URL / EBRD_URL : optionnels. Non definis => les collecteurs
+      #    utilisent leur URL par defaut (garde-fou si la page revient vide).
       - name: Lancer le radar
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
           RADAR_LOG_FILE: radar.log
-          RELIEFWEB_APPNAME: radar-amarante-veille-x7q234hyu
+          RELIEFWEB_APPNAME: amarante-radar-veille-x7q234hyu
           RADAR_GDELT: "0"
           RADAR_PRIVES_DEBUG: "1"
           ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
