@@ -194,6 +194,24 @@ def main():
     except Exception as e:
         logger.info("(info) Collecteur attributions indisponible (%s). Etape ignoree.", e)
 
+    # --- 2 sexies. Import des collecteurs BAILLEURS MULTILATERAUX, optionnels --
+    # AfDB (Afrique/Sahel), ADB (Asie), EBRD (Ukraine/Caucase/Asie centrale).
+    # Chacun reutilise le coeur TED et ecrit dans son propre onglet. Isoles :
+    # s'ils manquent ou echouent, le reste du radar tourne quand meme.
+    afdb = adb = ebrd = None
+    try:
+        import afdb_radar as afdb
+    except Exception as e:
+        logger.info("(info) Collecteur AfDB indisponible (%s). Etape ignoree.", e)
+    try:
+        import adb_radar as adb
+    except Exception as e:
+        logger.info("(info) Collecteur ADB indisponible (%s). Etape ignoree.", e)
+    try:
+        import ebrd_radar as ebrd
+    except Exception as e:
+        logger.info("(info) Collecteur EBRD indisponible (%s). Etape ignoree.", e)
+
     # --- 3. Garde commune : cle API ------------------------------------------
     if not os.environ.get("ANTHROPIC_API_KEY"):
         logger.error("ANTHROPIC_API_KEY n'est pas definie. Les deux "
@@ -210,6 +228,15 @@ def main():
     resultats["TED"] = lancer_collecteur("ETAPE -- COLLECTEUR TED", ted)
     resultats["Banque Mondiale"] = lancer_collecteur(
         "ETAPE -- COLLECTEUR BANQUE MONDIALE", bm)
+    if afdb is not None:
+        resultats["AfDB"] = lancer_collecteur(
+            "ETAPE -- COLLECTEUR AfDB (Afrique)", afdb)
+    if adb is not None:
+        resultats["ADB"] = lancer_collecteur(
+            "ETAPE -- COLLECTEUR ADB (Asie)", adb)
+    if ebrd is not None:
+        resultats["EBRD"] = lancer_collecteur(
+            "ETAPE -- COLLECTEUR EBRD (Ukraine/Caucase)", ebrd)
     if reliefweb is not None:
         resultats["ReliefWeb"] = lancer_collecteur(
             "ETAPE -- COLLECTEUR RELIEFWEB (offres terrain)", reliefweb)
