@@ -1,0 +1,78 @@
+name: Sauvegarde Sheet Radar
+# Sauvegarde quotidienne du Google Sheet (anti-SPOF donnees).
+#  - schedule : tous les jours a 22h00 UTC (00h Paris l'ete). Capture a la fois
+#    le run radar du matin (les jours de run) ET les editions humaines de la
+#    journee (statut_suivi, watchlist, outcomes gagne/perdu).
+#  - workflow_dispatch : a la demande.
+on:
+  schedule:
+    - cron: "0 22 * * *"
+  workflow_dispatch:
+
+# Droit d'ecrire dans le depot : necessaire pour committer les CSV de backups/.
+permissions:
+  contents: write
+
+# Un seul backup a la fois. Groupe distinct du radar pour ne pas s'annuler l'un
+# l'autre (les deux commitent sur la meme branche, le pull --rebase gere).
+concurrency:
+  group: radar-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+
+      # GARDE-FOU SECURITE : refuse de sauvegarder en clair si le depot est
+      # PUBLIC. Les CSV contiennent contacts, emails et pipeline commercial :
+      # les exposer publiquement serait une fuite. Si un jour le depot passe
+      # public par erreur, ce run echoue proprement AVANT d'ecrire quoi que ce
+      # soit, au lieu de fuiter les donnees.
+      - name: Verifier que le depot est prive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          vis=$(gh repo view "$GITHUB_REPOSITORY" --json visibility -q .visibility | tr '[:upper:]' '[:lower:]')
+          echo "Visibilite du depot : $vis"
+          if [ "$vis" = "public" ]; then
+            echo "::error::Depot PUBLIC : sauvegarde en clair refusee (contacts, emails, pipeline commercial). Repasse le depot en prive, ou demande la variante artifact/R2 chiffree."
+            exit 1
+          fi
+          echo "Depot non public : sauvegarde autorisee."
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installer les dependances
+        run: pip install gspread google-auth
+
+      - name: Reconstituer la cle de service Google
+        run: echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > service_account.json
+
+      - name: Sauvegarder tous les onglets du Sheet
+        env:
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          BACKUP_DIR: backups
+        run: python backup_sheet.py
+
+      # Commit uniquement du dossier backups/ (jamais service_account.json).
+      # [skip ci] : ce commit ne redeclenche aucun workflow.
+      - name: Committer les sauvegardes
+        run: |
+          if [ -z "$(git status --porcelain backups/)" ]; then
+            echo "Aucun changement dans les sauvegardes, rien a committer."
+            exit 0
+          fi
+          git config user.name "radar-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backups/
+          git commit -m "chore(backup): sauvegarde quotidienne du Sheet [skip ci]"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
