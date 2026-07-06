@@ -232,6 +232,13 @@ def ligne_vers_lead(row, source):
         cible = _txt(row.get("cible_commerciale_reelle")) or \
             "Contact via réseau : direction sûreté / export / MCO."
         groupe = _txt(row.get("type_activite")) or "signal"
+    elif source == "RW":
+        # ReliefWeb : l'organisation qui recrute EST le déployeur (cible directe).
+        # cible_commerciale_reelle est déjà nuancée côté collecteur (marché ONU
+        # souvent verrouillé). Groupe = catégorie de poste (field, logistics...).
+        cible = _txt(row.get("cible_commerciale_reelle")) or \
+            "Organisation qui recrute et déploie : viser direction sûreté / logistique / RH terrain."
+        groupe = _txt(row.get("categorie")) or "humanitaire"
     else:
         cible = "Bureau ou consortium titulaire du marché, pas le bailleur."
         groupe = "AT"
@@ -342,11 +349,17 @@ def _attacher_enrichissement(lead, enrichissement, cle_entreprise):
 
 
 def construire_leads(lignes_ted, lignes_bm, lignes_prive=None,
-                     enrichissement=None, lignes_attrib=None):
-    """Fusionne les onglets (TED, Banque Mondiale, PRIVÉ/BITD), deduplique,
-    trie. Pour les leads PRIVÉ, remonte le dirigeant (enrichissement) comme contact."""
+                     enrichissement=None, lignes_attrib=None, lignes_rw=None):
+    """Fusionne les onglets (TED, Banque Mondiale, ReliefWeb, PRIVÉ/BITD),
+    deduplique, trie. Pour les leads PRIVÉ, remonte le dirigeant
+    (enrichissement) comme contact.
+
+    ReliefWeb : source d'AVIS (lentille Opportunités, comme TED/BM). Même moteur
+    de score additif (ted.calculer_scores), donc même échelle « avis ». Pays
+    résolu par NOM (comme BM), pas par code ISO."""
     leads = [ligne_vers_lead(r, "TED") for r in lignes_ted]
     leads += [ligne_vers_lead(r, "BM") for r in lignes_bm]
+    leads += [ligne_vers_lead(r, "RW") for r in (lignes_rw or [])]
     leads_prive = [ligne_vers_lead(r, "PRIVÉ") for r in (lignes_prive or [])]
 
     # Index d'enrichissement : clefs brutes (minuscules) + alias normalises,
@@ -465,6 +478,28 @@ def lire_onglets(sheet_id, fichier_cs):
             "date_detection"]
     lignes_attrib = _lignes_vers_dicts(valeurs(onglet_attrib), colonnes_attrib)
 
+    # Onglet ReliefWeb (offres terrain = signaux de déploiement humanitaire).
+    # Schéma fourni par le collecteur ; repli sur un schéma figé si le module
+    # est absent (le dashboard reste fonctionnel).
+    try:
+        import ted_complet_reliefweb as rw
+        colonnes_rw = rw.TOUTES_COLONNES_RW
+        onglet_rw = rw.NOM_ONGLET_RW
+    except Exception:
+        onglet_rw = "reliefweb_radar"
+        colonnes_rw = [
+            "date_maj", "score_final", "score_surete", "score_commercial",
+            "action_recommandee", "fenetre_action", "niveau_opportunite_amarante",
+            "titre", "acheteur", "pays_execution",
+            "type_client", "type_mobilite", "profil_personnes_exposees",
+            "duree_estimee", "accessibilite_commerciale", "securite_existante_detectee",
+            "profils_acteurs_probables", "cible_commerciale_reelle",
+            "justification", "confiance", "modele", "raffine", "divergence",
+            "organisation", "type_contrat", "categorie", "ville", "how_to_apply",
+            "publication_number", "lien_avis", "deadline", "date_publication",
+            "statut_suivi", "date_detection"]
+    lignes_rw = _lignes_vers_dicts(valeurs(onglet_rw), colonnes_rw)
+
     # Enrichissement firmographique (dirigeants), pour remonter le contact.
     try:
         import enrichir_entreprises as ee
@@ -495,7 +530,7 @@ def lire_onglets(sheet_id, fichier_cs):
         if nom and email:
             enrichissement.setdefault(nom, {})["email_pro"] = email
 
-    return lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement
+    return lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement, lignes_rw
 
 
 def generer_html(leads):
@@ -559,10 +594,10 @@ def main():
         sys.exit(1)
 
     print("Lecture des onglets du Sheet...")
-    lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement = lire_onglets(sheet_id, fichier_cs)
-    leads = construire_leads(lignes_ted, lignes_bm, lignes_prive, enrichissement, lignes_attrib)
-    print("  TED : {} avis | BM : {} avis | total exploitable : {}".format(
-        len(lignes_ted), len(lignes_bm), len(leads)))
+    lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement, lignes_rw = lire_onglets(sheet_id, fichier_cs)
+    leads = construire_leads(lignes_ted, lignes_bm, lignes_prive, enrichissement, lignes_attrib, lignes_rw)
+    print("  TED : {} | BM : {} | ReliefWeb : {} | total exploitable : {}".format(
+        len(lignes_ted), len(lignes_bm), len(lignes_rw), len(leads)))
 
     html = generer_html(leads)
     dossier = os.path.dirname(sortie)
@@ -685,6 +720,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .src.bm{border-color:rgba(192,39,58,0.4);color:#d98a96}
   .src.ted{border-color:rgba(200,137,59,0.4);color:#dcb079}
   .src.attrib{border-color:rgba(120,190,150,0.45);color:#7fae8f}
+  .src.rw{border-color:rgba(90,150,210,0.45);color:#8fb8de}
   .src.privé,.src.prive{border-color:rgba(150,150,200,0.4);color:#a9a9d9}
   .pays{color:var(--bone);font-weight:600}
   .scorebox{text-align:right;flex-shrink:0}
@@ -892,6 +928,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
       <button data-src="all" aria-pressed="true">Toutes</button>
       <button data-src="BM" aria-pressed="false">Banque Mondiale</button>
       <button data-src="TED" aria-pressed="false">TED</button>
+      <button data-src="RW" aria-pressed="false">ReliefWeb</button>
     </div>
     <div class="seg" id="triseg" role="group" aria-label="Tri">
       <button data-tri="score" aria-pressed="true">Importance</button>
@@ -930,7 +967,7 @@ function marquerContacte(idx,btn){
 }
 const ORDRE_ZONES = ["Afrique de l'Ouest","Sahel","Afrique centrale","Afrique de l'Est","Afrique australe","Afrique du Nord","Proche-Orient","Péninsule arabique","Asie centrale","Asie du Sud","Asie du Sud-Est","Caucase","Balkans","Europe de l'Est","Caraïbes","Amérique latine","Europe de l'Ouest","Outre-mer","Non classé"];
 const winLabel={immediate:'Fenêtre immédiate',court_terme:'Court terme',indetermine:'Fenêtre indéterminée'};
-const SRC_LABEL={BM:'Banque Mondiale',TED:'TED','PRIVÉ':'Privé · BITD',ATTRIB:'Titulaire'};
+const SRC_LABEL={BM:'Banque Mondiale',TED:'TED',RW:'ReliefWeb','PRIVÉ':'Privé · BITD',ATTRIB:'Titulaire'};
 // Etiquette d'echelle de score. Les scores marche (TED/BM, barème
 // additif) et les scores signal (privé, barème multiplicatif) NE sont PAS sur
 // la même échelle : un 6 marché ne vaut pas un 6 signal. On l'affiche pour
@@ -1091,7 +1128,7 @@ function buildPeriod(){
   }));
 }
 
-const SRC_NOMS_META={TED:'TED',BM:'Banque Mondiale','PRIVÉ':'Privé (BITD)',ATTRIB:'Titulaires'};
+const SRC_NOMS_META={TED:'TED',BM:'Banque Mondiale',RW:'ReliefWeb','PRIVÉ':'Privé (BITD)',ATTRIB:'Titulaires'};
 const SRC_PRESENTES=[...new Set(LEADS.map(l=>l.src))].map(s=>SRC_NOMS_META[s]||s);
 document.getElementById('runmeta').innerHTML =
   'Run du <b>'+META.date+'</b><br>'+META.total+' avis analysés<br>Sources : '+(SRC_PRESENTES.join(', ')||'aucune');
@@ -1112,7 +1149,7 @@ function buildStats(){
       {k:'all',cls:'',n:fiches.length,l:'Toutes les entreprises'}
     ];
   }else{
-    const av=LEADS.filter(l=>l.src==='TED'||l.src==='BM');
+    const av=LEADS.filter(l=>l.src==='TED'||l.src==='BM'||l.src==='RW');
     const c=a=>av.filter(l=>l.action===a).length;
     defs=[
       {k:'contacter',cls:'act',n:c('contacter'),l:'À contacter'},
