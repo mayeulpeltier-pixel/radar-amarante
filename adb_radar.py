@@ -8,44 +8,37 @@ POURQUOI CETTE SOURCE
 ADB finance des projets dans toute l'Asie-Pacifique, dont des zones Amarante :
 Afghanistan, Pakistan, Bangladesh, Sri Lanka, Myanmar, plus le Caucase
 (Armenie, Azerbaidjan, Georgie) et l'Asie centrale (Kazakhstan, Kirghizistan,
-Tadjikistan, Turkmenistan, Ouzbekistan). Le flux "Tenders - Advanced Notices"
-porte l'amont (avis anticipes avant approbation du pret).
+Tadjikistan, Turkmenistan, Ouzbekistan).
 
-ACCES (verifie, juillet 2026) : ADB expose des flux RSS (page https://www.adb.org/rss),
-dont "Procurement Notices" et "Tenders - Advanced Notices". Pas d'API JSON.
-L'URL exacte du .xml n'a pas pu etre lue en direct (anti-bot) : elle est donc
-CONFIGURABLE via la variable ADB_FLUX, avec un garde-fou qui verifie que le
-contenu recu est bien du RSS. Confirme-la en un clic sur le bouton RSS de
-https://www.adb.org/projects/tenders (recommande : le flux "Advanced Notices").
+ACCES (verifie, juillet 2026)
+-----------------------------
+Depuis la migration SearchStax, ADB n'expose plus de flux RSS fiable pour les
+tenders. La page https://www.adb.org/projects/tenders liste les avis avec des
+CHAMPS EN CLAIR tres exploitables :
+    Status / Deadline / [reference: code-pays: Titre](lien PDF)
+    Country/Economy: <NOM DE PAYS EN CLAIR> / Sector / Posting Date / Notice Type
+On lit donc cette page (pagination searchstax[page]=N) et on parse par LABELS,
+methode robuste a la structure HTML. Le pays vient du champ Country/Economy
+(nom en clair), bien plus fiable que les codes ADB du titre.
 
-DIFFERENCE CLE AVEC AfDB (pourquoi ce collecteur est distinct)
---------------------------------------------------------------
-Les titres ADB n'utilisent PAS l'ISO3 et le code pays est a position instable :
-  - avant les deux-points : "TA-10693 ARM: Armenia... - Legal Expert (59351-001)"
-  - apres                 : "Loan 4534: NEP - Kathmandu Valley Water..."
-  - entre parentheses     : "TA-10041 REG: ... (AZE: Wastewater...) (56136-001)"
-  - regional              : "58369-001; Regional; ..." (pas de pays precis)
-Donc on NE parse PAS par position : on SCANNE tout le titre a la recherche d'un
-code pays ADB en MAJUSCULES (insensible aux collisions, le texte courant n'est
-pas en majuscules), avec repli sur les noms de pays anglais. On mappe ensuite
-le code ADB vers l'ISO3 (VIE->VNM, NEP->NPL, BAN->BGD, INO->IDN...).
+GARDE-FOU : si la page revient SANS notices (probablement rendue en JavaScript
+cote navigateur), le collecteur le signale clairement et invite a fournir
+l'URL de l'API JSON (F12 > Reseau). Il ne fabrique jamais de faux resultats.
 
 REUTILISATION : comme AfDB, ce collecteur REUTILISE le coeur ted_complet_v14
-(session, LLM, scoring, escalade, memoire, Sheet) sans le modifier. Ecrit dans
-l'onglet SEPARE "adb_radar". Meme echelle de score que TED/BM.
+(session, LLM, scoring, escalade, memoire, Sheet) sans le modifier. Onglet
+SEPARE "adb_radar", meme echelle de score que TED/BM.
 
 Interrupteur : RADAR_ADB=0 desactive.
-Reglage : ADB_DRY_RUN=1 montre l'entonnoir SANS appel LLM, et liste les
-prefixes pays NON resolus (canari de derive du mapping).
+Reglage : ADB_DRY_RUN=1 montre l'entonnoir SANS appel LLM (et liste les pays
+hors zone rencontres, canari de derive du mapping).
 """
 
-import email.utils
 import os
 import re
 import time
 import unicodedata
-import xml.etree.ElementTree as ET
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 
 try:
     import ted_complet_v14 as ted
@@ -61,9 +54,14 @@ except ModuleNotFoundError:
 ACTIVER = os.environ.get("RADAR_ADB", "1") != "0"
 DRY_RUN = os.environ.get("ADB_DRY_RUN", "0") == "1"
 
-# URL du flux RSS ADB. A CONFIRMER via le bouton RSS de la page tenders
-# (recommande : "Tenders - Advanced Notices"). Surchargeable par ADB_FLUX.
-FLUX_ADB = os.environ.get("ADB_FLUX", "https://www.adb.org/projects/tenders/rss")
+# URL de la page tenders avec un emplacement {page} pour la pagination.
+# Surchargeable par ADB_URL (colle l'URL exacte vue dans ton navigateur, en
+# remplacant le numero de page par {page}).
+ADB_URL = os.environ.get(
+    "ADB_URL",
+    "https://www.adb.org/projects/tenders?searchstax[query]=*"
+    "&searchstax[page]={page}&searchstax[order]=ds_date_closing%20desc")
+NB_PAGES = int(os.environ.get("ADB_PAGES", "5"))     # 12 notices par page
 NOM_ONGLET = "adb_radar"
 
 NB_JOURS_FENETRE = int(os.environ.get("ADB_JOURS", "30"))
@@ -76,228 +74,236 @@ def _norm(s):
     return re.sub(r"\s+", " ", s).strip()
 
 
-# --- Mapping code pays ADB (3 lettres, MAJUSCULES) -> ISO3 --------------------
-# On mappe les pays suivis ET quelques non-suivis courants (VIE, IND, PRC...),
-# afin qu'un code hors zone soit RECONNU puis FILTRE (et n'entraine pas une
-# mauvaise attribution a un autre code du titre). REG/regional = pas de pays.
-CODE_ADB_VERS_ISO3 = {
+# --- Country/Economy (nom en clair) -> ISO3 ----------------------------------
+# On mappe les pays suivis ET quelques non-suivis courants (pour les reconnaitre
+# puis les filtrer proprement). "Regional" et "Multinational" = pas de pays.
+NOM_VERS_ISO3 = {
     # -- zones Amarante (suivies) --
-    "AFG": "AFG", "PAK": "PAK", "BAN": "BGD", "SRI": "LKA", "NEP": "NPL",
-    "MYA": "MMR", "CAM": "KHM", "LAO": "LAO", "INO": "IDN", "PHI": "PHL",
-    "PNG": "PNG", "KAZ": "KAZ", "KGZ": "KGZ", "TAJ": "TJK", "TKM": "TKM",
-    "UZB": "UZB", "ARM": "ARM", "AZE": "AZE", "GEO": "GEO",
-    # -- non suivis, mappes pour etre reconnus puis filtres --
-    "VIE": "VNM", "IND": "IND", "PRC": "CHN", "MON": "MNG", "THA": "THA",
-    "MAL": "MYS", "BHU": "BTN", "MLD": "MDV", "FIJ": "FJI", "SAM": "WSM",
-    "TON": "TON", "VAN": "VUT", "SOL": "SLB", "TIM": "TLS", "KOR": "KOR",
-}
-# Codes "region" a ignorer (pas de pays precis exploitable).
-CODES_REGIONAUX = {"REG", "RRP", "SUB"}
-
-# --- Repli : noms de pays anglais -> ISO3 (seulement zones suivies) -----------
-NOM_EN_VERS_ISO3 = {
     "afghanistan": "AFG", "pakistan": "PAK", "bangladesh": "BGD",
     "sri lanka": "LKA", "nepal": "NPL", "myanmar": "MMR", "burma": "MMR",
-    "cambodia": "KHM", "lao": "LAO", "laos": "LAO", "lao pdr": "LAO",
-    "indonesia": "IDN", "philippines": "PHL", "papua new guinea": "PNG",
-    "kazakhstan": "KAZ", "kyrgyz republic": "KGZ", "kyrgyzstan": "KGZ",
-    "tajikistan": "TJK", "turkmenistan": "TKM", "uzbekistan": "UZB",
-    "georgia": "GEO", "armenia": "ARM", "azerbaijan": "AZE",
+    "cambodia": "KHM", "lao pdr": "LAO", "lao people's democratic republic": "LAO",
+    "laos": "LAO", "indonesia": "IDN", "philippines": "PHL",
+    "papua new guinea": "PNG", "kazakhstan": "KAZ", "kyrgyz republic": "KGZ",
+    "kyrgyzstan": "KGZ", "tajikistan": "TJK", "turkmenistan": "TKM",
+    "uzbekistan": "UZB", "georgia": "GEO", "armenia": "ARM", "azerbaijan": "AZE",
+    # -- non suivis, mappes pour etre reconnus puis filtres --
+    "viet nam": "VNM", "vietnam": "VNM", "india": "IND", "mongolia": "MNG",
+    "china": "CHN", "people's republic of china": "CHN", "thailand": "THA",
+    "maldives": "MDV", "bhutan": "BTN", "fiji": "FJI", "samoa": "WSM",
+    "tonga": "TON", "vanuatu": "VUT", "solomon islands": "SLB",
+    "timor-leste": "TLS", "malaysia": "MYS",
 }
-_NOMS_EN_TRIES = sorted(NOM_EN_VERS_ISO3, key=len, reverse=True)
+# Valeurs "region" a ignorer (pas de pays precis exploitable).
+REGIONAUX = {"regional", "multinational", "asia and the pacific", "asia pacific", ""}
 
 _SUIVIS = set(getattr(ted, "CODES_PAYS_SUIVIS", []))
 
 
 # ===========================================================================
-# PARTIE 2 -- COLLECTE RSS
+# PARTIE 2 -- COLLECTE (page tenders)
 # ===========================================================================
 
-def collecter_flux(fetch=None, session=None):
-    """Texte XML brut du flux. `fetch` injectable pour tests. Garde-fou : on
-    verifie que le contenu ressemble a du RSS, sinon message clair (mauvaise URL)."""
+def collecter_pages(fetch=None, session=None, pages=NB_PAGES):
+    """Renvoie le texte concatene des pages tenders. `fetch` injectable pour
+    tests : callable(url) -> str (ou callable() -> str)."""
     if fetch is not None:
-        return fetch()
+        try:
+            return fetch(ADB_URL.format(page=1))
+        except TypeError:
+            return fetch()
     session = session or ted.session_robuste()
-    rep = session.get(FLUX_ADB, timeout=30, headers={
-        "User-Agent": "radar-amarante/1.0 (veille commerciale)"})
-    rep.raise_for_status()
-    texte = rep.text
-    if "<rss" not in texte[:2000].lower() and "<item" not in texte[:5000].lower():
-        raise ValueError(
-            "Le contenu recupere depuis ADB_FLUX ({}) n'est pas un flux RSS. "
-            "Confirme l'URL en cliquant le bouton RSS sur "
-            "https://www.adb.org/projects/tenders, puis renseigne ADB_FLUX.".format(FLUX_ADB))
-    return texte
+    entetes = {
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/125.0 Safari/537.36"),
+        "Accept": "text/html,application/xhtml+xml",
+    }
+    morceaux = []
+    for p in range(1, pages + 1):
+        url = ADB_URL.format(page=p)
+        rep = session.get(url, timeout=30, headers=entetes)
+        rep.raise_for_status()
+        morceaux.append(rep.text)
+        time.sleep(0.5)
+    return "\n".join(morceaux)
 
 
-def _localname(tag):
-    return tag.rsplit("}", 1)[-1]
-
-
-def parser_items(xml_texte):
-    items = []
-    try:
-        root = ET.fromstring(xml_texte)
-    except ET.ParseError as e:
-        print("  (attention) flux ADB illisible (XML invalide : {}).".format(e))
-        return items
-    for n in [x for x in root.iter() if _localname(x.tag) == "item"]:
-        champ = {"titre": "", "lien": "", "date": "", "description": "", "categorie": ""}
-        for enfant in list(n):
-            nom = _localname(enfant.tag)
-            txt = (enfant.text or "").strip()
-            if nom == "title":
-                champ["titre"] = txt
-            elif nom == "link":
-                champ["lien"] = txt or enfant.attrib.get("href", "").strip()
-            elif nom in ("pubDate", "date"):
-                champ["date"] = champ["date"] or txt
-            elif nom == "description":
-                champ["description"] = txt
-            elif nom == "category":
-                champ["categorie"] = (champ["categorie"] + " " + txt).strip()
-            elif nom == "guid" and not champ["lien"]:
-                champ["lien"] = txt
-        if champ["titre"]:
-            items.append(champ)
-    return items
+def _texte_brut(html):
+    """HTML -> texte : retire scripts/styles et balises, en conservant les
+    liens PDF sous forme lisible [texte](url) pour ne pas perdre le lien."""
+    html = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", html)
+    # Conserve les ancres PDF : <a href="X.pdf">T</a> -> [T](X.pdf)
+    html = re.sub(r'(?is)<a[^>]+href="([^"]+\.pdf)"[^>]*>(.*?)</a>',
+                  lambda m: "[{}]({})".format(re.sub(r"<[^>]+>", "", m.group(2)).strip(), m.group(1)),
+                  html)
+    html = re.sub(r"(?s)<[^>]+>", " ", html)          # autres balises
+    html = (html.replace("&amp;", "&").replace("&nbsp;", " ")
+                .replace("&#8211;", "-").replace("&ndash;", "-")
+                .replace("&#039;", "'").replace("&rsquo;", "'"))
+    return html
 
 
 # ===========================================================================
-# PARTIE 3 -- NORMALISATION (scan pays, type de notice, reference)
+# PARTIE 3 -- PARSING PAR LABELS
 # ===========================================================================
 
-def resoudre_iso3(texte):
-    """Scanne le texte : d'abord les codes pays ADB en MAJUSCULES (whole word),
-    puis les noms de pays anglais. Renvoie (iso3, code_trouve_hors_zone).
-      - iso3 non vide  : pays a risque suivi identifie.
-      - ('', code)     : un pays a ete reconnu mais hors zone suivie (on skippe).
-      - ('', '')       : aucun pays identifiable (regional ou inconnu).
-    """
-    # 1) Codes ADB en majuscules (mots entiers de 3 lettres).
-    codes_presents = re.findall(r"(?<![A-Za-z])[A-Z]{3}(?![A-Za-z])", texte or "")
-    hors_zone = ""
-    for code in codes_presents:
-        if code in CODES_REGIONAUX:
+_RE_REFERENCE = re.compile(r"\b(\d{5}-\d{3})\b")
+_RE_DATE = re.compile(r"(\d{1,2}\s+\w{3,9}\s+\d{4})")
+_RE_LIEN_PDF = re.compile(r"\]\((https?://[^)\s]+\.pdf)\)")
+
+
+def _champ(bloc, label, fins):
+    """Extrait la valeur d'un label jusqu'au prochain label (labels colles sans
+    espace dans la page ADB : 'Country/Economy: Sri LankaSector: ...')."""
+    motif = re.escape(label) + r"\s*[:\-]?\s*(.+?)\s*(?:" + "|".join(re.escape(f) for f in fins) + r"|$)"
+    m = re.search(motif, bloc, re.IGNORECASE | re.DOTALL)
+    return (m.group(1).strip() if m else "")
+
+
+LABELS = ["Status", "Deadline", "Country/Economy", "Sector",
+          "Posting Date", "Notice Type", "Approval Number"]
+
+
+def parser_notices(texte):
+    """Texte de la ou des pages -> liste de notices (dicts bruts). Chaque notice
+    commence par 'Status:'. Robuste aux labels colles."""
+    blocs = re.split(r"(?=Status\s*:\s*(?:Active|Closed|Awarded|Cancelled))", texte)
+    notices = []
+    for bloc in blocs:
+        if "Country/Economy" not in bloc:
             continue
-        iso = CODE_ADB_VERS_ISO3.get(code)
-        if iso and iso in _SUIVIS:
-            return iso, ""
-        if iso:
-            hors_zone = hors_zone or code
-    # 2) Repli : noms anglais (whole word, du plus long au plus court).
-    hay = " " + _norm(texte) + " "
-    for nom in _NOMS_EN_TRIES:
+        pays = _champ(bloc, "Country/Economy", ["Sector", "Posting Date", "Notice Type", "Status"])
+        if not pays:
+            continue
+        ref = ""
+        m = _RE_REFERENCE.search(bloc)
+        if m:
+            ref = m.group(1)
+        lien = ""
+        ml = _RE_LIEN_PDF.search(bloc)
+        if ml:
+            lien = ml.group(1)
+        # Titre : contenu entre crochets si present, sinon 1re ligne apres Deadline.
+        titre = ""
+        mt = re.search(r"\[([^\]]+)\]\(", bloc)
+        if mt:
+            titre = mt.group(1).strip()
+        else:
+            mt2 = re.search(r"\d{5}-\d{3}:\s*(.+)", bloc)
+            titre = mt2.group(1).strip()[:300] if mt2 else pays
+        type_notice_txt = _champ(bloc, "Notice Type", ["Approval Number", "Status", "Deadline"])
+        deadline = ""
+        md = re.search(r"Deadline\s*:?\s*" + _RE_DATE.pattern, bloc)
+        if md:
+            deadline = md.group(1)
+        posting = ""
+        mp = re.search(r"Posting Date\s*:?\s*" + _RE_DATE.pattern, bloc)
+        if mp:
+            posting = mp.group(1)
+        notices.append({
+            "pays_clair": pays, "reference": ref, "lien": lien, "titre": titre,
+            "type_notice_txt": type_notice_txt, "deadline": deadline,
+            "posting_date": posting,
+        })
+    return notices
+
+
+def resoudre_iso3(pays_clair, titre=""):
+    """Country/Economy en clair -> ISO3 (source primaire). Repli : scan du titre.
+    Renvoie (iso3, nom_hors_zone)."""
+    cle = _norm(pays_clair)
+    if cle in REGIONAUX:
+        return "", ""
+    iso = NOM_VERS_ISO3.get(cle)
+    if iso and iso in _SUIVIS:
+        return iso, ""
+    if iso:
+        return "", pays_clair            # pays reconnu mais hors zone suivie
+    # Repli : un nom de pays suivi apparait-il dans le titre ?
+    hay = " " + _norm(titre) + " "
+    for nom in sorted((n for n, v in NOM_VERS_ISO3.items() if v in _SUIVIS), key=len, reverse=True):
         if re.search(r"(?<![a-z])" + re.escape(nom) + r"(?![a-z])", hay):
-            iso = NOM_EN_VERS_ISO3[nom]
-            if iso in _SUIVIS:
-                return iso, ""
-    return "", hors_zone
+            return NOM_VERS_ISO3[nom], ""
+    return "", ""
 
 
-# Type de notice (mots-cles) -> (libelle, phase amont/tender).
 def type_notice(texte):
     t = _norm(texte)
-    if "advance" in t or "advanced notice" in t or "general procurement" in t:
+    if "advance" in t or "general procurement" in t:
         return ("Avis anticipe", "amont")
     if "prequalification" in t or "expression of interest" in t or "eoi" in t:
         return ("Prequalification / EOI", "amont")
     if "consult" in t:
         return ("Services de conseil", "tender")
-    if "works" in t or "civil work" in t:
+    if "invitation for bid" in t or "ifb" in t or "bid" in t:
+        return ("Appel d'offres", "tender")
+    if "works" in t:
         return ("Travaux", "tender")
     if "goods" in t:
         return ("Fournitures", "tender")
     return ("Avis de marche", "tender")
 
 
-_RE_REFERENCE = re.compile(r"\b(\d{5}-\d{3})\b")
-_RE_DEADLINE = re.compile(r"deadline\s*[:\-]?\s*([0-3]?\d\s+\w+\s+\d{4})", re.IGNORECASE)
-
-
-def _extraire_deadline(description):
-    m = _RE_DEADLINE.search(description or "")
-    if not m:
-        return ""
+def _date_iso(txt):
     for fmt in ("%d %b %Y", "%d %B %Y"):
         try:
-            return datetime.strptime(m.group(1).strip(), fmt).date().isoformat()
-        except ValueError:
+            return datetime.strptime(txt.strip(), fmt).date()
+        except (ValueError, AttributeError):
             continue
-    return ""
+    return None
 
 
-def normaliser(item):
-    """Item RSS ADB -> avis dict compatible coeur TED, ou None si hors perimetre.
-    Renvoie aussi le prefixe non resolu (pour le canari de derive)."""
-    titre = item["titre"]
-    contexte = titre + " " + item.get("categorie", "")
-    iso3, hors_zone = resoudre_iso3(contexte)
+def normaliser(notice):
+    """Notice brute -> avis dict compatible coeur TED, ou (None, hors_zone)."""
+    iso3, hors_zone = resoudre_iso3(notice["pays_clair"], notice["titre"])
     if not iso3:
         return None, hors_zone
-    libelle, phase = type_notice(titre + " " + item.get("description", "") + " " + item.get("categorie", ""))
-    ref = ""
-    m = _RE_REFERENCE.search(titre) or _RE_REFERENCE.search(item.get("description", ""))
-    if m:
-        ref = m.group(1)
-    description = ted._nettoyer_html(item.get("description", ""))[:ted.MAX_CARACTERES_DESCRIPTION]
+    libelle, phase = type_notice(notice["type_notice_txt"] + " " + notice["titre"])
+    d = _date_iso(notice["deadline"])
     avis = {
         "acheteur": "Asian Development Bank",
         "pays_acheteur": "",
         "pays_execution": iso3,
-        "titre": titre[:300],
+        "titre": notice["titre"][:300],
         "cpv": "",
-        "description": description,
+        "description": "",
         "type_notice": libelle,
         "phase": phase,
-        "lien_avis": item.get("lien", ""),
-        "publication_number": ref or item.get("lien", ""),
-        "deadline": _extraire_deadline(item.get("description", "")),
-        "date_publication": item.get("date", ""),
+        "lien_avis": notice["lien"],
+        "publication_number": notice["reference"] or notice["lien"] or notice["titre"],
+        "deadline": d.isoformat() if d else "",
+        "date_publication": notice["posting_date"],
     }
     return avis, ""
 
 
-def _date_dans_fenetre(date_rfc822, seuil):
-    if not date_rfc822:
-        return True
-    try:
-        d = email.utils.parsedate_to_datetime(date_rfc822)
-    except (TypeError, ValueError):
-        return True
-    if d is None:
-        return True
-    if d.tzinfo is None:
-        d = d.replace(tzinfo=timezone.utc)
-    return d >= seuil
-
-
-def collecter_et_normaliser(fetch=None, session=None):
-    """Flux -> items -> avis normalises (filtres pays + fenetre + dedup).
-    Renvoie (avis, stats). stats['prefixes_hors_zone'] = canari de derive."""
-    xml_texte = collecter_flux(fetch=fetch, session=session)
-    items = parser_items(xml_texte)
-    seuil = datetime.now(timezone.utc) - timedelta(days=NB_JOURS_FENETRE)
-    avis, vus, hors_zone_codes = [], set(), {}
+def collecter_et_normaliser(fetch=None, session=None, pages=NB_PAGES):
+    """Pages -> notices -> avis normalises (filtres pays + fraicheur + dedup).
+    stats['pays_hors_zone'] = canari ; stats['page_vide'] = garde-fou JS."""
+    texte = _texte_brut(collecter_pages(fetch=fetch, session=session, pages=pages))
+    notices = parser_notices(texte)
+    seuil = date.today() - timedelta(days=NB_JOURS_FENETRE)
+    avis, vus, hors_zone = [], set(), {}
     hors_perimetre = 0
-    for it in items:
-        if not _date_dans_fenetre(it.get("date"), seuil):
+    for n in notices:
+        d = _date_iso(n["posting_date"])
+        if d and d < seuil:
             continue
-        a, hz = normaliser(it)
+        a, hz = normaliser(n)
         if a is None:
             hors_perimetre += 1
             if hz:
-                hors_zone_codes[hz] = hors_zone_codes.get(hz, 0) + 1
+                hors_zone[hz] = hors_zone.get(hz, 0) + 1
             continue
-        cle = a["publication_number"] or a["titre"]
+        cle = a["publication_number"]
         if cle in vus:
             continue
         vus.add(cle)
         avis.append(a)
     return avis, {
-        "items": len(items), "hors_perimetre": hors_perimetre,
-        "retenus": len(avis), "prefixes_hors_zone": hors_zone_codes,
+        "notices": len(notices), "hors_perimetre": hors_perimetre,
+        "retenus": len(avis), "pays_hors_zone": hors_zone,
+        "page_vide": len(notices) == 0,
     }
 
 
@@ -438,13 +444,22 @@ def main():
     try:
         avis, stats = collecter_et_normaliser()
     except Exception as e:
-        print("ERREUR : collecte du flux ADB impossible ({}).".format(e))
+        print("ERREUR : collecte ADB impossible ({}).".format(e))
         raise
-    print("Flux : {items} item(s) | hors perimetre : {hors_perimetre} | retenus : {retenus}".format(**stats))
-    if stats["prefixes_hors_zone"]:
-        top = sorted(stats["prefixes_hors_zone"].items(), key=lambda x: -x[1])[:8]
-        print("  (info) codes pays hors zone suivie : " +
-              ", ".join("{}x{}".format(n, c) for c, n in top))
+
+    if stats["page_vide"]:
+        print("GARDE-FOU : la page ADB est revenue SANS notice exploitable.")
+        print("  -> Elle est probablement rendue en JavaScript (SearchStax).")
+        print("  -> Ouvre la page tenders, F12 > Reseau, repere la requete qui")
+        print("     renvoie du JSON avec les tenders, et donne-moi son URL :")
+        print("     je bascule le collecteur en mode JSON (plus robuste).")
+        return
+
+    print("Page : {notices} notice(s) | hors perimetre : {hors_perimetre} | retenus : {retenus}".format(**stats))
+    if stats["pays_hors_zone"]:
+        top = sorted(stats["pays_hors_zone"].items(), key=lambda x: -x[1])[:8]
+        print("  (info) pays hors zone suivie : " +
+              ", ".join("{}x{}".format(n, p) for p, n in top))
 
     if DRY_RUN:
         print("(ADB_DRY_RUN=1 : entonnoir seulement, aucun appel LLM)")
@@ -453,7 +468,7 @@ def main():
         return
 
     if not avis:
-        print("Aucun avis ADB a analyser ce run.")
+        print("Aucun avis ADB en zone suivie ce run.")
         return
     if not os.environ.get("ANTHROPIC_API_KEY"):
         print("ERREUR : ANTHROPIC_API_KEY absente.")
