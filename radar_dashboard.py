@@ -138,13 +138,35 @@ ZONE_PAR_ISO3 = {
     "BRA": ("Brésil", "Amérique latine"), "OMN": ("Oman", "Péninsule arabique"),
     "FRA": ("France", "Europe de l'Ouest"), "DEU": ("Allemagne", "Europe de l'Ouest"),
     "DNK": ("Danemark", "Europe de l'Ouest"), "NCL": ("Nouvelle-Calédonie", "Outre-mer"),
+    # -- Complement bailleurs (AfDB, ADB, EBRD) : couverture des pays suivis --
+    "RWA": ("Rwanda", "Afrique de l'Est"), "BDI": ("Burundi", "Afrique de l'Est"),
+    "DJI": ("Djibouti", "Afrique de l'Est"), "ERI": ("Érythrée", "Afrique de l'Est"),
+    "SDN": ("Soudan", "Afrique de l'Est"), "COM": ("Comores", "Afrique de l'Est"),
+    "SYC": ("Seychelles", "Afrique de l'Est"),
+    "GIN": ("Guinée", "Afrique de l'Ouest"), "GMB": ("Gambie", "Afrique de l'Ouest"),
+    "GNB": ("Guinée-Bissau", "Afrique de l'Ouest"), "LBR": ("Liberia", "Afrique de l'Ouest"),
+    "SLE": ("Sierra Leone", "Afrique de l'Ouest"), "CPV": ("Cap-Vert", "Afrique de l'Ouest"),
+    "GNQ": ("Guinée équatoriale", "Afrique centrale"), "STP": ("Sao Tomé-et-Principe", "Afrique centrale"),
+    "MWI": ("Malawi", "Afrique australe"), "NAM": ("Namibie", "Afrique australe"),
+    "LSO": ("Lesotho", "Afrique australe"), "SWZ": ("Eswatini", "Afrique australe"),
+    "ZWE": ("Zimbabwe", "Afrique australe"), "MUS": ("Maurice", "Afrique australe"),
+    "AFG": ("Afghanistan", "Asie du Sud"), "NPL": ("Népal", "Asie du Sud"),
+    "LKA": ("Sri Lanka", "Asie du Sud"),
+    "MMR": ("Myanmar", "Asie du Sud-Est"), "KHM": ("Cambodge", "Asie du Sud-Est"),
+    "LAO": ("Laos", "Asie du Sud-Est"), "PHL": ("Philippines", "Asie du Sud-Est"),
+    "TKM": ("Turkménistan", "Asie centrale"),
+    "ARM": ("Arménie", "Caucase"), "AZE": ("Azerbaïdjan", "Caucase"),
+    "BIH": ("Bosnie-Herzégovine", "Balkans"), "MNE": ("Monténégro", "Balkans"),
+    "XKX": ("Kosovo", "Balkans"),
+    "PNG": ("Papouasie-Nouvelle-Guinée", "Pacifique"), "FJI": ("Fidji", "Pacifique"),
+    "SLB": ("Îles Salomon", "Pacifique"), "VUT": ("Vanuatu", "Pacifique"),
 }
 
 # Ordre d'affichage des zones (les autres suivent, "Non classé" en dernier)
 ORDRE_ZONES = [
     "Afrique de l'Ouest", "Sahel", "Afrique centrale", "Afrique de l'Est",
     "Afrique australe", "Afrique du Nord", "Proche-Orient", "Péninsule arabique",
-    "Asie centrale", "Asie du Sud", "Asie du Sud-Est", "Caucase", "Balkans",
+    "Asie centrale", "Asie du Sud", "Asie du Sud-Est", "Pacifique", "Caucase", "Balkans",
     "Europe de l'Est", "Caraïbes", "Amérique latine", "Europe de l'Ouest",
     "Outre-mer", "Non classé",
 ]
@@ -155,12 +177,13 @@ def resoudre_pays(brut, source):
     brut = _txt(brut)
     if not brut:
         return ("Pays non précisé", "Non classé")
-    if source == "TED":
+    if source in ("TED", "AFDB", "ADB", "EBRD"):
+        # Sources ISO : pays_execution stocke en code ISO3 (scoring direct).
         code = brut.split(",")[0].strip().upper()
         if code in ZONE_PAR_ISO3:
             return ZONE_PAR_ISO3[code]
         return (code or "Pays non précisé", "Non classé")
-    # BM : nom lisible
+    # BM / RW : nom lisible
     nom = brut.split(",")[0].strip() if brut.lower() not in ZONE_PAR_NOM else brut
     cle = brut.lower().strip()
     if cle in ZONE_PAR_NOM:
@@ -239,6 +262,13 @@ def ligne_vers_lead(row, source):
         cible = _txt(row.get("cible_commerciale_reelle")) or \
             "Organisation qui recrute et déploie : viser direction sûreté / logistique / RH terrain."
         groupe = _txt(row.get("categorie")) or "humanitaire"
+    elif source in ("AFDB", "ADB", "EBRD"):
+        # Bailleurs multilatéraux (Afrique / Asie / Ukraine-Caucase). Le
+        # collecteur remplit déjà cible_commerciale_reelle (pour EBRD, le client
+        # maître d'ouvrage). Groupe = type de notice (GPN, prequalif, tender...).
+        cible = _txt(row.get("cible_commerciale_reelle")) or \
+            "Bureau ou consortium titulaire qui déploiera en zone à risque, pas le bailleur."
+        groupe = _txt(row.get("type_notice")) or _txt(row.get("phase")) or "avis"
     else:
         cible = "Bureau ou consortium titulaire du marché, pas le bailleur."
         groupe = "AT"
@@ -349,16 +379,20 @@ def _attacher_enrichissement(lead, enrichissement, cle_entreprise):
 
 
 def construire_leads(lignes_ted, lignes_bm, lignes_prive=None,
-                     enrichissement=None, lignes_attrib=None, lignes_rw=None):
-    """Fusionne les onglets (TED, Banque Mondiale, ReliefWeb, PRIVÉ/BITD),
-    deduplique, trie. Pour les leads PRIVÉ, remonte le dirigeant
+                     enrichissement=None, lignes_attrib=None, lignes_rw=None,
+                     lignes_afdb=None, lignes_adb=None, lignes_ebrd=None):
+    """Fusionne les onglets (TED, Banque Mondiale, AfDB, ADB, EBRD, ReliefWeb,
+    PRIVÉ/BITD), deduplique, trie. Pour les leads PRIVÉ, remonte le dirigeant
     (enrichissement) comme contact.
 
-    ReliefWeb : source d'AVIS (lentille Opportunités, comme TED/BM). Même moteur
-    de score additif (ted.calculer_scores), donc même échelle « avis ». Pays
-    résolu par NOM (comme BM), pas par code ISO."""
+    AfDB / ADB / EBRD : sources d'AVIS (lentille Opportunités, comme TED/BM).
+    Même moteur de score additif (ted.calculer_scores), donc même échelle
+    « avis ». Pays en code ISO3 (comme TED). ReliefWeb : pays par NOM (comme BM)."""
     leads = [ligne_vers_lead(r, "TED") for r in lignes_ted]
     leads += [ligne_vers_lead(r, "BM") for r in lignes_bm]
+    leads += [ligne_vers_lead(r, "AFDB") for r in (lignes_afdb or [])]
+    leads += [ligne_vers_lead(r, "ADB") for r in (lignes_adb or [])]
+    leads += [ligne_vers_lead(r, "EBRD") for r in (lignes_ebrd or [])]
     leads += [ligne_vers_lead(r, "RW") for r in (lignes_rw or [])]
     leads_prive = [ligne_vers_lead(r, "PRIVÉ") for r in (lignes_prive or [])]
 
@@ -500,6 +534,33 @@ def lire_onglets(sheet_id, fichier_cs):
             "statut_suivi", "date_detection"]
     lignes_rw = _lignes_vers_dicts(valeurs(onglet_rw), colonnes_rw)
 
+    # Onglets des bailleurs multilateraux (AfDB, ADB, EBRD). Schema fourni par
+    # chaque collecteur ; repli sur l'onglet nomme si le module est absent (le
+    # dashboard reste fonctionnel meme sans les collecteurs installes).
+    def _lire_bailleur(nom_module, onglet_defaut, attr_colonnes, attr_onglet):
+        try:
+            mod = __import__(nom_module)
+            colonnes = getattr(mod, attr_colonnes)
+            onglet = getattr(mod, attr_onglet)
+        except Exception:
+            colonnes, onglet = None, onglet_defaut
+        if colonnes is None:   # repli : schema minimal commun (avis ISO)
+            colonnes = [
+                "date_maj", "score_final", "score_surete", "score_commercial",
+                "action_recommandee", "fenetre_action", "niveau_opportunite_amarante",
+                "titre", "acheteur", "pays_execution", "pays_acheteur",
+                "type_client", "type_mobilite", "profil_personnes_exposees",
+                "duree_estimee", "accessibilite_commerciale", "securite_existante_detectee",
+                "profils_acteurs_probables", "cible_commerciale_reelle",
+                "justification", "confiance", "modele", "raffine", "divergence",
+                "type_notice", "phase", "publication_number", "lien_avis",
+                "deadline", "date_publication", "statut_suivi", "date_detection"]
+        return _lignes_vers_dicts(valeurs(onglet), colonnes)
+
+    lignes_afdb = _lire_bailleur("afdb_radar", "afdb_radar", "TOUTES_COLONNES_AFDB", "NOM_ONGLET")
+    lignes_adb = _lire_bailleur("adb_radar", "adb_radar", "TOUTES_COLONNES_ADB", "NOM_ONGLET")
+    lignes_ebrd = _lire_bailleur("ebrd_radar", "ebrd_radar", "TOUTES_COLONNES_EBRD", "NOM_ONGLET")
+
     # Enrichissement firmographique (dirigeants), pour remonter le contact.
     try:
         import enrichir_entreprises as ee
@@ -530,7 +591,8 @@ def lire_onglets(sheet_id, fichier_cs):
         if nom and email:
             enrichissement.setdefault(nom, {})["email_pro"] = email
 
-    return lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement, lignes_rw
+    return (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
+            lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd)
 
 
 def generer_html(leads):
@@ -594,10 +656,14 @@ def main():
         sys.exit(1)
 
     print("Lecture des onglets du Sheet...")
-    lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement, lignes_rw = lire_onglets(sheet_id, fichier_cs)
-    leads = construire_leads(lignes_ted, lignes_bm, lignes_prive, enrichissement, lignes_attrib, lignes_rw)
-    print("  TED : {} | BM : {} | ReliefWeb : {} | total exploitable : {}".format(
-        len(lignes_ted), len(lignes_bm), len(lignes_rw), len(leads)))
+    (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
+     lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd) = lire_onglets(sheet_id, fichier_cs)
+    leads = construire_leads(lignes_ted, lignes_bm, lignes_prive, enrichissement,
+                             lignes_attrib, lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd)
+    print("  TED : {} | BM : {} | AfDB : {} | ADB : {} | EBRD : {} | ReliefWeb : {} | "
+          "total exploitable : {}".format(
+              len(lignes_ted), len(lignes_bm), len(lignes_afdb), len(lignes_adb),
+              len(lignes_ebrd), len(lignes_rw), len(leads)))
 
     html = generer_html(leads)
     dossier = os.path.dirname(sortie)
@@ -721,6 +787,9 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .src.ted{border-color:rgba(200,137,59,0.4);color:#dcb079}
   .src.attrib{border-color:rgba(120,190,150,0.45);color:#7fae8f}
   .src.rw{border-color:rgba(90,150,210,0.45);color:#8fb8de}
+  .src.afdb{border-color:rgba(210,150,70,0.45);color:#d9b483}
+  .src.adb{border-color:rgba(120,170,120,0.45);color:#9ec49e}
+  .src.ebrd{border-color:rgba(150,120,200,0.45);color:#b39ad6}
   .src.privé,.src.prive{border-color:rgba(150,150,200,0.4);color:#a9a9d9}
   .pays{color:var(--bone);font-weight:600}
   .scorebox{text-align:right;flex-shrink:0}
@@ -928,6 +997,9 @@ GABARIT_HTML = r"""<!DOCTYPE html>
       <button data-src="all" aria-pressed="true">Toutes</button>
       <button data-src="BM" aria-pressed="false">Banque Mondiale</button>
       <button data-src="TED" aria-pressed="false">TED</button>
+      <button data-src="AFDB" aria-pressed="false">AfDB</button>
+      <button data-src="ADB" aria-pressed="false">ADB</button>
+      <button data-src="EBRD" aria-pressed="false">EBRD</button>
       <button data-src="RW" aria-pressed="false">ReliefWeb</button>
     </div>
     <div class="seg" id="triseg" role="group" aria-label="Tri">
@@ -967,7 +1039,7 @@ function marquerContacte(idx,btn){
 }
 const ORDRE_ZONES = ["Afrique de l'Ouest","Sahel","Afrique centrale","Afrique de l'Est","Afrique australe","Afrique du Nord","Proche-Orient","Péninsule arabique","Asie centrale","Asie du Sud","Asie du Sud-Est","Caucase","Balkans","Europe de l'Est","Caraïbes","Amérique latine","Europe de l'Ouest","Outre-mer","Non classé"];
 const winLabel={immediate:'Fenêtre immédiate',court_terme:'Court terme',indetermine:'Fenêtre indéterminée'};
-const SRC_LABEL={BM:'Banque Mondiale',TED:'TED',RW:'ReliefWeb','PRIVÉ':'Privé · BITD',ATTRIB:'Titulaire'};
+const SRC_LABEL={BM:'Banque Mondiale',TED:'TED',AFDB:'AfDB',ADB:'ADB',EBRD:'EBRD',RW:'ReliefWeb','PRIVÉ':'Privé · BITD',ATTRIB:'Titulaire'};
 // Etiquette d'echelle de score. Les scores marche (TED/BM, barème
 // additif) et les scores signal (privé, barème multiplicatif) NE sont PAS sur
 // la même échelle : un 6 marché ne vaut pas un 6 signal. On l'affiche pour
@@ -1128,7 +1200,7 @@ function buildPeriod(){
   }));
 }
 
-const SRC_NOMS_META={TED:'TED',BM:'Banque Mondiale',RW:'ReliefWeb','PRIVÉ':'Privé (BITD)',ATTRIB:'Titulaires'};
+const SRC_NOMS_META={TED:'TED',BM:'Banque Mondiale',AFDB:'AfDB',ADB:'ADB',EBRD:'EBRD',RW:'ReliefWeb','PRIVÉ':'Privé (BITD)',ATTRIB:'Titulaires'};
 const SRC_PRESENTES=[...new Set(LEADS.map(l=>l.src))].map(s=>SRC_NOMS_META[s]||s);
 document.getElementById('runmeta').innerHTML =
   'Run du <b>'+META.date+'</b><br>'+META.total+' avis analysés<br>Sources : '+(SRC_PRESENTES.join(', ')||'aucune');
@@ -1149,7 +1221,7 @@ function buildStats(){
       {k:'all',cls:'',n:fiches.length,l:'Toutes les entreprises'}
     ];
   }else{
-    const av=LEADS.filter(l=>l.src==='TED'||l.src==='BM'||l.src==='RW');
+    const av=LEADS.filter(l=>l.src==='TED'||l.src==='BM'||l.src==='AFDB'||l.src==='ADB'||l.src==='EBRD'||l.src==='RW');
     const c=a=>av.filter(l=>l.action===a).length;
     defs=[
       {k:'contacter',cls:'act',n:c('contacter'),l:'À contacter'},
