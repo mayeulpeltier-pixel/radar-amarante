@@ -1,0 +1,89 @@
+{
+  "genere_le": "2026-07-06T23:08:56+00:00",
+  "onglets": [
+    {
+      "onglet": "Feuille 1",
+      "fichier": "Feuille_1.csv",
+      "lignes": 1,
+      "colonnes": 0,
+      "erreur": null
+    },
+    {
+      "onglet": "suivi_prospects",
+      "fichier": "suivi_prospects.csv",
+      "lignes": 5,
+      "colonnes": 23,
+      "erreur": null
+    },
+    {
+      "onglet": "ted_radar",
+      "fichier": "ted_radar.csv",
+      "lignes": 40,
+      "colonnes": 32,
+      "erreur": null
+    },
+    {
+      "onglet": "bm_radar",
+      "fichier": "bm_radar.csv",
+      "lignes": 421,
+      "colonnes": 35,
+      "erreur": null
+    },
+    {
+      "onglet": "prive_radar",
+      "fichier": "prive_radar.csv",
+      "lignes": 11,
+      "colonnes": 22,
+      "erreur": null
+    },
+    {
+      "onglet": "comptes_cibles_bitd",
+      "fichier": "comptes_cibles_bitd.csv",
+      "lignes": 61,
+      "colonnes": 11,
+      "erreur": null
+    },
+    {
+      "onglet": "boamp_radar",
+      "fichier": "boamp_radar.csv",
+      "lignes": 1,
+      "colonnes": 35,
+      "erreur": null
+    },
+    {
+      "onglet": "prive_vus",
+      "fichier": "prive_vus.csv",
+      "lignes": 511,
+      "colonnes": 2,
+      "erreur": null
+    },
+    {
+      "onglet": "radar_etat",
+      "fichier": "radar_etat.csv",
+      "lignes": 2,
+      "colonnes": 2,
+      "erreur": null
+    },
+    {
+      "onglet": "entreprises_enrichies",
+      "fichier": "entreprises_enrichies.csv",
+      "lignes": 61,
+      "colonnes": 11,
+      "erreur": null
+    },
+    {
+      "onglet": "attributions_radar",
+      "fichier": "attributions_radar.csv",
+      "lignes": 601,
+      "colonnes": 15,
+      "erreur": null
+    },
+    {
+      "onglet": "watchlist_prives",
+      "fichier": "watchlist_prives.csv",
+      "lignes": 202,
+      "colonnes": 4,
+      "erreur": null
+    }
+  ]
+}

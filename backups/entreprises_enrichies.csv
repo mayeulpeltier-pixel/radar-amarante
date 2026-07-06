@@ -1,0 +1,61 @@
+entreprise,siren,nom_officiel,dirigeant_principal,autres_dirigeants,activite_naf,effectif,ville,chiffre_affaires,source,date_enrichissement
+Dassault Aviation,712042456,DASSAULT AVIATION,BESMA BOUMAZA (Administrateur),MARIE-HÉLÈNE HABERT (DASSAULT) (Administrateur) ; THIERRY DASSAULT (Administrateur),30.30Z,5000-9999,SAINT-CLOUD,,gouv,2026-07-02
+Thales,552059024,THALES,PATRICE CAINE (Président du conseil d'administration et directeur général),BERNARD FONTANA (Administrateur) ; DELPHINE STEPHANN (GENY) (Administrateur),70.10Z,1000-1999,MEUDON,,gouv,2026-07-02
+MBDA,381737618,MBDA,AUDITEX (Commissaire aux comptes suppléant),ERNST & YOUNG ET AUTRES (Commissaire aux comptes titulaire) ; SALUSTRO REYDEL (Commissaire aux comptes suppléant),64.20Z,NN,LE PLESSIS-ROBINSON,,gouv,2026-07-02
+KNDS France (ex-Nexter),,,,,,,,,non trouvée,2026-07-02
+Naval Group,441133808,NAVAL GROUP,PASCAL BOUCHIAT (Administrateur),PATRICE CAINE (Administrateur) ; VALERIE VERNIERE (CHAMPAGNE) (Administrateur),30.11Z,10000+,PARIS,,gouv,2026-07-02
+Airbus Defence and Space,393341516,AIRBUS DEFENCE AND SPACE SAS,MIKAEL BUTTERBACH (Directeur général délégué),JEAN-BRICE DUMONT (Directeur Général) ; ALAIN FAURE (Président de SAS),30.30Z,5000-9999,TOULOUSE,,gouv,2026-07-02
+Airbus Helicopters,352383715,AIRBUS HELICOPTERS,MATTHIEU LOUVOT (Président de SAS),ERNST & YOUNG AUDIT (Commissaire aux comptes titulaire) ; AUDITEX (Commissaire aux comptes suppléant),30.30Z,10000+,MARIGNANE,,gouv,2026-07-02
+Safran Electronics & Defense,480107911,SAFRAN ELECTRONICS & DEFENSE,FRANCK SAUDO (Président de SAS),MAZARS (Commissaire aux comptes titulaire),26.51A,5000-9999,PARIS,,gouv,2026-07-02
+Arquus,662043405,"ARQUUS (VOLVO GROUP GOVERNMENTAL SALES, RENAULT TRUCKS DEFENSE, ACMAT, ACMAT DEFENSE, ARQUUS)",THIERRY RENAUDIN (Président de SAS),DELOITTE & ASSOCIES (Commissaire aux comptes titulaire),30.40Z,1000-1999,VERSAILLES,,gouv,2026-07-02
+ArianeGroup,519032247,ARIANEGROUP SAS,CHRISTOPHE BRUNEAU (Directeur Général),FRANCK HUIBAN (Président de SAS) ; ERNST & YOUNG ET AUTRES (Commissaire aux comptes titulaire),30.30Z,5000-9999,LES MUREAUX,,gouv,2026-07-02
+Thales Alenia Space,439990748,THALES ALENIA SPACE,MASSIMO COMPARINI (Président du conseil de surveillance),HERVE DERREY (Président de SAS) ; PASCAL BOUCHIAT (Membre du conseil de surveillance),70.10Z,NN,CANNES,,gouv,2026-07-02
+Exail (ex-ECA / iXblue),,,,,,,,,non trouvée,2026-07-02
+CILAS,984911248,CILAS (CILAS),ABDUL-SAMET CILINGIR (Président de SAS),,41.20B,NN,NOISY-LE-SEC,,gouv,2026-07-02
+Roxel,929428829,ROXEL,JULIEN CROYAL (Gérant et associé indéfiniment responsable),MÉLANIE CROYAL (LESEGRETAIN) (Associé indéfiniment responsable) ; CROYAL INVESTISSEMENTS (Associé indéfiniment responsable),68.20B,NN,POCE-LES-BOIS,,gouv,2026-07-02
+CS Group,938894755,CS GROUP,CHRISTOPHE SAGE (Président de SAS),,70.10Z,NN,RIS-ORANGIS,,gouv,2026-07-02
+Exosens (ex-Photonis),,,,,,,,,non trouvée,2026-07-02
+Turgis & Gaillard,814114450,TURGIS ET GAILLARD GROUPE (TG GROUPE),PATRICK GAILLARD (Directeur Général),"FANNY TURGIS (Président de SAS) ; COURCEL, AUDIT & CONSEILS (Commissaire aux comptes titulaire)",64.20Z,NN,NEUILLY-SUR-SEINE,,gouv,2026-07-02
+Texelis,501698419,TEXELIS,LAURENT GARNIER (Directeur Général),JEAN VANDEL (Directeur Général) ; WILLIAM BERKMAN (Commissaire aux comptes suppléant),30.20Z,250-499,LIMOGES,,gouv,2026-07-02
+Lacroix Defense,325060739,REFUGE EDILE LACROIX ASSOCIATION DE DEFENSE ET PROTECTION DES ANIMAUX,,,94.99Z,3-5,MAUBEUGE,,gouv,2026-07-02
+CNIM Systèmes Industriels,844787218,CNIM SYSTEMES INDUSTRIELS,XAVIER MONTAZEL (Directeur Général),GROUPE REEL (Président de SAS) ; ERNST & YOUNG ET AUTRES (Commissaire aux comptes titulaire),25.30Z,250-499,LA SEYNE-SUR-MER,,gouv,2026-07-02
+Aresia (ex-ADS),,,,,,,,,non trouvée,2026-07-02
+Hensoldt France (ex-Nexeya),,,,,,,,,non trouvée,2026-07-02
+Sogitec,377673793,SOGITEC,PIERRE-OLIVIER DOZOUL (Commissaire aux comptes suppléant),BSV AUDIT ET ASSOCIES (Commissaire aux comptes titulaire) ; VESALIS (Président de SAS),43.22B,50-99,MARSEILLE,,gouv,2026-07-02
+CAE France,397913104,CAE FRANCE,,,51.1T,NN,COGOLIN,,gouv,2026-07-02
+Bertin Technologies,422511204,BERTIN TECHNOLOGIES,BT MISTRAL SAS (Président de SAS),BEAS (Commissaire aux comptes suppléant) ; DELOITTE & ASSOCIES (Commissaire aux comptes titulaire),71.12B,250-499,MONTIGNY LE BRETONNEUX,,gouv,2026-07-02
+HGH Systèmes Infrarouges,325486454,HGH SYSTEMES INFRAROUGES (HGH INFRARED SYSTEMS),CECOMEX SOCIETE DE COMMISSARIAT AUX COMPTES (PARIS) (Commissaire aux comptes titulaire),STÉROPÈS S.A.S (Président de SAS),26.70Z,50-99,IGNY,,gouv,2026-07-02
+John Cockerill Defense France,508837689,JOHN COCKERILL DEFENSE FRANCE,YVES JOURDE (JOURDE) (Président de SAS),YVES JOURDE (Président de SAS) ; B.E.A.S SARL (Commissaire aux comptes suppléant),33.11Z,50-99,DISTROFF,,gouv,2026-07-02
+Soframe (groupe Lohr),,,,,,,,,non trouvée,2026-07-02
+Eurenco,449207414,EURENCO FRANCE SAS,HELENE DE COINTET DE FILLAIN (BABINET) (Administrateur),LAURE CHAMBRAS LAFUENTE (LAFUENTE) (Administrateur) ; JULIA PY (Administrateur),20.51Z,500-999,SORGUES,,gouv,2026-07-02
+Marlink,433700648,MARLINK SAS,AUDITEX (Commissaire aux comptes suppléant),ERNST & YOUNG ET AUTRES (Commissaire aux comptes titulaire) ; MARLINK HOLDING SAS (Président de SAS),61.30Z,100-199,PARIS,,gouv,2026-07-02
+CMN (Const. Méca. de Normandie),,,,,,,,,non trouvée,2026-07-02
+Piriou,537929879,PIRIOU,GOULVEN MANACH (Président de SAS),,43.34Z,20-49,QUIMPER,,gouv,2026-07-02
+OCEA,340889476,OCEA,FABRICE EPAUD (Administrateur),ROLAND JOASSARD (Président du conseil d'administration et directeur général) ; ERNST & YOUNG ET AUTRES (Commissaire aux comptes titulaire),30.11Z,250-499,LES SABLES D'OLONNE,,gouv,2026-07-02
+Socarenam,621750256,SOC CONSTRUCT REPARAT NAVALE & MECANIQUE (SOCARENAM),CHARLES GOBERT (Directeur Général),MATTHIEU GOBERT (Président de SAS) ; REVISIONS CONTROLES (Commissaire aux comptes titulaire),30.11Z,100-199,BOULOGNE-SUR-MER,,gouv,2026-07-02
+Kership (Piriou/Naval Group),,,,,,,,,non trouvée,2026-07-02
+Défense Conseil International (DCI),538108812,ATECHSYS ENGINEERING (ATE),DEFENSE CONSEIL INTERNATIONAL OU EN ABRÉGÉ DCI (Président de SAS),,74.90B,20-49,POURRIERES,,gouv,2026-07-02
+ODAS,889164992,ODAS,NATHALIE RAKOTONAVALONA (LAPARRA) (Président de SAS),,70.22Z,1-2,LORMONT,,gouv,2026-07-02
+Sofema,562074476,SOFEMA,CHRISTIAN KAMARA (Président de SAS),PATRICK BOURDIN (Commissaire aux comptes suppléant) ; AUDIT EUREX (Commissaire aux comptes titulaire),46.69B,50-99,LEVALLOIS-PERRET,,gouv,2026-07-02
+Europavia,390150779,EUROPAVIA,DAVID PAGENEL (Gérant),DANIEL HAMEL (Commissaire aux comptes titulaire) ; JEAN-YVES LEHUJEUR (Commissaire aux comptes suppléant),51.3C,NN,RUNGIS,,gouv,2026-07-02
+Nexter Training / KNDS,,,,,,,,,non trouvée,2026-07-02
+Delair,877643486,DELAIR,BASTIEN MANCINI (Président de SAS),DELOITTE & ASSOCIÉS (Commissaire aux comptes titulaire),30.30Z,50-99,LABEGE,,gouv,2026-07-02
+Novadem,491080727,NOVADEM (NOVADEM),FABIEN PAGANUCCI (Gérant),PASCAL ZUNINO (Gérant) ; PASCAL ZUNINO (Président de SAS),71.12B,10-19,AIX EN PROVENCE,,gouv,2026-07-02
+Shark Robotics,823372909,SHARK ROBOTICS,CYRILLE KABBARA (Gérant),EXPERTS-AUDIT (Commissaire aux comptes titulaire),28.99B,50-99,LA ROCHELLE,,gouv,2026-07-02
+Diodon Drone Technology,828427872,DIODON DRONE TECHNOLOGY,ROMAN LUCIANI (Directeur Général),ANTOINE TOURNET (Président de SAS),71.12B,20-49,LABEGE,,gouv,2026-07-02
+EOS Technologie,519282024,EOS TECHNOLOGIE,,,43.22B,NN,SAINT-JEAN-DE-BRAYE,,gouv,2026-07-02
+Parrot,437766561,PARROT,ABDALLAH OUBELLA (Gérant et associé indéfiniment responsable),ABED OUBELLA (Autre),68.20B,NN,PARIS,,gouv,2026-07-02
+XSun,820740520,XSUN,BENJAMIN DAVID (Président de SAS),TGS FRANCE AUDIT (Commissaire aux comptes titulaire),71.12B,10-19,GUERANDE,,gouv,2026-07-02
+Cerbair,812179760,CERBAIR,LUCAS LE BELL (Président de SAS),MBDA FRANCE (Administrateur) ; BCRH & ASSOCIES (Commissaire aux comptes titulaire),58.29C,20-49,MONTROUGE,,gouv,2026-07-02
+Preligens / Safran.AI,818503146,SAFRAN.AI,SÉBASTIEN FABRE (Directeur Général),PASCAL LONGY (Président de SAS) ; FORVIS MAZARS SA (Commissaire aux comptes titulaire),72.19Z,250-499,PARIS,,gouv,2026-07-02
+CS Group Cyber,,,,,,,,,non trouvée,2026-07-02
+Airbus CyberSecurity,523941037,AIRBUS CYBERSECURITY SAS,NICOLAS RAZY (Président de SAS),AUDITEX (Commissaire aux comptes suppléant) ; ERNST & YOUNG ET AUTRES (Commissaire aux comptes titulaire),62.01Z,200-249,ELANCOURT,,gouv,2026-07-02
+HarfangLab,839045697,HARFANGLAB (HLB),XAVIER BOREAU-POTOCKI (Directeur général délégué),GREGOIRE GERMAIN (Président de SAS) ; ACA NEXIA (Commissaire aux comptes titulaire),62.01Z,50-99,PUTEAUX,,gouv,2026-07-02
+Amossys,493348890,AMOSSYS,JEAN-FRANCOIS ALIOTTI (Directeur Général),TOPALIAN ASSOCIES (Commissaire aux comptes titulaire) ; ONEFIELD (Président de SAS),62.02A,50-99,RENNES,,gouv,2026-07-02
+Technamm,481832004,TECHNAMM,A3A AUDIT (Commissaire aux comptes titulaire),TDVS HOLDING (Président de SAS),29.20Z,50-99,LAMBESC,,gouv,2026-07-02
+Gruau,802440123,ETIENNE GRUAU (G-BATI),ETIENNE GRUAU (GRUAU) (Gérant),,71.12B,NN,SAINTE-GEMMES-SUR-LOIRE,,gouv,2026-07-02
+Paul Boyé Technologies,349760918,PAUL BOYE TECHNOLOGIES,MADS LARSEN (Président de SAS),KPMG SA (Commissaire aux comptes titulaire),32.99Z,250-499,LABARTHE-SUR-LEZE,,gouv,2026-07-02
+Verney-Carron,574501557,VERNEY-CARRON,OLIVIER DAMBRICOURT (Membre du conseil de surveillance),AGNÈS VERNEY-CARRON (GUICHARD) (Membre du conseil de surveillance) ; JEAN-LUC HERRMANN (Membre du conseil de surveillance),25.40Z,50-99,SAINT-ETIENNE,,gouv,2026-07-02
+Cybergun,790924369,CYBERGUN TEAM AIRSOFT (CTA),,,93.29Z,NN,FLEURY-LES-AUBRAIS,,gouv,2026-07-02
+Eurolinks,445340060,EUROLINKS,,,46.19A,NN,ENGHIEN-LES-BAINS,,gouv,2026-07-02
+Sofresud,440148484,SOFRESUD DEFENSE,BERNARD ALHADEF (Gérant),,62.02A,NN,LA SEYNE-SUR-MER,,gouv,2026-07-02
