@@ -44,7 +44,7 @@ jobs:
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
           RADAR_LOG_FILE: radar.log
-          RELIEFWEB_APPNAME: radar-amarante.pages.dev
+          RELIEFWEB_APPNAME: radar-amarante-veille-x7q234hyu
           RADAR_GDELT: "0"
           RADAR_PRIVES_DEBUG: "1"
           ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
