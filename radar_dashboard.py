@@ -314,31 +314,88 @@ def ligne_vers_lead(row, source):
     }
 
 
+RISQUE_ZONE = {
+    "Sahel": 5.0, "Corne de l'Afrique": 5.0, "Afrique de l'Est": 3.5,
+    "Afrique de l'Ouest": 4.0, "Afrique centrale": 4.5, "Afrique australe": 2.5,
+    "Afrique du Nord": 4.0, "Proche-Orient": 5.0, "Moyen-Orient": 5.0,
+    "Asie centrale": 4.0, "Asie du Sud": 4.0, "Asie du Sud-Est": 3.0,
+    "Caucase": 4.0, "Balkans": 3.0, "Europe de l'Est": 4.0, "Pacifique": 2.5,
+    "Amérique latine": 2.5, "Caraïbes": 2.5, "Europe de l'Ouest": 1.0,
+    "Outre-mer": 1.5, "Non classé": 1.5,
+}
+_MOTS_SECTEUR_FORT = ("construction", "travaux", "works", "génie", "route",
+    "road", "bâtiment", "infrastructure", "énergie", "energy", "power",
+    "électr", "pétrol", "petrol", "oil", "gas", "gaz", "mines", "mining",
+    "extract", "défense", "defence", "defense", "sécurit", "security",
+    "aéroport", "airport", "port", "barrage", "dam", "pipeline")
+
+
+def _valeur_en_millions(txt):
+    """Extrait un montant en millions depuis un texte libre (best-effort)."""
+    if not txt:
+        return 0.0
+    t = txt.replace("\u202f", "").replace("\u00a0", "").replace(" ", "")
+    t = t.replace(",", ".")
+    m = re.search(r"(\d+(?:\.\d+)?)", t)
+    if not m:
+        return 0.0
+    val = float(m.group(1))
+    bas = txt.lower()
+    if "milliard" in bas or "billion" in bas or "bn" in bas:
+        val *= 1000.0
+    elif "million" in bas or "mn" in bas or (val > 100000):
+        val = val / 1_000_000.0 if val > 100000 else val
+    return val
+
+
+def score_attribution(zone, secteur, marche, valeur):
+    """Mini-score DETERMINISTE (sans LLM) d'une attribution, sur 10.
+    = risque de la zone (0-5) + pertinence du secteur (0-3) + poids de la
+    valeur du marché (0-2). Donne un vrai tri : gros marché de travaux en
+    zone rouge devant petites fournitures en zone stable."""
+    base = RISQUE_ZONE.get(zone, 1.5)
+    texte = (secteur + " " + marche).lower()
+    sect = 3.0 if any(m in texte for m in _MOTS_SECTEUR_FORT) else 1.0
+    v = _valeur_en_millions(valeur)
+    if v >= 20:
+        poids_v = 2.0
+    elif v >= 5:
+        poids_v = 1.5
+    elif v >= 1:
+        poids_v = 1.0
+    else:
+        poids_v = 0.5
+    return round(min(10.0, base + sect + poids_v), 1)
+
+
 def attribution_vers_lead(row):
     """Transforme une ligne 'attributions_radar' (titulaire d'un marche gagne)
-    en lead ATTRIB. Score INDICATIF (registre de prospects, PAS une analyse
-    surete). Filtrable via le bouton 'Titulaires'."""
+    en lead ATTRIB. Score DETERMINISTE (zone x secteur x valeur), PAS une
+    analyse surete LLM. Filtrable via l'onglet 'Titulaires'."""
     gagnant = _txt(row.get("gagnant"))
     secteur = _txt(row.get("secteur")) or "Attribution"
-    nom_pays, zone = resoudre_pays(_txt(row.get("pays_execution")), "BM")
+    # Attributions issues de TED : pays_execution en code ISO3 -> mode ISO.
+    nom_pays, zone = resoudre_pays(_txt(row.get("pays_execution")), "TED")
     valeur = _txt(row.get("valeur_attribuee"))
     marche = _txt(row.get("titre"))
     date_det = _txt(row.get("date_detection")) or _txt(row.get("date_maj"))
     mois_cle, mois_label = _mois_depuis_date(date_det)
+    score = score_attribution(zone, secteur, marche, valeur)
     justif = ("Titulaire d'un marché gagné ({}){}. Marché : {}. "
               "Prospect à démarcher (déploie du personnel). "
-              "Score indicatif, pas une analyse sûreté.").format(
+              "Score = risque zone + secteur + valeur (indicatif, pas une analyse sûreté).").format(
         nom_pays, " · " + valeur if valeur else "", marche or "n.c.")
     return {
         "src": "ATTRIB", "pays": nom_pays, "zone": zone,
         "titre": (gagnant or "Titulaire") + (" · " + secteur if secteur else ""),
         "agence": _txt(row.get("acheteur")) or "n.c.",
-        "final": 5.0, "surete": 5.0, "comm": 5.0,
+        "final": score, "surete": score, "comm": score,
         "action": "surveiller", "win": "indetermine",
         "nom": "n.c.", "email": "n.c.", "tel": "n.c.",
         "cible": ("Titulaire du marché : entreprise qui déploie du personnel en "
                   "zone à risque. À démarcher (direction sûreté / opérations)."),
         "justif": justif, "grp": secteur, "lien": _txt(row.get("lien")),
+        "valeur": valeur,
         "ecart": False, "secu": False, "mois": mois_cle, "mois_label": mois_label,
         "date_det": date_det, "statut": _txt(row.get("statut_prospection")) or "nouveau",
         "deadline": "", "conf": "", "modele": "",
@@ -561,6 +618,27 @@ def lire_onglets(sheet_id, fichier_cs):
     lignes_adb = _lire_bailleur("adb_radar", "adb_radar", "TOUTES_COLONNES_ADB", "NOM_ONGLET")
     lignes_ebrd = _lire_bailleur("ebrd_radar", "ebrd_radar", "TOUTES_COLONNES_EBRD", "NOM_ONGLET")
 
+    # Watchlist des cibles privees (comptes_cibles_bitd) : liste curee a la main
+    # (oil & gas, BTP, luxe...). Lue telle quelle (colonnes libres), pour la
+    # lentille "Cibles privees". Repli silencieux si l'onglet/module manque.
+    lignes_watchlist = []
+    try:
+        import bitd_signaux as _bitd
+        onglet_wl = getattr(_bitd, "NOM_ONGLET_WHITELIST", "comptes_cibles_bitd")
+    except Exception:
+        onglet_wl = "comptes_cibles_bitd"
+    try:
+        vals_wl = valeurs(onglet_wl)
+        if vals_wl and len(vals_wl) >= 2:
+            entetes_wl = [str(c).strip() for c in vals_wl[0]]
+            for r in vals_wl[1:]:
+                d = {entetes_wl[i]: (r[i] if i < len(r) else "")
+                     for i in range(len(entetes_wl))}
+                if _txt(d.get("entreprise")):
+                    lignes_watchlist.append(d)
+    except Exception:
+        pass
+
     # Enrichissement firmographique (dirigeants), pour remonter le contact.
     try:
         import enrichir_entreprises as ee
@@ -592,11 +670,12 @@ def lire_onglets(sheet_id, fichier_cs):
             enrichissement.setdefault(nom, {})["email_pro"] = email
 
     return (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
-            lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd)
+            lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist)
 
 
-def generer_html(leads):
+def generer_html(leads, watchlist=None):
     """Produit la page HTML autonome (situation board) a partir des leads."""
+    watchlist = watchlist or []
     # Les titulaires (ATTRIB) sont un REGISTRE DE PROSPECTS, pas des avis
     # analyses : on les EXCLUT des KPI d'action pour ne pas gonfler
     # artificiellement "a surveiller" ni le total. Ils ont leur propre
@@ -618,6 +697,16 @@ def generer_html(leads):
     meta["mois"] = [{"cle": c, "label": labels[c]} for c in sorted(labels, reverse=True)]
     leads_json = json.dumps(leads, ensure_ascii=False)
     meta_json = json.dumps(meta, ensure_ascii=False)
+    # Watchlist normalisee pour le JS : nom + secteur (detection dynamique de la
+    # colonne secteur, quel que soit son intitule exact).
+    def _secteur_wl(d):
+        for k in d:
+            if str(k).strip().lower() in ('secteur','secteurs','sector','categorie','cat\u00e9gorie','domaine','activite','activit\u00e9'):
+                return _txt(d.get(k))
+        return ''
+    watchlist_norm = [{'entreprise': _txt(w.get('entreprise')), 'secteur': _secteur_wl(w)}
+                      for w in watchlist if _txt(w.get('entreprise'))]
+    watchlist_json = json.dumps(watchlist_norm, ensure_ascii=False)
     # Boucle de retroaction (item 7), volet VISIBILITE : taux de conversion
     # gagne/perdu par secteur et par zone, calcule sur toutes les sources. La
     # zone est comparable partout ; le secteur melange les taxonomies (avis vs
@@ -641,6 +730,7 @@ def generer_html(leads):
     return (GABARIT_HTML
             .replace("__LEADS_JSON__", leads_json)
             .replace("__META_JSON__", meta_json)
+            .replace("__WATCHLIST_JSON__", watchlist_json)
             .replace("__CONVERSION_JSON__", conversion_json)
             .replace("__SUIVI_URL__", json.dumps(surl))
             .replace("__SUIVI_TOKEN__", json.dumps(stok)))
@@ -657,7 +747,7 @@ def main():
 
     print("Lecture des onglets du Sheet...")
     (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
-     lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd) = lire_onglets(sheet_id, fichier_cs)
+     lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist) = lire_onglets(sheet_id, fichier_cs)
     leads = construire_leads(lignes_ted, lignes_bm, lignes_prive, enrichissement,
                              lignes_attrib, lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd)
     print("  TED : {} | BM : {} | AfDB : {} | ADB : {} | EBRD : {} | ReliefWeb : {} | "
@@ -665,7 +755,7 @@ def main():
               len(lignes_ted), len(lignes_bm), len(lignes_afdb), len(lignes_adb),
               len(lignes_ebrd), len(lignes_rw), len(leads)))
 
-    html = generer_html(leads)
+    html = generer_html(leads, lignes_watchlist)
     dossier = os.path.dirname(sortie)
     if dossier:
         os.makedirs(dossier, exist_ok=True)
@@ -943,6 +1033,9 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .fiche .fenr .er{display:flex;justify-content:space-between;gap:8px;color:var(--bone)}
   .fiche .fenr .er .ek{color:var(--bone-dim)}
   .fiche .fmiss{border-top:1px solid var(--line);margin-top:10px;padding-top:10px;color:var(--watch);font-size:12px}
+  .fsl{font-family:var(--mono);font-size:10.5px;color:var(--bone-dim);text-decoration:none;border-bottom:1px dotted var(--line);white-space:nowrap}
+  .fsl:hover{color:var(--bone)}
+  .fiche .fnosig{border-top:1px solid var(--line);margin-top:8px;padding-top:10px;color:var(--bone-faint);font-size:12px;font-style:italic}
   .fiche .facts{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
   .conv{margin:14px 0 4px;border:1px solid var(--line);border-radius:8px;background:var(--ink-2);font-size:0.8rem}
   .conv>summary{cursor:pointer;padding:10px 14px;font-family:var(--mono);font-size:0.62rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--bone-dim)}
@@ -970,7 +1063,8 @@ GABARIT_HTML = r"""<!DOCTYPE html>
     </div>
     <div class="lensseg" id="lensseg" role="group" aria-label="Vue">
       <button data-lens="avis" aria-pressed="true">Opportunités <span>· avis</span></button>
-      <button data-lens="entreprises" aria-pressed="false">Entreprises <span>· prospects</span></button>
+      <button data-lens="cibles" aria-pressed="false">Cibles privées <span>· prospects</span></button>
+      <button data-lens="titulaires" aria-pressed="false">Titulaires <span>· attributions</span></button>
     </div>
     <div class="stats" id="stats"></div>
     <div class="exec" id="exec"></div>
@@ -1019,6 +1113,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
 <script>
 const LEADS = __LEADS_JSON__;
 const META = __META_JSON__;
+const WATCHLIST = __WATCHLIST_JSON__;
 const CONVERSION = __CONVERSION_JSON__;
 const SUIVI_URL = __SUIVI_URL__;
 const SUIVI_TOKEN = __SUIVI_TOKEN__;
@@ -1113,7 +1208,7 @@ function normEntreprise(s){
     .replace(/\b(sa|sas|sarl|sasu|eurl|spa|srl|gmbh|ltd|llc|inc|plc|bv|nv|ag|co|company|corp|group|groupe|holding|international|intl)\b/g,' ')
     .replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
 }
-const RANG_ACTION={contacter:3,surveiller:2,ignorer:1};
+const RANG_ACTION={contacter:3,surveiller:2,ignorer:1,aucun:0};
 // Choix du libelle de fiche : on prefere une forme en casse mixte (plus
 // lisible qu'un nom tout en majuscules), puis la plus complete.
 function meilleurNom(a,b){
@@ -1122,36 +1217,69 @@ function meilleurNom(a,b){
   if(au!==bu) return au?b:a;
   return b.length>a.length?b:a;
 }
-function agregerEntreprises(){
+// --- Finalisation commune d'une fiche entreprise (gere le cas sans signal) ---
+function finaliserFiche(f){
+  let prio='ignorer';
+  f.signaux.forEach(s=>{ if((RANG_ACTION[s.action]||0)>(RANG_ACTION[prio]||0)) prio=s.action; });
+  if(!f.signaux.length) prio='aucun';                 // cible surveillee, sans signal recent
+  else if(!(prio in RANG_ACTION)) prio='surveiller';
+  let enr={nom:'',email:'',siren:'',ca:''};
+  f.signaux.forEach(s=>{
+    if(!enr.nom && s.nom && s.nom!=='n.c.') enr.nom=s.nom;
+    if(!enr.email && s.email && s.email!=='n.c.') enr.email=s.email;
+    if(!enr.siren && s.siren) enr.siren=s.siren;
+    if(!enr.ca && s.ca) enr.ca=s.ca;
+  });
+  const repr=f.signaux.find(s=>s.email&&s.email!=='n.c.')||f.signaux[0]||null;
+  const meilleur=f.signaux.length?f.signaux.reduce((a,b)=>b.final>a.final?b:a):null;
+  const dernier=f.signaux.length?(f.signaux.reduce((a,b)=>((b.date_det||'')>(a.date_det||'')?b:a)).date_det||''):'';
+  return Object.assign(f,{zones:[...f.zones],secteurs:[...f.secteurs],
+    prio,enr,repr,meilleur,dernier,n:f.signaux.length});
+}
+function _triFiches(a,b){
+  return (RANG_ACTION[b.prio]-RANG_ACTION[a.prio])
+    || ((b.meilleur?b.meilleur.final:0)-(a.meilleur?a.meilleur.final:0))
+    || ((b.dernier||'').localeCompare(a.dernier||''));
+}
+// --- Lentille CIBLES PRIVEES : ta watchlist (toutes) + signaux PRIVE croises ---
+function agregerCibles(){
   const parCle={};
-  LEADS.filter(l=>l.src==='PRIVÉ'||l.src==='ATTRIB').forEach(l=>{
+  WATCHLIST.forEach(w=>{
+    const nom=w.entreprise; if(!nom) return;
+    const cle=normEntreprise(nom)||sansAccent(nom);
+    if(!parCle[cle]) parCle[cle]={cle,nom,signaux:[],zones:new Set(),secteurs:new Set(),cible:true};
+    if(w.secteur) parCle[cle].secteurs.add(w.secteur);
+  });
+  LEADS.filter(l=>l.src==='PRIVÉ').forEach(l=>{
     const nom=(l.entreprise&&l.entreprise!=='n.c.')?l.entreprise:(l.agence||'?');
     const cle=normEntreprise(nom)||sansAccent(nom);
-    if(!parCle[cle]) parCle[cle]={cle,nom,signaux:[],zones:new Set(),secteurs:new Set()};
-    const f=parCle[cle];
-    f.signaux.push(l);
-    f.nom=meilleurNom(f.nom,nom);
+    if(!parCle[cle]) parCle[cle]={cle,nom,signaux:[],zones:new Set(),secteurs:new Set(),cible:false};
+    const f=parCle[cle]; f.signaux.push(l); f.nom=meilleurNom(f.nom,nom);
     if(l.zone&&l.zone!=='Non classé') f.zones.add(l.zone);
     if(l.grp&&l.grp!=='signal'&&l.grp!=='AT') f.secteurs.add(l.grp.replace(/_/g,' '));
   });
-  return Object.values(parCle).map(f=>{
-    let prio='ignorer';
-    f.signaux.forEach(s=>{ if((RANG_ACTION[s.action]||0)>(RANG_ACTION[prio]||0)) prio=s.action; });
-    if(!(prio in RANG_ACTION)) prio='surveiller';
-    let enr={nom:'',email:'',siren:'',ca:''};
-    f.signaux.forEach(s=>{
-      if(!enr.nom && s.nom && s.nom!=='n.c.') enr.nom=s.nom;
-      if(!enr.email && s.email && s.email!=='n.c.') enr.email=s.email;
-      if(!enr.siren && s.siren) enr.siren=s.siren;
-      if(!enr.ca && s.ca) enr.ca=s.ca;
-    });
-    const repr=f.signaux.find(s=>s.email&&s.email!=='n.c.')||f.signaux[0];
-    const meilleur=f.signaux.reduce((a,b)=>b.final>a.final?b:a);
-    const dernier=f.signaux.reduce((a,b)=>((b.date_det||'')>(a.date_det||'')?b:a)).date_det||'';
-    return Object.assign(f,{zones:[...f.zones],secteurs:[...f.secteurs],
-      prio,enr,repr,meilleur,dernier,n:f.signaux.length});
-  }).sort((a,b)=>(RANG_ACTION[b.prio]-RANG_ACTION[a.prio])||(b.meilleur.final-a.meilleur.final)||((b.dernier||'').localeCompare(a.dernier||'')));
+  return Object.values(parCle).map(finaliserFiche).sort(_triFiches);
 }
+// --- Lentille TITULAIRES : attributions (ATTRIB) uniquement ---
+function agregerTitulaires(){
+  const parCle={};
+  LEADS.filter(l=>l.src==='ATTRIB').forEach(l=>{
+    const nom=(l.entreprise&&l.entreprise!=='n.c.')?l.entreprise:(l.agence||'?');
+    const cle=normEntreprise(nom)||sansAccent(nom);
+    if(!parCle[cle]) parCle[cle]={cle,nom,signaux:[],zones:new Set(),secteurs:new Set(),cible:false};
+    const f=parCle[cle]; f.signaux.push(l); f.nom=meilleurNom(f.nom,nom);
+    if(l.zone&&l.zone!=='Non classé') f.zones.add(l.zone);
+    if(l.grp&&l.grp!=='signal'&&l.grp!=='AT') f.secteurs.add(l.grp.replace(/_/g,' '));
+  });
+  return Object.values(parCle).map(finaliserFiche)
+    .sort((a,b)=>((b.meilleur?b.meilleur.final:0)-(a.meilleur?a.meilleur.final:0)));
+}
+function fichesCourantes(){
+  if(state.lens==='cibles') return agregerCibles();
+  if(state.lens==='titulaires') return agregerTitulaires();
+  return [];
+}
+function vueFiches(){ return state.lens==='cibles'||state.lens==='titulaires'; }
 // Un signal passe les filtres transverses (zone / mois / recherche) ?
 function signalOK(s, ignore){
   ignore = ignore || {};
@@ -1160,21 +1288,38 @@ function signalOK(s, ignore){
   if(!ignore.q && state.q){const hay=(s.pays+' '+(s.entreprise||s.agence)+' '+s.titre+' '+s.zone+' '+s.grp).toLowerCase(); if(!hay.includes(state.q)) return false;}
   return true;
 }
-// Une fiche est visible si sa priorite matche l'action ET qu'au moins un signal
-// passe les filtres transverses.
+// Filtre d'action selon la lentille : par priorite (cibles) ou par tranche de
+// score (titulaires). En vue avis on n'utilise pas cette fonction.
+function ficheMatchAction(f){
+  if(state.lens==='titulaires'){
+    const sc=f.meilleur?f.meilleur.final:0;
+    if(state.action==='fort') return sc>=6;
+    if(state.action==='moyen') return sc>=4&&sc<6;
+    if(state.action==='faible') return sc<4;
+    return true;                         // 'all' (ou defaut) : tout
+  }
+  return state.action==='all' || f.prio===state.action;
+}
+// Une fiche est visible si son action/tranche matche ET, si elle a des signaux,
+// qu'au moins un passe les filtres transverses. Une cible SANS signal (watchlist
+// pure) reste visible tant qu'aucun filtre zone/mois/recherche n'est actif.
 function ficheOK(f, ignore){
   ignore = ignore || {};
-  if(!ignore.action && state.action!=='all' && f.prio!==state.action) return false;
+  if(!ignore.action && !ficheMatchAction(f)) return false;
+  if(!f.signaux.length){
+    if((!ignore.zone&&state.zone)||(!ignore.mois&&state.mois)||(!ignore.q&&state.q)) return false;
+    return true;
+  }
   return f.signaux.some(s=>signalOK(s, ignore));
 }
 // Liste des unites courantes (avis en vue avis, signaux d'entreprises en vue
 // entreprises) pour alimenter la carte, le graphe de zones et les periodes.
 function signauxCourants(ignore){
   ignore = ignore || {};
-  if(state.lens==='entreprises'){
+  if(vueFiches()){
     const out=[];
-    agregerEntreprises().forEach(f=>{
-      if(!ignore.action && state.action!=='all' && f.prio!==state.action) return;
+    fichesCourantes().forEach(f=>{
+      if(!ignore.action && !ficheMatchAction(f)) return;
       f.signaux.forEach(s=>{ if(signalOK(s, ignore)) out.push(s); });
     });
     return out;
@@ -1211,14 +1356,23 @@ document.getElementById('runmeta').innerHTML =
 function buildStats(){
   const box=document.getElementById('stats');
   let defs;
-  if(state.lens==='entreprises'){
-    const fiches=agregerEntreprises();
+  if(state.lens==='cibles'){
+    const fiches=agregerCibles();
     const c=a=>fiches.filter(f=>f.prio===a).length;
     defs=[
       {k:'contacter',cls:'act',n:c('contacter'),l:'À contacter'},
-      {k:'surveiller',cls:'wat',n:c('surveiller'),l:'À surveiller'},
-      {k:'ignorer',cls:'low',n:c('ignorer'),l:'Faibles'},
-      {k:'all',cls:'',n:fiches.length,l:'Toutes les entreprises'}
+      {k:'surveiller',cls:'wat',n:c('surveiller'),l:'Signal récent'},
+      {k:'aucun',cls:'low',n:c('aucun'),l:'Sans signal'},
+      {k:'all',cls:'',n:fiches.length,l:'Toutes mes cibles'}
+    ];
+  }else if(state.lens==='titulaires'){
+    const fiches=agregerTitulaires();
+    const sc=f=>f.meilleur?f.meilleur.final:0;
+    defs=[
+      {k:'fort',cls:'act',n:fiches.filter(f=>sc(f)>=6).length,l:'Fort (\u22656)'},
+      {k:'moyen',cls:'wat',n:fiches.filter(f=>sc(f)>=4&&sc(f)<6).length,l:'Moyen'},
+      {k:'faible',cls:'low',n:fiches.filter(f=>sc(f)<4).length,l:'Faible'},
+      {k:'all',cls:'',n:fiches.length,l:'Tous les titulaires'}
     ];
   }else{
     const av=LEADS.filter(l=>l.src==='TED'||l.src==='BM'||l.src==='AFDB'||l.src==='ADB'||l.src==='EBRD'||l.src==='RW');
@@ -1365,11 +1519,14 @@ document.querySelectorAll('#lensseg button').forEach(b=>b.addEventListener('clic
   if(state.lens===b.dataset.lens)return;
   state.lens=b.dataset.lens;
   document.querySelectorAll('#lensseg button').forEach(x=>x.setAttribute('aria-pressed',x===b?'true':'false'));
-  state.action='contacter';          // reset du filtre d'action au changement de vue
-  const ent=state.lens==='entreprises';
+  // Reset du filtre : en avis on part de "à contacter" ; en cibles/titulaires
+  // on part de "tout" pour voir l'ensemble (toute la watchlist, tous les titulaires).
+  state.action = state.lens==='avis' ? 'contacter' : 'all';
+  const ent=vueFiches();
   document.getElementById('srcseg').style.display=ent?'none':'';   // source = notion avis
   const comptes=document.getElementById('comptes'); if(comptes) comptes.style.display=ent?'none':'';
-  document.querySelector('.geo .phead').textContent=ent?'Carte des entreprises':'Carte des opportunités';
+  const titres={avis:'Carte des opportunités',cibles:'Carte des cibles',titulaires:'Carte des titulaires'};
+  document.querySelector('.geo .phead').textContent=titres[state.lens]||'Carte';
   buildStats(); buildPeriod(); render();
 }));
 document.getElementById('search').addEventListener('input',e=>{state.q=e.target.value.toLowerCase().trim();render();});
@@ -1399,7 +1556,7 @@ function badgeDeadline(l){
 
 function render(){
   buildZoneChart();
-  if(state.lens==='entreprises'){ renderEntreprises(); return; }
+  if(vueFiches()){ renderFiches(fichesCourantes()); return; }
   const box=document.getElementById('leads');
   let filtered=LEADS.filter(l=>match(l));
   if(state.tri==='date'){
@@ -1457,14 +1614,19 @@ function ficheSignalRow(s){
   const attrib=s.src==='ATTRIB';
   const desc=attrib?`Titulaire d'un marché · ${esc(s.pays)}`:esc(s.titre||'Signal');
   const typ=attrib?'attribution':((s.grp&&s.grp!=='signal')?s.grp.replace(/_/g,' '):'signal');
-  const sc=attrib?'indicatif':('signal '+s.final.toFixed(1));
+  const sc=attrib?('score '+(s.final!=null?s.final.toFixed(1):'n.c.')):('signal '+s.final.toFixed(1));
   const date=s.date_det||s.mois_label||'—';
-  return `<div class="fsr"><span class="fsi">${desc}</span><span class="fsd">${esc(date)} · ${esc(typ)} ${esc(sc)}</span></div>`;
+  const lien=s.lien?` <a class="fsl" href="${esc(s.lien)}" target="_blank" rel="noopener">${attrib?'avis':'article'} ↗</a>`:'';
+  return `<div class="fsr"><span class="fsi">${desc}${lien}</span><span class="fsd">${esc(date)} · ${esc(typ)} ${esc(sc)}</span></div>`;
 }
 function ficheCard(f,i){
   const initiales=((f.nom||'?').split(/\s+/).slice(0,2).map(w=>w[0]||'').join('')||'?').toUpperCase();
-  const prioLabel={contacter:'à contacter',surveiller:'à surveiller',ignorer:'faible'}[f.prio]||f.prio;
-  const meta=[(f.secteurs[0]||'secteur n.c.'),f.n+' signal'+(f.n>1?'s':''),(f.zones.join(', ')||'zone n.c.')].join(' · ');
+  const prioLabel={contacter:'à contacter',surveiller:'à surveiller',ignorer:'faible',aucun:'sans signal'}[f.prio]||f.prio;
+  const sansSignal=f.n===0;
+  const secteur=f.secteurs[0]||'secteur n.c.';
+  const meta=sansSignal
+    ? [secteur,'aucun signal récent'].join(' · ')
+    : [secteur,f.n+' signal'+(f.n>1?'s':''),(f.zones.join(', ')||'zone n.c.')].join(' · ');
   const sig=f.signaux.slice().sort((a,b)=>(b.date_det||'').localeCompare(a.date_det||'')).slice(0,4).map(ficheSignalRow).join('');
   const hasEnr=f.enr.nom||f.enr.email||f.enr.siren||f.enr.ca;
   const enr=hasEnr?`<div class="fenr">
@@ -1472,24 +1634,23 @@ function ficheCard(f,i){
      ${f.enr.email?`<div class="er"><span class="ek">Email</span><span>${esc(f.enr.email)}</span></div>`:''}
      ${f.enr.siren?`<div class="er"><span class="ek">SIREN</span><span>${esc(f.enr.siren)}</span></div>`:''}
      ${f.enr.ca?`<div class="er"><span class="ek">CA</span><span>${esc(f.enr.ca)} €</span></div>`:''}
-   </div>`:`<div class="fmiss">⚠ Contact non enrichi (entreprise probablement hors France). À rechercher manuellement.</div>`;
+   </div>`:(sansSignal?'':`<div class="fmiss">⚠ Contact non enrichi (entreprise probablement hors France). À rechercher manuellement.</div>`);
+  const mailBtn=f.repr?`<a class="act mail" href="${mailtoHref(f.repr)}">✉ Rédiger l'email</a>`:'';
+  const voirBtn=f.n>0?`<button class="act" type="button" data-fiche-ent="${i}">Voir les ${f.n} signal${f.n>1?'s':''} ↗</button>`:'';
   return `<article class="fiche" data-fidx="${i}">
     <div class="fhead"><div class="fav">${esc(initiales)}</div>
       <div style="flex:1;min-width:0">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="fnom">${esc(f.nom)}</span><span class="fprio ${f.prio}">${prioLabel}</span></div>
         <div class="fmeta">${esc(meta)}</div>
       </div></div>
-    <div class="fsig">${sig}</div>
+    ${sansSignal?'<div class="fnosig">Cible surveillée, aucun signal récent capté. Elle reste dans le radar dès qu\'une actualité tombe.</div>':`<div class="fsig">${sig}</div>`}
     ${enr}
-    <div class="facts">
-      <a class="act mail" href="${mailtoHref(f.repr)}">✉ Rédiger l'email</a>
-      <button class="act" type="button" data-fiche-ent="${i}">Voir les ${f.n} signal${f.n>1?'s':''} ↗</button>
-    </div>
+    <div class="facts">${mailBtn}${voirBtn}</div>
   </article>`;
 }
-function renderEntreprises(){
+function renderFiches(fichesSource){
   const box=document.getElementById('leads');
-  let fiches=agregerEntreprises().filter(f=>ficheOK(f));
+  let fiches=(fichesSource||[]).filter(f=>ficheOK(f));
   if(state.tri==='date') fiches.sort((a,b)=>(b.dernier||'').localeCompare(a.dernier||''));
   FICHES=fiches;
   const moisLabel=state.mois?(META.mois.find(m=>m.cle===state.mois)||{}).label:null;
@@ -1506,9 +1667,10 @@ function openFicheEnt(i){
   const sigs=f.signaux.slice().sort((a,b)=>(b.date_det||'').localeCompare(a.date_det||''));
   const tl=sigs.map(s=>{
     const typ=s.src==='ATTRIB'?'attribution':'signal';
-    return `<div class="tlrow"><span class="tld">${esc(s.date_det||'—')}</span><span>${esc(s.pays)}</span><span>${esc(typ)}</span><span class="tls">${s.final.toFixed(1)}</span></div>`;
+    const lien=s.lien?` <a class="fsl" href="${esc(s.lien)}" target="_blank" rel="noopener">${s.src==='ATTRIB'?'avis':'article'} ↗</a>`:'';
+    return `<div class="tlrow"><span class="tld">${esc(s.date_det||'—')}</span><span>${esc(s.pays)}${lien}</span><span>${esc(typ)}</span><span class="tls">${s.final.toFixed(1)}</span></div>`;
   }).join('');
-  const prioLabel={contacter:'à contacter',surveiller:'à surveiller',ignorer:'faible'}[f.prio]||f.prio;
+  const prioLabel={contacter:'à contacter',surveiller:'à surveiller',ignorer:'faible',aucun:'sans signal'}[f.prio]||f.prio;
   const manque=!f.enr.nom&&!f.enr.email;
   document.getElementById('modalcard').innerHTML=`
    <div class="mhead"><button class="mclose" type="button" onclick="closeFiche()" aria-label="Fermer">×</button>
@@ -1527,13 +1689,13 @@ function openFicheEnt(i){
      <div class="timeline">${tl}</div>
    </div>
    <div class="mactions">
-     <a class="mbtn primary" href="${mailtoHref(f.repr)}">✉ Rédiger l'email</a>
+     ${f.repr?`<a class="mbtn primary" href="${mailtoHref(f.repr)}">✉ Rédiger l'email</a>`:''}
      <button class="mbtn ghost" type="button" onclick="closeFiche()">Fermer</button>
    </div>`;
   document.getElementById('modal').classList.add('open');
 }
 document.getElementById('foot').innerHTML=
-  'Généré automatiquement après le run du radar. Les contacts proviennent des avis Banque Mondiale.<br>Le destinataire commercial réel est le titulaire du marché, pas l\'agence acheteuse.';
+  'Généré automatiquement après le run du radar.<br>Trois vues : Opportunités (avis), Cibles privées (ta watchlist), Titulaires (attributions). Le destinataire commercial réel est le titulaire qui déploie, pas l\'agence acheteuse.';
 
 // --- Fiche lead detaillee (modale) ---
 function ficheHtml(l){
