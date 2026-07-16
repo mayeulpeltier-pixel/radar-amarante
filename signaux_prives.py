@@ -53,6 +53,38 @@ ACTIVER = os.environ.get("RADAR_SIGNAUX_PRIVES", "1") != "0"
 # Anti rate-limit Google News (503) : pause entre entreprises + re-tentative.
 PAUSE_ENTREPRISE = float(os.environ.get("RADAR_PRIVES_PAUSE", "0.7"))
 PAUSE_REPLI = 2.5   # attente avant la 2e (et derniere) tentative sur 503
+PAUSE_LOCALE = float(os.environ.get("RADAR_PRIVES_PAUSE_LOCALE", "0.4"))  # entre 2 locales
+
+# LOCALES Google News interrogees. Bug corrige : le moteur ne cherchait qu'en
+# FR (hl=fr, gl=FR), ce qui rate la presse des majors etrangers de la
+# watchlist (ukrainiens, kazakhs, africains anglophones...). On interroge
+# desormais FR *et* EN et on fusionne. Reglable via RADAR_PRIVES_GNEWS_LOCALES
+# ("hl:gl:pays:langue" separes par des virgules), ex. "fr:FR:FR:fr,en:US:US:en".
+def _locales_gnews():
+    brut = os.environ.get("RADAR_PRIVES_GNEWS_LOCALES", "fr:FR:FR:fr,en:US:US:en")
+    locs = []
+    for bloc in brut.split(","):
+        p = [x.strip() for x in bloc.split(":")]
+        if len(p) == 4 and all(p):
+            locs.append((p[0], p[1], p[2] + ":" + p[3]))
+    return locs or [("fr", "FR", "FR:fr")]
+
+GNEWS_LOCALES = _locales_gnews()
+
+# Plafond d'articles gardes par entreprise APRES fusion des locales (decouple
+# du plafond BITD, qui reste a 6 pour le chemin defense mono-locale). Un peu
+# plus haut ici pour ne pas ecraser la diversite FR+EN.
+MAX_ARTICLES_PRIVE = int(os.environ.get("RADAR_PRIVES_MAX_ARTICLES", "10"))
+
+# Nombre d'entreprises traitees par run (levier de couverture principal).
+# Releve de 20 -> 35 : a ~865 entites surveillees, 20/run = un tour complet en
+# ~5 mois (signal perissable). Surchargeable via RADAR_PRIVES_ENTREPRISES.
+def taille_fenetre_pour(valeur_env=None, defaut=35):
+    """Nombre d'entreprises a traiter ce run, borne a >=1. defaut si vide/illisible."""
+    try:
+        return max(1, int(valeur_env)) if valeur_env not in (None, "") else defaut
+    except (TypeError, ValueError):
+        return defaut
 
 # Mode diagnostic (RADAR_PRIVES_DEBUG=1) : affiche la decision LLM pour chaque
 # offre Adzuna analysee (gardee/rejetee + raison). N'ecrit rien de plus.
@@ -440,13 +472,9 @@ TRIGGERS_NEWS = (
     '"field operations" OR mobilization OR "site opening" OR deployment')
 
 
-def collecter_news(entreprise, requete="", session=None):
-    """Google News RSS avec repli : sur 503 (rate-limit), une seule nouvelle
-    tentative apres pause, sinon on passe sans insister. Requete enrichie de
-    declencheurs de deploiement (FR + EN) si aucune requete personnalisee."""
-    session = session or ted.session_robuste()
-    requete = requete or '"{}" ({})'.format(entreprise, TRIGGERS_NEWS)
-    url = bitd.url_google_news(entreprise, requete)
+def _collecter_news_locale(url, entreprise, session):
+    """Un flux Google News (une locale), resilient : sur 503, une seule
+    nouvelle tentative apres pause, sinon on passe sans insister."""
     for tentative in range(2):
         try:
             rep = session.get(url, timeout=30)
@@ -454,10 +482,10 @@ def collecter_news(entreprise, requete="", session=None):
                 if tentative == 0:
                     time.sleep(PAUSE_REPLI)
                     continue
-                print("  (info) Google News sature (503) pour {} : ignore ce run.".format(entreprise))
+                print("  (info) Google News sature (503) pour {} : locale ignoree.".format(entreprise))
                 return []
             rep.raise_for_status()
-            return bitd.parser_rss(rep.text)[:bitd.MAX_ARTICLES_PAR_ENTREPRISE]
+            return bitd.parser_rss(rep.text)
         except Exception as e:
             if tentative == 0:
                 time.sleep(PAUSE_REPLI)
@@ -467,10 +495,36 @@ def collecter_news(entreprise, requete="", session=None):
     return []
 
 
+def collecter_news(entreprise, requete="", session=None):
+    """Google News RSS MULTI-LOCALE (FR + EN par defaut) : capte la presse
+    francaise ET la presse internationale des majors etrangers de la watchlist.
+    Fusionne les locales, deduplique par URL, plafonne au global. Requete
+    enrichie de declencheurs de deploiement (FR + EN) si aucune requete
+    personnalisee. Chaque locale est resiliente et isolee : une locale en echec
+    n'empeche pas les autres."""
+    session = session or ted.session_robuste()
+    requete = requete or '"{}" ({})'.format(entreprise, TRIGGERS_NEWS)
+    vus, articles = set(), []
+    for i, (hl, gl, ceid) in enumerate(GNEWS_LOCALES):
+        if i > 0:
+            time.sleep(PAUSE_LOCALE)   # respiration anti rate-limit entre locales
+        url = bitd.url_google_news(entreprise, requete, hl=hl, gl=gl, ceid=ceid)
+        for a in _collecter_news_locale(url, entreprise, session):
+            k = bitd.id_article(a.get("lien", ""))
+            if k and k not in vus:
+                vus.add(k)
+                articles.append(a)
+    return articles[:MAX_ARTICLES_PRIVE]
+
+
 def collecter_signaux(entreprise, requete, session=None, fetch_adzuna=None):
-    """Fusionne Google News (resilient) + Adzuna, dedup par URL."""
-    articles = collecter_news(entreprise, requete, session=session)
-    articles += collecter_adzuna(entreprise, fetch=fetch_adzuna, session=session)
+    """Fusionne les sources, ADZUNA EN PREMIER puis Google News multi-locale,
+    dedup par URL. Adzuna est prioritaire car une offre d'emploi ("Country
+    Manager Mali", "HSE Supervisor Iraq") est le signal de deploiement le plus
+    net et le mieux date ; en le placant en tete, il passe l'analyse avant que
+    le budget LLM du run ne s'epuise sur des articles de presse plus bruites."""
+    articles = collecter_adzuna(entreprise, fetch=fetch_adzuna, session=session)
+    articles += collecter_news(entreprise, requete, session=session)
     vus, uniques = set(), []
     for a in articles:
         k = bitd.id_article(a.get("lien", ""))
@@ -643,7 +697,7 @@ def main():
     # choisis, forts deployeurs) d'abord, attributaires ensuite (couverts par la
     # rotation sur les runs suivants).
     comptes.sort(key=lambda c: 1 if str(c.get("secteur", "")).startswith("Attributaire") else 0)
-    taille_fenetre = int(os.environ.get("RADAR_PRIVES_ENTREPRISES", "20"))
+    taille_fenetre = taille_fenetre_pour(os.environ.get("RADAR_PRIVES_ENTREPRISES"))
     n = len(comptes)
     debut = curseur % n if n else 0
     fenetre = [comptes[(debut + i) % n] for i in range(min(taille_fenetre, n))]
