@@ -465,5 +465,128 @@ class TestRadarRisque(unittest.TestCase):
             del os.environ["RADAR_RISQUE"]
 
 
+# ===========================================================================
+# COLLECTE PRIVEE (P1) : locale bilingue Google News + Adzuna prioritaire.
+# Couvre le correctif de rendement du moteur signaux prives (item 12 : etendre
+# les tests aux collecteurs prives). Tout est hors-ligne (session/fetch simules).
+# ===========================================================================
+class _FauxRep:
+    def __init__(self, text, status=200):
+        self.text = text
+        self.status_code = status
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError("HTTP {}".format(self.status_code))
+
+
+def _rss(items):
+    """Construit un flux RSS minimal parsable par bitd.parser_rss."""
+    corps = "".join(
+        "<item><title>{}</title><link>{}</link>"
+        "<pubDate>{}</pubDate><description>x</description></item>".format(t, l, d)
+        for (t, l, d) in items)
+    return "<?xml version='1.0'?><rss><channel>{}</channel></rss>".format(corps)
+
+
+class _FauxSessionLocale:
+    """Renvoie un RSS different selon la locale (hl=) presente dans l'URL,
+    et enregistre les URL appelees pour verifier qu'on interroge bien FR ET EN."""
+    def __init__(self, par_locale):
+        self.par_locale = par_locale
+        self.appels = []
+
+    def get(self, url, timeout=None, **kw):
+        self.appels.append(url)
+        hl = "fr" if "hl=fr" in url else ("en" if "hl=en" in url else "?")
+        return _FauxRep(self.par_locale.get(hl, "<rss></rss>"))
+
+
+class TestCollecteBilingue(unittest.TestCase):
+    def setUp(self):
+        self._sleep = signaux_prives.time.sleep
+        signaux_prives.time.sleep = lambda *a, **k: None   # tests instantanes
+        self._loc = signaux_prives.GNEWS_LOCALES
+        signaux_prives.GNEWS_LOCALES = [("fr", "FR", "FR:fr"), ("en", "US", "US:en")]
+
+    def tearDown(self):
+        signaux_prives.time.sleep = self._sleep
+        signaux_prives.GNEWS_LOCALES = self._loc
+
+    def test_url_locale_par_defaut_fr(self):
+        url = bitd.url_google_news("Acme")
+        self.assertIn("hl=fr", url)
+        self.assertIn("gl=FR", url)
+
+    def test_url_locale_en_surchargee(self):
+        url = bitd.url_google_news("Acme", hl="en", gl="US", ceid="US:en")
+        self.assertIn("hl=en", url)
+        self.assertIn("gl=US", url)
+
+    def test_les_deux_locales_sont_interrogees_et_fusionnees(self):
+        # FR renvoie A ; EN renvoie A (meme lien) + B. Attendu : 2 uniques, 2 appels.
+        sess = _FauxSessionLocale({
+            "fr": _rss([("Titre FR", "https://ex/a", "")]),
+            "en": _rss([("Title EN", "https://ex/a", ""),
+                        ("Deploy Mali", "https://ex/b", "")]),
+        })
+        arts = signaux_prives.collecter_news("Acme", session=sess)
+        liens = sorted(a["lien"] for a in arts)
+        self.assertEqual(liens, ["https://ex/a", "https://ex/b"])
+        self.assertEqual(len(sess.appels), 2)               # FR et EN
+        self.assertTrue(any("hl=en" in u for u in sess.appels))
+
+    def test_locale_en_echec_n_empeche_pas_fr(self):
+        sess = _FauxSessionLocale({
+            "fr": _rss([("Titre FR", "https://ex/a", "")]),
+            "en": None,          # provoquera une exception dans parser -> locale ignoree
+        })
+        arts = signaux_prives.collecter_news("Acme", session=sess)
+        self.assertEqual([a["lien"] for a in arts], ["https://ex/a"])
+
+    def test_plafond_articles_prive(self):
+        many = [("T{}".format(i), "https://ex/{}".format(i), "") for i in range(50)]
+        sess = _FauxSessionLocale({"fr": _rss(many), "en": "<rss></rss>"})
+        arts = signaux_prives.collecter_news("Acme", session=sess)
+        self.assertLessEqual(len(arts), signaux_prives.MAX_ARTICLES_PRIVE)
+
+    def test_adzuna_prioritaire_en_tete(self):
+        # Adzuna renvoie une offre "Mali" ; la presse renvoie un autre article.
+        # collecter_signaux doit placer l'offre Adzuna EN PREMIER.
+        def faux_adzuna(pays, params):
+            return {"results": [{
+                "title": "Country Manager", "description": "Deploy in Mali",
+                "location": {"display_name": "Bamako, Mali", "area": ["Mali"]},
+                "company": {"display_name": "Acme"},
+                "redirect_url": "https://job/1", "created": "2026-07-01T00:00:00Z",
+            }]}
+        vrai_news = signaux_prives.collecter_news
+        signaux_prives.collecter_news = lambda *a, **k: [
+            {"titre": "Presse", "lien": "https://news/1", "date": "", "resume": "x"}]
+        try:
+            arts = signaux_prives.collecter_signaux(
+                "Acme", "", session=object(), fetch_adzuna=faux_adzuna)
+        finally:
+            signaux_prives.collecter_news = vrai_news
+        self.assertTrue(arts[0]["titre"].startswith("[Offre d'emploi]"))
+        self.assertEqual(arts[0]["lien"], "https://job/1")
+        self.assertIn("https://news/1", [a["lien"] for a in arts])
+
+
+class TestFenetrePrives(unittest.TestCase):
+    def test_defaut_35(self):
+        self.assertEqual(signaux_prives.taille_fenetre_pour(None), 35)
+        self.assertEqual(signaux_prives.taille_fenetre_pour(""), 35)
+
+    def test_surcharge_valide(self):
+        self.assertEqual(signaux_prives.taille_fenetre_pour("50"), 50)
+
+    def test_valeur_illisible_repli_defaut(self):
+        self.assertEqual(signaux_prives.taille_fenetre_pour("abc"), 35)
+
+    def test_borne_minimale(self):
+        self.assertEqual(signaux_prives.taille_fenetre_pour("0"), 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
