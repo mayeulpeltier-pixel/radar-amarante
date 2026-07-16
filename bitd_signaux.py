@@ -161,9 +161,13 @@ def _whitelist_depuis_valeurs(valeurs):
 # ===========================================================================
 # COLLECTE GOOGLE NEWS RSS
 # ===========================================================================
-def url_google_news(entreprise, requete_perso=""):
+def url_google_news(entreprise, requete_perso="", hl="fr", gl="FR", ceid="FR:fr"):
+    """URL du flux Google News RSS. hl/gl/ceid definissent la LOCALE
+    interrogee : defaut FR (retro-compatible), mais surchargeable pour aller
+    chercher la presse internationale (hl='en', gl='US', ceid='US:en'), la ou
+    vivent les annonces des majors etrangers de la watchlist."""
     requete = requete_perso.strip() or '"{}" ({})'.format(entreprise, DECLENCHEURS)
-    params = {"q": requete, "hl": "fr", "gl": "FR", "ceid": "FR:fr"}
+    params = {"q": requete, "hl": hl, "gl": gl, "ceid": ceid}
     return GNEWS_BASE + "?" + urllib.parse.urlencode(params)
 
 
