@@ -281,8 +281,13 @@ Une présence longue n'implique pas forcément un vrai besoin opérationnel : un
 - terrain_isole : zones rurales ou isolées, accès difficile, infrastructures éloignées.
 - frontiere : zone frontalière ou zone de tension active.
 
-RÈGLE SUR LA SÉCURITÉ DÉJÀ EN PLACE (lis bien -- ça change la conclusion) :
-Si l'avis mentionne qu'une prestation de sécurité, d'escorte ou de protection est déjà prévue ou fournie par un tiers (le client, le titulaire d'un autre marché, ou un prestataire déjà désigné), il n'y a PROBABLEMENT PLUS de besoin ou d'opportunité pour Amarante sur cet avis précis, même si le reste du profil est par ailleurs favorable. Cherche des formulations comme "security services provided", "armed escort", "convoy security", "guard services", "protection personnel", ou équivalent en français.
+RÈGLE SUR LA SÉCURITÉ DÉJÀ EN PLACE (lis bien -- ça change la conclusion ET la nature de l'opportunité) :
+Détermine QUI assure déjà la sécurité, car cela distingue un marché fermé d'une opportunité de conquête. Renseigne "securite_existante" avec l'une des quatre valeurs :
+- "interne_client" : la sécurité est visiblement gérée EN INTERNE par le client lui-même (son propre personnel, un dispositif militaire ou étatique intégré, une force onusienne organique). Là, il n'y a généralement PAS d'ouverture pour Amarante -> l'avis peut être écarté.
+- "prestataire_tiers" : la sécurité est déjà fournie par un PRESTATAIRE EXTERNE (société privée de sécurité, titulaire d'un autre marché d'escorte ou de gardiennage). Ce N'EST PAS une raison d'écarter : c'est au contraire une OPPORTUNITÉ DE DÉPLACEMENT concurrentiel -- un contrat existe, un concurrent est en place, il peut être disputé (renouvellement, extension, sous-traitance). À CONSERVER et signaler.
+- "aucune" : aucune sécurité mentionnée, besoin potentiellement ouvert.
+- "inconnu" : impossible à déterminer depuis l'avis.
+Cherche des formulations comme "security services provided", "armed escort", "convoy security", "guard services", "protection personnel", ou équivalent en français, puis juge si c'est le client lui-même (interne) ou un tiers (prestataire).
 
 RÈGLE SUR LE TYPE DE CLIENT :
 Un bailleur international (AFD, UE, Banque Mondiale...) n'est pas le seul type de client pertinent. Une entreprise privée internationale (minière, énergie, industrielle) déployant du personnel à l'étranger est un prospect tout aussi réel pour Amarante, parfois plus accessible commercialement qu'un marché institutionnel verrouillé.
@@ -311,7 +316,7 @@ Schéma de sortie :
   "deploiement_terrain_reel": true | false,
   "type_mobilite": "aucune | capitale | multi_sites | chantier | terrain_isole | frontiere",
   "profil_personnes_exposees": "expert_international | executive | technicien | ouvrier_local | aucun",
-  "securite_existante_detectee": true | false,
+  "securite_existante": "aucune | interne_client | prestataire_tiers | inconnu",
   "indices_deploiement": ["courtes citations textuelles"],
   "type_activite": "assistance_technique | supervision_chantier | etude_terrain | fourniture_equipement | formation | autre",
   "type_client": "bailleur_donateur | institution_ue_onu | etat_administration_locale | entreprise_privee | autre",
@@ -862,6 +867,48 @@ def reparer_json(texte_casse, modele=None):
     return appeler_modele(prompt_reparation, modele=modele)
 
 
+# ===========================================================================
+# NORMALISATION SECURITE (P3) : levier concurrentiel "deplacement"
+# ---------------------------------------------------------------------------
+# Le modele renseigne desormais l'enum 'securite_existante' (aucune /
+# interne_client / prestataire_tiers / inconnu) au lieu d'un booleen. On en
+# derive le booleen historique 'securite_existante_detectee' AVEC UNE SEMANTIQUE
+# PLUS FINE : True UNIQUEMENT quand la securite est geree en interne par le
+# client (marche reellement ferme). 'prestataire_tiers' n'est PLUS supprime --
+# c'est une opportunite de conquete : il remonte a plein score et est marque
+# [DEPLACEMENT CONCURRENT] dans la justification. Comme scores, action et
+# collecteurs lisent tous le booleen derive, le correctif s'applique a TOUT le
+# pipeline (TED + BM + AFDB + ADB + EBRD + ReliefWeb) sans toucher aux
+# collecteurs ni au schema des onglets.
+MARQUEUR_DEPLACEMENT = "[DÉPLACEMENT CONCURRENT]"
+_SECU_VALEURS = {"aucune", "interne_client", "prestataire_tiers", "inconnu"}
+
+
+def normaliser_securite(extraction):
+    """Derive le booleen historique de l'enum et marque les deplacements.
+    Idempotent (ne double pas le marqueur), tolerant au repli (ancien schema
+    booleen) et au None. Fonction PURE (testable)."""
+    if not isinstance(extraction, dict):
+        return extraction
+    brut = extraction.get("securite_existante")
+    if isinstance(brut, str) and brut.strip():
+        enum = brut.strip().lower()
+        if enum not in _SECU_VALEURS:
+            enum = "inconnu"
+        detectee = (enum == "interne_client")
+    else:
+        # Repli transition : le modele n'a renvoye que l'ancien booleen.
+        detectee = bool(extraction.get("securite_existante_detectee"))
+        enum = "interne_client" if detectee else "inconnu"
+    extraction["securite_existante"] = enum
+    extraction["securite_existante_detectee"] = detectee
+    if enum == "prestataire_tiers":
+        just = str(extraction.get("justification") or "").strip()
+        if not just.startswith(MARQUEUR_DEPLACEMENT):
+            extraction["justification"] = (MARQUEUR_DEPLACEMENT + " " + just).strip()
+    return extraction
+
+
 def appeler_llm(avis, modele=None):
     """Appelle le modele pour extraire les faits structures d'un avis.
     Renvoie le dict JSON parse, ou None en cas d'echec definitif.
@@ -891,14 +938,14 @@ def appeler_llm(avis, modele=None):
         return None
 
     try:
-        return json.loads(texte)
+        return normaliser_securite(json.loads(texte))
     except json.JSONDecodeError:
         pass
 
     debut, fin = texte.find("{"), texte.rfind("}")
     if debut != -1 and fin != -1 and fin > debut:
         try:
-            return json.loads(texte[debut:fin + 1])
+            return normaliser_securite(json.loads(texte[debut:fin + 1]))
         except json.JSONDecodeError:
             pass
 
@@ -913,7 +960,7 @@ def appeler_llm(avis, modele=None):
     if texte_repare is None:
         return None
     try:
-        return json.loads(texte_repare)
+        return normaliser_securite(json.loads(texte_repare))
     except json.JSONDecodeError:
         print("  Reparation echouee pour '{}'. Reponse brute : {}".format(
             avis.get("titre", "")[:50], texte_repare[:200]
