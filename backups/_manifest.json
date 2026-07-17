@@ -1,11 +1,18 @@
 {
-  "genere_le": "2026-07-16T22:57:05+00:00",
+  "genere_le": "2026-07-17T22:51:49+00:00",
   "onglets": [
     {
       "onglet": "Feuille 1",
       "fichier": "Feuille_1.csv",
       "lignes": 1,
       "colonnes": 0,
+      "erreur": null
+    },
+    {
+      "onglet": "digest_envoyes",
+      "fichier": "digest_envoyes.csv",
+      "lignes": 1,
+      "colonnes": 2,
       "erreur": null
     },
     {
@@ -18,21 +25,21 @@
     {
       "onglet": "ted_radar",
       "fichier": "ted_radar.csv",
-      "lignes": 60,
+      "lignes": 61,
       "colonnes": 32,
       "erreur": null
     },
     {
       "onglet": "bm_radar",
       "fichier": "bm_radar.csv",
-      "lignes": 497,
+      "lignes": 505,
       "colonnes": 35,
       "erreur": null
     },
     {
       "onglet": "prive_radar",
       "fichier": "prive_radar.csv",
-      "lignes": 13,
+      "lignes": 14,
       "colonnes": 22,
       "erreur": null
     },
@@ -67,14 +74,14 @@
     {
       "onglet": "entreprises_enrichies",
       "fichier": "entreprises_enrichies.csv",
-      "lignes": 61,
+      "lignes": 221,
       "colonnes": 11,
       "erreur": null
     },
     {
       "onglet": "attributions_radar",
       "fichier": "attributions_radar.csv",
-      "lignes": 607,
+      "lignes": 608,
       "colonnes": 15,
       "erreur": null
     },
@@ -88,21 +95,21 @@
     {
       "onglet": "afdb_radar",
       "fichier": "afdb_radar.csv",
-      "lignes": 58,
+      "lignes": 74,
       "colonnes": 32,
       "erreur": null
     },
     {
       "onglet": "ebrd_radar",
       "fichier": "ebrd_radar.csv",
-      "lignes": 561,
+      "lignes": 721,
       "colonnes": 34,
       "erreur": null
     },
     {
       "onglet": "reliefweb_radar",
       "fichier": "reliefweb_radar.csv",
-      "lignes": 204,
+      "lignes": 218,
       "colonnes": 34,
       "erreur": null
     }
