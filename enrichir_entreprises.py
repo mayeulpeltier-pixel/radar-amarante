@@ -1,17 +1,32 @@
 # -*- coding: utf-8 -*-
 """
-Radar Amarante - Enrichissement firmographique des entreprises (Phase 1, #2).
+Radar Amarante - Enrichissement firmographique des entreprises (Phase 1, #2 ;
+elargi P2).
 
-Pour chaque entreprise de la whitelist (onglet 'comptes_cibles_bitd'), recupere
-son identite officielle et ses dirigeants, et ecrit le resultat dans l'onglet
-'entreprises_enrichies'. Objectif : commencer a repondre a "qui appeler".
+Recupere l'identite officielle, les dirigeants et (si possible) un email pro
+pour repondre a "qui appeler", et ecrit le resultat dans 'entreprises_enrichies'
+(+ 'contacts_bitd' pour les emails). Le dashboard rattache ces infos aux leads
+PRIVES et aux titulaires (ATTRIB) par nom d'entreprise : aucun changement cote
+dashboard n'est necessaire.
+
+PERIMETRE (P2) : l'enrichissement ne couvrait que la whitelist defense
+('comptes_cibles_bitd', 60 comptes). Il couvre desormais AUSSI la watchlist
+multi-secteurs ('watchlist_prives', 201 majors) et les attributaires PUBLIES
+('attributions_radar'), pour que les signaux prives (P1) et les titulaires
+aient enfin un contact. Un budget par run (RADAR_ENRICH_BUDGET) borne le temps
+CI ; le cache de fraicheur etale la couverture sur quelques runs, puis ne
+rafraichit qu'au-dela du DELAI.
 
 Sources (coût quasi nul) :
 - API Recherche d'entreprises (recherche-entreprises.api.gouv.fr) : gratuite,
   sans cle. SIREN, dirigeants, NAF, effectifs, ville. Entreprises FRANCAISES.
-- Pappers (api.pappers.fr) : OPTIONNEL. Si la variable PAPPERS_API_KEY est
-  definie, ajoute le chiffre d'affaires. Sinon, ignore (le module tourne quand
-  meme sur la source publique).
+- GLEIF (api.gleif.org) : gratuite, sans cle. Repli MONDIAL (identite officielle,
+  pays, siege) pour les societes hors registre FR (watchlist / attributaires
+  etrangers).
+- Pappers (api.pappers.fr) : OPTIONNEL (PAPPERS_API_KEY) -> chiffre d'affaires.
+- Hunter.io : OPTIONNEL (HUNTER_API_KEY), email pro. Frugal (palier 25/mois) :
+  cible les seules priorites 'Haute' (defense + watchlist), jamais les
+  attributaires, avec plafond par run et verification du quota restant.
 
 Auto-limite : n'enrichit que les entreprises nouvelles ou anciennes (> DELAI),
 jamais deux fois de suite -> reste dans les quotas gratuits. Tolerant aux pannes.
@@ -43,6 +58,22 @@ API_PAPPERS = "https://api.pappers.fr/v2/entreprise"
 API_GLEIF = "https://api.gleif.org/api/v1/lei-records"
 DELAI_RAFRAICHISSEMENT_JOURS = 120     # au-dela, on re-enrichit
 PAUSE = 0.4                            # politesse API (7 req/s max cote gouv)
+
+# --- P2 : perimetre elargi (defense + watchlist multi-secteurs + attributaires)
+# Ces deux onglets sont lus EN LECTURE SEULE et fusionnes a la liste. Le
+# dashboard rattache l'enrichissement aux leads par nom : rien a changer cote
+# dashboard.
+NOM_ONGLET_WATCHLIST_PRIVES = "watchlist_prives"
+NOM_ONGLET_ATTRIBUTIONS = "attributions_radar"
+# Budget firmographique par run (gouv + GLEIF, tous deux gratuits) : borne le
+# temps CI. Le cache de fraicheur fait fondre la file a chaque run, donc la
+# couverture complete s'etale sur quelques runs, sans re-enrichir avant le DELAI.
+# Ordre de la file : defense, puis watchlist, puis attributaires (les prospects
+# les mieux qualifies passent en premier).
+RADAR_ENRICH_BUDGET = int(os.environ.get("RADAR_ENRICH_BUDGET", "80"))
+# Plafond d'attributaires injectes par construction de liste (ils sont nombreux
+# et croissants) : evite de noyer defense + watchlist.
+RADAR_ENRICH_ATTRIB_MAX = int(os.environ.get("RADAR_ENRICH_ATTRIB_MAX", "150"))
 
 # --- Recherche de contacts (Hunter.io), OPTIONNEL et frugal en quota ---------
 # Palier gratuit Hunter : 25 recherches/mois. On cible donc les seules
@@ -495,6 +526,109 @@ def pass_contacts_hunter(classeur, whitelist, fetch=None):
         len(nouveaux), trouves, NOM_ONGLET_CONTACTS))
 
 
+# ===========================================================================
+# CONSTRUCTION DE LA LISTE D'ENRICHISSEMENT ELARGIE (P2)
+# ===========================================================================
+def _ouvrir_classeur_ro(sheet_id, fichier_cs):
+    import gspread
+    from google.oauth2.service_account import Credentials
+    portee = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+    creds = Credentials.from_service_account_file(fichier_cs, scopes=portee)
+    return gspread.authorize(creds).open_by_key(sheet_id)
+
+
+def _lire_valeurs(classeur, nom):
+    """get_all_values d'un onglet ; [] si absent/illisible (best-effort)."""
+    try:
+        return classeur.worksheet(nom).get_all_values()
+    except Exception:
+        return []
+
+
+def entreprises_watchlist(valeurs):
+    """'watchlist_prives' -> [{entreprise, priorite_socle:'Haute', origine:'watchlist'}].
+    Ignore les lignes actif=='non'. Priorite Haute : majors cures, eligibles a
+    la recherche d'email Hunter. Fonction PURE (testable, sans reseau)."""
+    if not valeurs or len(valeurs) < 2:
+        return []
+    entetes = [str(c).strip().lower() for c in valeurs[0]]
+    def idx(n):
+        return entetes.index(n) if n in entetes else -1
+    i_ent, i_act = idx("entreprise"), idx("actif")
+    out = []
+    for row in valeurs[1:]:
+        get = lambda i: (str(row[i]).strip() if 0 <= i < len(row) else "")
+        ent = get(i_ent)
+        if not ent or get(i_act).lower() == "non":
+            continue
+        out.append({"entreprise": ent, "priorite_socle": "Haute", "origine": "watchlist"})
+    return out
+
+
+def entreprises_attributaires(valeurs, max_comptes=None):
+    """'attributions_radar' -> [{entreprise, priorite_socle:'Moyenne', origine:'attributaire'}].
+    Gagnants PUBLIES seulement (ignore '(gagnant non publie)'), dedup par nom ;
+    un marche peut lister plusieurs gagnants separes par ';'. Priorite Moyenne :
+    enrichis gratuitement (gouv/GLEIF) mais PAS eligibles a Hunter (quota paye
+    protege). Fonction PURE (testable)."""
+    if not valeurs or len(valeurs) < 2:
+        return []
+    entetes = [str(c).strip().lower() for c in valeurs[0]]
+    if "gagnant" not in entetes:
+        return []
+    ig = entetes.index("gagnant")
+    vus, out = set(), []
+    for row in valeurs[1:]:
+        brut = str(row[ig]).strip() if ig < len(row) else ""
+        if not brut or "non publie" in brut.lower():
+            continue
+        for nom in brut.split(";"):
+            nom = nom.strip()
+            cle = nom.lower()
+            if len(nom) < 3 or cle in vus:
+                continue
+            vus.add(cle)
+            out.append({"entreprise": nom, "priorite_socle": "Moyenne", "origine": "attributaire"})
+            if max_comptes and len(out) >= max_comptes:
+                return out
+    return out
+
+
+def construire_liste_enrichissement(sheet_id, fichier_cs, ouvrir=None):
+    """Fusionne defense (comptes_cibles_bitd) + watchlist_prives + attributaires
+    publies. Dedup par nom, 1re occurrence prioritaire (defense > watchlist >
+    attributaire), ce qui PRESERVE la priorite la plus forte pour Hunter (une
+    societe a la fois defense et attributaire reste 'Haute'). `ouvrir` injectable
+    pour tests (callable(sheet_id, fichier) -> classeur)."""
+    comptes = []
+    # 1. Defense : schema riche, priorite_socle deja renseignee dans le Sheet.
+    if _lire_whitelist is not None:
+        for w in (_lire_whitelist(sheet_id, fichier_cs) or []):
+            w.setdefault("origine", "defense")
+            comptes.append(w)
+    # 2 & 3. Watchlist + attributaires (lecture directe des onglets, best-effort).
+    if sheet_id and fichier_cs:
+        try:
+            classeur = (ouvrir or _ouvrir_classeur_ro)(sheet_id, fichier_cs)
+        except Exception as e:
+            print("  (info) Sheet illisible pour la liste d'enrichissement ({}).".format(e))
+            classeur = None
+        if classeur is not None:
+            comptes += entreprises_watchlist(
+                _lire_valeurs(classeur, NOM_ONGLET_WATCHLIST_PRIVES))
+            comptes += entreprises_attributaires(
+                _lire_valeurs(classeur, NOM_ONGLET_ATTRIBUTIONS),
+                max_comptes=RADAR_ENRICH_ATTRIB_MAX)
+    # Dedup par nom, 1re occurrence gagne (defense d'abord = prioritaire).
+    vus, uniques = set(), []
+    for c in comptes:
+        cle = c.get("entreprise", "").strip().lower()
+        if cle and cle not in vus:
+            vus.add(cle)
+            uniques.append(c)
+    return uniques
+
+
 def main():
     import time
     print("=" * 60)
@@ -506,19 +640,27 @@ def main():
     if _lire_whitelist is None:
         print("Module whitelist indisponible. Rien a faire.")
         return
-    whitelist = _lire_whitelist(sheet_id, fichier)
-    if not whitelist:
-        print("Whitelist vide ou absente. Rien a faire.")
+    liste = construire_liste_enrichissement(sheet_id, fichier)
+    if not liste:
+        print("Aucune entreprise a enrichir (defense + watchlist + attributaires vides).")
         return
 
     deja = entreprises_deja_enrichies(sheet_id, fichier)
-    a_faire = [w for w in whitelist if w.get("entreprise", "").strip().lower() not in deja]
-    print("Whitelist : {} | deja enrichies : {} | a enrichir : {}".format(
-        len(whitelist), len(deja), len(a_faire)))
+    a_faire = [w for w in liste if w.get("entreprise", "").strip().lower() not in deja]
+    # Budget par run : borne le temps CI. 'a_faire' fond a chaque run (cache de
+    # fraicheur), donc la couverture complete s'etale sur quelques runs sans
+    # jamais re-enrichir avant le DELAI. L'ordre (defense > watchlist >
+    # attributaire) fait passer les prospects les mieux qualifies en premier.
+    tranche = a_faire[:max(1, RADAR_ENRICH_BUDGET)]
+    from collections import Counter
+    par_origine = dict(Counter(w.get("origine", "?") for w in tranche))
+    print("Liste : {} (defense+watchlist+attributaires) | deja enrichies : {} | "
+          "a enrichir : {} | ce run : {} {}.".format(
+              len(liste), len(deja), len(a_faire), len(tranche), par_origine))
 
     session = ted.session_robuste()
     lignes = []
-    for w in a_faire:
+    for w in tranche:
         ligne = enrichir_une(w, session=session)
         if ligne:
             lignes.append(ligne)
@@ -540,8 +682,10 @@ def main():
     else:
         print("Enrichissement firmographique : rien de nouveau.")
 
-    # Passe contacts (Hunter), independante du cache d'enrichissement.
-    pass_contacts_hunter(classeur, whitelist)
+    # Passe contacts (Hunter), independante du cache d'enrichissement. Ne cible
+    # que les priorites 'Haute' (defense + watchlist), jamais les attributaires
+    # ('Moyenne'), et reste plafonnee par run + quota : le quota paye est protege.
+    pass_contacts_hunter(classeur, liste)
 
 
 if __name__ == "__main__":
