@@ -896,6 +896,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .badge.win-court_terme{background:var(--watch-soft);color:#dcb079}
   .badge.win-indetermine{background:var(--low-soft);color:var(--bone-dim)}
   .badge.ecart{background:transparent;border:1px solid rgba(200,137,59,0.5);color:#dcb079}
+  .badge.deplacement{background:rgba(224,142,152,0.16);color:#e08e98;border:1px solid rgba(224,142,152,0.55);font-weight:600}
   .contact{border-top:1px solid var(--line-2);padding-top:12px;margin-top:2px}
   .contact .row{display:flex;gap:8px;font-size:0.8rem;margin-bottom:5px;align-items:baseline}
   .contact .k{font-family:var(--mono);font-size:0.58rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--bone-faint);min-width:62px;flex-shrink:0;padding-top:2px}
@@ -1600,10 +1601,10 @@ function render(){
       <div class="lhead"><div class="lmeta"><span class="src ${l.src.toLowerCase()}">${SRC_LABEL[l.src]||l.src}</span><span class="pays">${esc(l.pays)}</span><span>· ${esc(l.zone)}</span></div>
       <div class="scorebox"><div class="sf">${l.final.toFixed(1)}</div><div class="sd">sûreté ${l.surete.toFixed(1)} · com ${l.comm.toFixed(1)}</div><div class="se">${echelleLabel(l.src)}</div></div></div>
       <h3 class="ltitle">${esc(l.titre)}</h3>
-      <div class="badges"><span class="badge win-${win}">${winLabel[win]}</span>${badgeDeadline(l)}${ecart}${statut}${dateChip}</div>
+      <div class="badges">${(l.justif||'').indexOf('[DÉPLACEMENT CONCURRENT]')===0?'<span class="badge deplacement">⚔ Déplacement concurrent</span>':''}<span class="badge win-${win}">${winLabel[win]}</span>${badgeDeadline(l)}${ecart}${statut}${dateChip}</div>
       <div class="contact"><div class="row"><span class="k">Agence</span><span class="v">${esc(l.agence)}</span></div>${contactRows}</div>
       <div class="cible"><b>Qui démarcher.</b> ${esc(l.cible)}</div>
-      ${l.justif?`<details class="just"><summary><span class="chev">▸</span> Justification sûreté</summary><p>${esc(l.justif)}</p></details>`:''}
+      ${l.justif?`<details class="just"><summary><span class="chev">▸</span> Justification sûreté</summary><p>${esc((l.justif||'').replace('[DÉPLACEMENT CONCURRENT]','').trim())}</p></details>`:''}
       </div><div class="foot"><span class="grp">Groupe ${esc(l.grp)}</span><span class="footacts">${SUIVI_ON?`<button class="act contact${done?' done':''}" type="button" data-contact="${i}"${done?' disabled':''}>${done?'✓ Contacté':'☎ Je contacte'}</button>`:''}<button class="act" type="button" data-fiche="${i}">Fiche ↗</button><a class="act mail" href="${mailtoHref(l)}">✉ Rédiger email</a>${l.lien?`<a class="act" href="${esc(l.lien)}" target="_blank" rel="noopener">Voir l'avis ↗</a>`:''}</span></div></article>`;
   }).join('');
 }
@@ -1724,7 +1725,7 @@ function ficheHtml(l){
      ${row('SIREN',esc(l.siren||''))}
      ${row("Chiffre d'affaires",l.ca?esc(l.ca)+' €':'')}
      ${row('Qui démarcher',esc(l.cible))}
-     ${row('Justification',esc(l.justif))}
+     ${row('Justification',esc((l.justif||'').replace('[DÉPLACEMENT CONCURRENT]','').trim()))}
    </div>
    <div class="mactions">
      <a class="mbtn primary" href="${mailtoHref(l)}">✉ Rédiger l'email</a>
