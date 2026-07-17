@@ -1026,6 +1026,9 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .fiche .fprio.contacter{background:var(--fort-soft);color:var(--fort);border:1px solid rgba(192,39,58,.4)}
   .fiche .fprio.surveiller{background:var(--watch-soft);color:#dcb079;border:1px solid rgba(200,137,59,.4)}
   .fiche .fprio.ignorer{border:1px solid var(--line);color:var(--bone-dim)}
+  .fiche .fsrc{font-family:var(--mono);font-size:0.5rem;letter-spacing:.08em;text-transform:uppercase;padding:2px 6px;border-radius:3px;white-space:nowrap;border:1px solid var(--line-2);color:var(--bone-dim)}
+  .fiche .fsrc.titulaire{color:#e08e98;border-color:rgba(224,142,152,.45)}
+  .fiche .fsrc.signal{color:#dcb079;border-color:rgba(200,137,59,.4)}
   .fiche .fsig{border-top:1px solid var(--line);margin-top:12px;padding-top:10px;display:flex;flex-direction:column;gap:7px}
   .fiche .fsr{display:flex;align-items:center;gap:10px;font-size:12.5px}
   .fiche .fsr .fsi{color:var(--bone);flex:1;min-width:0}
@@ -1064,6 +1067,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
     </div>
     <div class="lensseg" id="lensseg" role="group" aria-label="Vue">
       <button data-lens="avis" aria-pressed="true">Opportunités <span>· avis</span></button>
+      <button data-lens="entreprises" aria-pressed="false">Entreprises <span>· 360°</span></button>
       <button data-lens="cibles" aria-pressed="false">Cibles privées <span>· prospects</span></button>
       <button data-lens="titulaires" aria-pressed="false">Titulaires <span>· attributions</span></button>
     </div>
@@ -1275,12 +1279,47 @@ function agregerTitulaires(){
   return Object.values(parCle).map(finaliserFiche)
     .sort((a,b)=>((b.meilleur?b.meilleur.final:0)-(a.meilleur?a.meilleur.final:0)));
 }
+// --- Lentille ENTREPRISES (360) : fiche UNIFIEE par entreprise ---------------
+// Fusionne les trois univers sur la meme cle normalisee : la watchlist curee,
+// les signaux PRIVE (deploiement amont) et les titulaires ATTRIB (marches
+// gagnes). Une societe a la fois surveillee, active dans la presse ET gagnante
+// d'un marche apparait UNE SEULE FOIS, avec tous ses signaux et des facettes de
+// provenance (Watchlist / Signal / Titulaire). Repond a "tout ce que je sais
+// sur X" au lieu de fragmenter la meme entreprise en deux lentilles.
+function agregerEntreprises(){
+  const parCle={};
+  function fiche(cle,nom){
+    if(!parCle[cle]) parCle[cle]={cle,nom,signaux:[],zones:new Set(),secteurs:new Set(),cible:false,srcSet:new Set()};
+    return parCle[cle];
+  }
+  WATCHLIST.forEach(w=>{
+    const nom=w.entreprise; if(!nom) return;
+    const cle=normEntreprise(nom)||sansAccent(nom);
+    const f=fiche(cle,nom); f.cible=true; f.srcSet.add('watchlist');
+    if(w.secteur) f.secteurs.add(w.secteur);
+  });
+  LEADS.filter(l=>l.src==='PRIVÉ'||l.src==='ATTRIB').forEach(l=>{
+    const nom=(l.entreprise&&l.entreprise!=='n.c.')?l.entreprise:(l.agence||'?');
+    const cle=normEntreprise(nom)||sansAccent(nom);
+    const f=fiche(cle,nom); f.nom=meilleurNom(f.nom,nom);
+    f.signaux.push(l); f.srcSet.add(l.src==='PRIVÉ'?'signal':'titulaire');
+    if(l.zone&&l.zone!=='Non classé') f.zones.add(l.zone);
+    if(l.grp&&l.grp!=='signal'&&l.grp!=='AT') f.secteurs.add(l.grp.replace(/_/g,' '));
+  });
+  return Object.values(parCle).map(f=>{
+    const x=finaliserFiche(f);
+    // Ordre lisible des facettes : watchlist, signal, titulaire.
+    x.srcs=['watchlist','signal','titulaire'].filter(s=>f.srcSet.has(s));
+    return x;
+  }).sort(_triFiches);
+}
 function fichesCourantes(){
+  if(state.lens==='entreprises') return agregerEntreprises();
   if(state.lens==='cibles') return agregerCibles();
   if(state.lens==='titulaires') return agregerTitulaires();
   return [];
 }
-function vueFiches(){ return state.lens==='cibles'||state.lens==='titulaires'; }
+function vueFiches(){ return state.lens==='cibles'||state.lens==='titulaires'||state.lens==='entreprises'; }
 // Un signal passe les filtres transverses (zone / mois / recherche) ?
 function signalOK(s, ignore){
   ignore = ignore || {};
@@ -1298,6 +1337,11 @@ function ficheMatchAction(f){
     if(state.action==='moyen') return sc>=4&&sc<6;
     if(state.action==='faible') return sc<4;
     return true;                         // 'all' (ou defaut) : tout
+  }
+  if(state.lens==='entreprises'){
+    if(state.action==='all') return true;
+    if(state.action==='titulaire') return (f.srcs||[]).includes('titulaire');
+    return f.prio===state.action;        // contacter / surveiller / aucun
   }
   return state.action==='all' || f.prio===state.action;
 }
@@ -1365,6 +1409,16 @@ function buildStats(){
       {k:'surveiller',cls:'wat',n:c('surveiller'),l:'Signal récent'},
       {k:'aucun',cls:'low',n:c('aucun'),l:'Sans signal'},
       {k:'all',cls:'',n:fiches.length,l:'Toutes mes cibles'}
+    ];
+  }else if(state.lens==='entreprises'){
+    const fiches=agregerEntreprises();
+    const c=a=>fiches.filter(f=>f.prio===a).length;
+    const nt=fiches.filter(f=>(f.srcs||[]).includes('titulaire')).length;
+    defs=[
+      {k:'contacter',cls:'act',n:c('contacter'),l:'À contacter'},
+      {k:'surveiller',cls:'wat',n:c('surveiller'),l:'Signal récent'},
+      {k:'titulaire',cls:'low',n:nt,l:'Titulaire de marché'},
+      {k:'all',cls:'',n:fiches.length,l:'Toutes'}
     ];
   }else if(state.lens==='titulaires'){
     const fiches=agregerTitulaires();
@@ -1526,7 +1580,7 @@ document.querySelectorAll('#lensseg button').forEach(b=>b.addEventListener('clic
   const ent=vueFiches();
   document.getElementById('srcseg').style.display=ent?'none':'';   // source = notion avis
   const comptes=document.getElementById('comptes'); if(comptes) comptes.style.display=ent?'none':'';
-  const titres={avis:'Carte des opportunités',cibles:'Carte des cibles',titulaires:'Carte des titulaires'};
+  const titres={avis:'Carte des opportunités',entreprises:'Carte des entreprises',cibles:'Carte des cibles',titulaires:'Carte des titulaires'};
   document.querySelector('.geo .phead').textContent=titres[state.lens]||'Carte';
   buildStats(); buildPeriod(); render();
 }));
@@ -1641,7 +1695,7 @@ function ficheCard(f,i){
   return `<article class="fiche" data-fidx="${i}">
     <div class="fhead"><div class="fav">${esc(initiales)}</div>
       <div style="flex:1;min-width:0">
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="fnom">${esc(f.nom)}</span><span class="fprio ${f.prio}">${prioLabel}</span></div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="fnom">${esc(f.nom)}</span><span class="fprio ${f.prio}">${prioLabel}</span>${(f.srcs||[]).map(s=>`<span class="fsrc ${s}">${({watchlist:'Watchlist',signal:'Signal',titulaire:'Titulaire'})[s]||s}</span>`).join('')}</div>
         <div class="fmeta">${esc(meta)}</div>
       </div></div>
     ${sansSignal?'<div class="fnosig">Cible surveillée, aucun signal récent capté. Elle reste dans le radar dès qu\'une actualité tombe.</div>':`<div class="fsig">${sig}</div>`}
@@ -1675,7 +1729,7 @@ function openFicheEnt(i){
   const manque=!f.enr.nom&&!f.enr.email;
   document.getElementById('modalcard').innerHTML=`
    <div class="mhead"><button class="mclose" type="button" onclick="closeFiche()" aria-label="Fermer">×</button>
-     <div class="msrc">Fiche entreprise · ${esc(prioLabel)}</div>
+     <div class="msrc">Fiche entreprise · ${esc(prioLabel)}${(f.srcs||[]).map(s=>` · ${({watchlist:'Watchlist',signal:'Signal',titulaire:'Titulaire'})[s]||s}`).join('')}</div>
      <h2>${esc(f.nom)}</h2>
      <div class="mscore"><span class="big">${f.n}</span><span class="sub">signal(aux) · ${f.zones.length} zone(s)</span></div>
    </div>
@@ -1696,7 +1750,7 @@ function openFicheEnt(i){
   document.getElementById('modal').classList.add('open');
 }
 document.getElementById('foot').innerHTML=
-  'Généré automatiquement après le run du radar.<br>Trois vues : Opportunités (avis), Cibles privées (ta watchlist), Titulaires (attributions). Le destinataire commercial réel est le titulaire qui déploie, pas l\'agence acheteuse.';
+  'Généré automatiquement après le run du radar.<br>Vues : Opportunités (avis) · Entreprises 360° (fiche unifiée par société : watchlist + signaux + titulaires) · Cibles privées · Titulaires. Le destinataire commercial réel est le titulaire qui déploie, pas l\'agence acheteuse.';
 
 // --- Fiche lead detaillee (modale) ---
 function ficheHtml(l){
