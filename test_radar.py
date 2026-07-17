@@ -44,6 +44,10 @@ try:
 except Exception:
     radar_retroaction = None
 try:
+    import enrichir_entreprises
+except Exception:
+    enrichir_entreprises = None
+try:
     import radar_risque
 except Exception:
     radar_risque = None
@@ -586,6 +590,175 @@ class TestFenetrePrives(unittest.TestCase):
 
     def test_borne_minimale(self):
         self.assertEqual(signaux_prives.taille_fenetre_pour("0"), 1)
+
+
+# ===========================================================================
+# ENRICHISSEMENT ELARGI (P2) : defense + watchlist + attributaires publies.
+# Fonctions pures + fuseur (classeur simule, aucun reseau).
+# ===========================================================================
+class _FauxWS:
+    def __init__(self, m):
+        self._m = m
+
+    def get_all_values(self):
+        return self._m
+
+
+class _FauxClasseurEnrich:
+    def __init__(self, tabs):
+        self._t = tabs
+
+    def worksheet(self, name):
+        if name not in self._t:
+            raise KeyError(name)
+        return _FauxWS(self._t[name])
+
+
+@unittest.skipIf(enrichir_entreprises is None, "enrichir_entreprises indisponible")
+class TestEnrichissementElargi(unittest.TestCase):
+    def test_watchlist_actif_non_ignore(self):
+        vals = [["entreprise", "secteur", "actif", "requete_optionnelle"],
+                ["Bouygues", "BTP", "oui", ""],
+                ["PetitLocal", "BTP", "non", ""],
+                ["", "x", "oui", ""]]
+        out = enrichir_entreprises.entreprises_watchlist(vals)
+        self.assertEqual([w["entreprise"] for w in out], ["Bouygues"])
+        self.assertEqual(out[0]["priorite_socle"], "Haute")
+        self.assertEqual(out[0]["origine"], "watchlist")
+
+    def test_watchlist_vide(self):
+        self.assertEqual(enrichir_entreprises.entreprises_watchlist([]), [])
+        self.assertEqual(enrichir_entreprises.entreprises_watchlist([["entreprise"]]), [])
+
+    def test_attributaires_publies_dedup_et_multi(self):
+        vals = [["date_maj", "gagnant", "secteur", "pays_execution"],
+                ["d", "Vinci", "BTP", "MLI"],
+                ["d", "(gagnant non publie)", "x", "NER"],
+                ["d", "Vinci", "BTP", "TCD"],               # doublon -> ignore
+                ["d", "Orano ; Eiffage", "Mines", "NER"]]   # deux gagnants
+        out = enrichir_entreprises.entreprises_attributaires(vals)
+        self.assertEqual(sorted(w["entreprise"] for w in out),
+                         ["Eiffage", "Orano", "Vinci"])
+        self.assertTrue(all(w["priorite_socle"] == "Moyenne" for w in out))
+
+    def test_attributaires_plafond(self):
+        vals = [["gagnant"]] + [["Soc{}".format(i)] for i in range(10)]
+        out = enrichir_entreprises.entreprises_attributaires(vals, max_comptes=3)
+        self.assertEqual(len(out), 3)
+
+    def test_attributaires_sans_colonne_gagnant(self):
+        self.assertEqual(enrichir_entreprises.entreprises_attributaires(
+            [["date_maj", "titre"], ["d", "x"]]), [])
+
+    def test_construire_dedup_defense_prioritaire(self):
+        # 'Acme' en defense (Basse) ET en watchlist (Haute) : la 1re occurrence
+        # (defense) gagne. 'Newco' en watchlist ET en attributaire : watchlist
+        # gagne (ordre defense > watchlist > attributaire).
+        faux_defense = [{"entreprise": "Acme", "priorite_socle": "Basse"}]
+        wl = [["entreprise", "actif"], ["Acme", "oui"], ["Newco", "oui"]]
+        at = [["gagnant"], ["Winco"], ["Newco"]]
+        classeur = _FauxClasseurEnrich({"watchlist_prives": wl,
+                                        "attributions_radar": at})
+        vieux = enrichir_entreprises._lire_whitelist
+        enrichir_entreprises._lire_whitelist = lambda sid, cs: list(faux_defense)
+        try:
+            out = enrichir_entreprises.construire_liste_enrichissement(
+                "sid", "cs", ouvrir=lambda s, c: classeur)
+        finally:
+            enrichir_entreprises._lire_whitelist = vieux
+        par_nom = {w["entreprise"]: w for w in out}
+        self.assertEqual(sorted(par_nom), ["Acme", "Newco", "Winco"])
+        self.assertEqual(par_nom["Acme"]["priorite_socle"], "Basse")     # defense garde sa priorite
+        self.assertEqual(par_nom["Newco"]["origine"], "watchlist")       # watchlist avant attributaire
+        self.assertEqual(par_nom["Winco"]["priorite_socle"], "Moyenne")
+
+    def test_hunter_cible_watchlist_pas_attributaire(self):
+        # La watchlist (Haute) est eligible a Hunter ; l'attributaire (Moyenne) non.
+        liste = [{"entreprise": "FrHaute", "priorite_socle": "Haute"},
+                 {"entreprise": "AttribMoy", "priorite_socle": "Moyenne"}]
+        infos = {"frhaute": ("Jean Dupont (Président)", "gouv")}
+        cibles = enrichir_entreprises.selectionner_cibles_hunter(
+            liste, infos, set(), budget=10)
+        noms = [c[0] for c in cibles]
+        self.assertIn("FrHaute", noms)
+        self.assertNotIn("AttribMoy", noms)
+
+
+@unittest.skipIf(enrichir_entreprises is None, "enrichir_entreprises indisponible")
+class TestEnrichissementP2(unittest.TestCase):
+    """Perimetre elargi : defense + watchlist_prives + attributaires publies,
+    dedup avec priorite, et protection du quota Hunter (attributaires exclus)."""
+
+    def test_watchlist_ignore_inactif_et_vide(self):
+        v = [["entreprise", "secteur", "actif", "requete_optionnelle"],
+             ["TotalEnergies", "Oil & Gas", "oui", ""],
+             ["PetitLocal", "BTP", "non", ""],
+             ["", "x", "oui", ""]]
+        out = enrichir_entreprises.entreprises_watchlist(v)
+        self.assertEqual([d["entreprise"] for d in out], ["TotalEnergies"])
+        self.assertEqual(out[0]["priorite_socle"], "Haute")     # eligible Hunter
+        self.assertEqual(out[0]["origine"], "watchlist")
+
+    def test_attributaires_publies_dedup_et_split(self):
+        v = [["date_maj", "gagnant", "secteur"],
+             ["2026", "Bouygues Construction; Vinci", ""],
+             ["2026", "(gagnant non publie)", ""],
+             ["2026", "Bouygues Construction", ""],   # doublon
+             ["2026", "AB", ""]]                      # trop court -> ignore
+        out = enrichir_entreprises.entreprises_attributaires(v)
+        self.assertEqual([d["entreprise"] for d in out], ["Bouygues Construction", "Vinci"])
+        self.assertTrue(all(d["priorite_socle"] == "Moyenne" for d in out))  # pas Hunter
+
+    def test_attributaires_respecte_plafond(self):
+        v = [["gagnant"], ["A Corp"], ["B Corp"], ["C Corp"]]
+        self.assertEqual(len(enrichir_entreprises.entreprises_attributaires(v, max_comptes=2)), 2)
+
+    def test_construire_liste_dedup_defense_prioritaire(self):
+        wl = [["entreprise", "actif"], ["TotalEnergies", "oui"], ["Eiffage", "oui"]]
+        at = [["gagnant"], ["Eiffage"], ["Vinci"]]   # Eiffage aussi attributaire
+
+        class _WS:
+            def __init__(s, val): s.val = val
+            def get_all_values(s): return s.val
+
+        class _Classeur:
+            def __init__(s, mp): s.mp = mp
+            def worksheet(s, n):
+                if n in s.mp: return _WS(s.mp[n])
+                raise RuntimeError("absent")
+
+        def _ouvrir(sid, cs):
+            return _Classeur({"watchlist_prives": wl, "attributions_radar": at})
+
+        vrai = enrichir_entreprises._lire_whitelist
+        enrichir_entreprises._lire_whitelist = lambda sid, cs: [
+            {"entreprise": "TotalEnergies", "priorite_socle": "Haute"}]
+        try:
+            liste = enrichir_entreprises.construire_liste_enrichissement(
+                "sid", "cs", ouvrir=_ouvrir)
+        finally:
+            enrichir_entreprises._lire_whitelist = vrai
+        noms = [(d["entreprise"], d.get("origine")) for d in liste]
+        # TotalEnergies : une seule fois, marquee defense (1re occurrence gagne).
+        self.assertEqual(sum(1 for n in noms if n[0] == "TotalEnergies"), 1)
+        self.assertIn(("TotalEnergies", "defense"), noms)
+        # Eiffage : d'abord vue via watchlist -> reste 'watchlist', pas doublee.
+        self.assertEqual(sum(1 for n in noms if n[0] == "Eiffage"), 1)
+        self.assertIn(("Eiffage", "watchlist"), noms)
+        self.assertIn(("Vinci", "attributaire"), noms)
+
+    def test_hunter_exclut_les_attributaires(self):
+        # Quota paye protege : seule la priorite 'Haute' est ciblee par Hunter.
+        liste = [
+            {"entreprise": "Eiffage", "priorite_socle": "Haute"},        # watchlist
+            {"entreprise": "Vinci", "priorite_socle": "Moyenne"},        # attributaire
+        ]
+        infos = {"eiffage": ("", "gleif"), "vinci": ("", "gleif")}
+        cibles = enrichir_entreprises.selectionner_cibles_hunter(
+            liste, infos, deja=set(), budget=10)
+        noms = [c[0] for c in cibles]
+        self.assertIn("Eiffage", noms)
+        self.assertNotIn("Vinci", noms)        # attributaire jamais appele en payant
 
 
 if __name__ == "__main__":
