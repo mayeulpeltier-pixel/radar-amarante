@@ -55,6 +55,10 @@ try:
     import radar_risque
 except Exception:
     radar_risque = None
+try:
+    import radar_dashboard
+except Exception:
+    radar_dashboard = None
 
 
 # ===========================================================================
@@ -828,6 +832,51 @@ class TestSecuriteDeplacementP3(unittest.TestCase):
         # Le prestataire (conquete) ne subit pas la penalite -3/-2 de l'interne.
         self.assertGreater(s_p, s_i)
         self.assertGreater(c_p, c_i)
+
+
+class TestCouverturePaysDashboard(unittest.TestCase):
+    """Garde anti-regression (audit juillet 2026). Verrouille l'ecart trouve a
+    l'audit : des pays suivis par le coeur TED etaient absents de la carte du
+    dashboard (zone -> 'Non classe', pas de point carte). Ces trois tests
+    echouent si l'ecart revient, ce qui BLOQUE le deploiement en CI."""
+
+    @unittest.skipIf(radar_dashboard is None or ted is None,
+                     "radar_dashboard ou ted_complet_v14 indisponible")
+    def test_iso3_couvre_tout_l_univers_de_risque(self):
+        """Tout pays suivi par le coeur (CODES_PAYS_SUIVIS) doit avoir une zone
+        dans ZONE_PAR_ISO3, sinon il s'affiche en 'Non classe'."""
+        suivis = set(ted.CODES_PAYS_SUIVIS)
+        mappes = set(radar_dashboard.ZONE_PAR_ISO3)
+        manquants = sorted(suivis - mappes)
+        self.assertEqual(manquants, [],
+                         "Pays suivis absents de ZONE_PAR_ISO3 : {}".format(manquants))
+
+    @unittest.skipIf(radar_dashboard is None, "radar_dashboard indisponible")
+    def test_toute_zone_utilisee_a_un_bareme_de_risque(self):
+        """Chaque zone employee dans les cartes pays doit exister dans
+        RISQUE_ZONE (sinon le score d'attribution retombe sur le defaut 1.5)."""
+        d = radar_dashboard
+        zones = {v[1] for v in d.ZONE_PAR_ISO3.values()}
+        zones |= {v[1] for v in d.ZONE_PAR_NOM.values()}
+        manquantes = sorted(zones - set(d.RISQUE_ZONE))
+        self.assertEqual(manquantes, [],
+                         "Zones sans bareme RISQUE_ZONE : {}".format(manquantes))
+
+    @unittest.skipIf(radar_dashboard is None, "radar_dashboard indisponible")
+    def test_tout_pays_mappe_a_des_coordonnees_carte(self):
+        """Tout nom de pays present dans les cartes doit avoir des coordonnees
+        dans COORDS (JS du gabarit), sinon aucun point ne s'affiche sur la
+        carte pour ce pays."""
+        import re
+        d = radar_dashboard
+        m = re.search(r"const COORDS=\{(.+?)\n\};", d.GABARIT_HTML, re.S)
+        self.assertIsNotNone(m, "Bloc COORDS introuvable dans le gabarit HTML.")
+        coords = set(re.findall(r'"([^"]+)":\[', m.group(1)))
+        noms = {v[0] for v in d.ZONE_PAR_ISO3.values()}
+        noms |= {v[0] for v in d.ZONE_PAR_NOM.values()}
+        manquants = sorted(noms - coords)
+        self.assertEqual(manquants, [],
+                         "Pays mappes sans coordonnees carte : {}".format(manquants))
 
 
 if __name__ == "__main__":
