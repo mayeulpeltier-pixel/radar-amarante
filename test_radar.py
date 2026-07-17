@@ -36,6 +36,10 @@ try:
 except Exception:
     bitd = signaux_prives = None
 try:
+    import ted_complet_v14 as ted
+except Exception:
+    ted = None
+try:
     import radar_etat
 except Exception:
     radar_etat = None
@@ -759,6 +763,71 @@ class TestEnrichissementP2(unittest.TestCase):
         noms = [c[0] for c in cibles]
         self.assertIn("Eiffage", noms)
         self.assertNotIn("Vinci", noms)        # attributaire jamais appele en payant
+
+
+@unittest.skipIf(ted is None, "ted_complet_v14 indisponible")
+class TestSecuriteDeplacementP3(unittest.TestCase):
+    """Levier 'deplacement concurrent' : l'enum securite_existante remplace le
+    booleen. interne_client seul supprime ; prestataire_tiers remonte a plein
+    score et est marque. Le booleen historique reste derive pour tout l'aval."""
+
+    def test_enum_derive_le_booleen(self):
+        cas = {"aucune": False, "interne_client": True,
+               "prestataire_tiers": False, "inconnu": False}
+        for enum, attendu in cas.items():
+            out = ted.normaliser_securite({"securite_existante": enum, "justification": "x"})
+            self.assertEqual(out["securite_existante_detectee"], attendu, enum)
+            self.assertEqual(out["securite_existante"], enum)
+
+    def test_valeur_inconnue_repli_sur_inconnu(self):
+        out = ted.normaliser_securite({"securite_existante": "n_importe_quoi"})
+        self.assertEqual(out["securite_existante"], "inconnu")
+        self.assertFalse(out["securite_existante_detectee"])
+
+    def test_prestataire_marque_la_justification(self):
+        out = ted.normaliser_securite(
+            {"securite_existante": "prestataire_tiers", "justification": "besoin escorte"})
+        self.assertTrue(out["justification"].startswith(ted.MARQUEUR_DEPLACEMENT))
+        self.assertIn("besoin escorte", out["justification"])
+
+    def test_marqueur_idempotent(self):
+        d = {"securite_existante": "prestataire_tiers",
+             "justification": ted.MARQUEUR_DEPLACEMENT + " deja la"}
+        out = ted.normaliser_securite(d)
+        self.assertEqual(out["justification"].count("DÉPLACEMENT"), 1)
+
+    def test_repli_ancien_booleen(self):
+        # Modele qui n'emet que l'ancien champ : on preserve la suppression.
+        vrai = ted.normaliser_securite({"securite_existante_detectee": True})
+        self.assertTrue(vrai["securite_existante_detectee"])
+        self.assertEqual(vrai["securite_existante"], "interne_client")
+        faux = ted.normaliser_securite({"securite_existante_detectee": False})
+        self.assertFalse(faux["securite_existante_detectee"])
+
+    def test_none_et_non_dict_tolerants(self):
+        self.assertIsNone(ted.normaliser_securite(None))
+        self.assertEqual(ted.normaliser_securite("x"), "x")
+
+    def test_action_interne_supprime_prestataire_surface(self):
+        base = {"accessibilite_commerciale": "facile"}
+        interne = ted.normaliser_securite({**base, "securite_existante": "interne_client"})
+        presta = ted.normaliser_securite({**base, "securite_existante": "prestataire_tiers"})
+        self.assertEqual(ted.calculer_action_recommandee(8.0, interne, surete=6.0), "ignorer")
+        self.assertNotEqual(ted.calculer_action_recommandee(8.0, presta, surete=6.0), "ignorer")
+
+    def test_prestataire_sans_penalite_de_score(self):
+        avis = {"pays_execution": "ML", "cpv": ""}
+        socle = {"deploiement_terrain_reel": True, "type_mobilite": "terrain_isole",
+                 "profil_personnes_exposees": "expert_international",
+                 "type_client": "entreprise_privee", "accessibilite_commerciale": "facile",
+                 "duree_estimee": "longue_ou_residente"}
+        interne = ted.normaliser_securite({**socle, "securite_existante": "interne_client"})
+        presta = ted.normaliser_securite({**socle, "securite_existante": "prestataire_tiers"})
+        s_i, c_i, _ = ted.calculer_scores(avis, interne)
+        s_p, c_p, _ = ted.calculer_scores(avis, presta)
+        # Le prestataire (conquete) ne subit pas la penalite -3/-2 de l'interne.
+        self.assertGreater(s_p, s_i)
+        self.assertGreater(c_p, c_i)
 
 
 if __name__ == "__main__":
