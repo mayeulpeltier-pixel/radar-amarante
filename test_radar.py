@@ -59,6 +59,10 @@ try:
     import radar_dashboard
 except Exception:
     radar_dashboard = None
+try:
+    import radar_digest
+except Exception:
+    radar_digest = None
 
 
 # ===========================================================================
@@ -877,6 +881,77 @@ class TestCouverturePaysDashboard(unittest.TestCase):
         manquants = sorted(noms - coords)
         self.assertEqual(manquants, [],
                          "Pays mappes sans coordonnees carte : {}".format(manquants))
+
+
+class TestDigestHebdo(unittest.TestCase):
+    """Digest push (option B). Teste la logique PURE de selection des leads :
+    seuls les 'a contacter' non encore pris en charge partent, tries par score,
+    plafonnes. Aucun reseau, aucune cle."""
+
+    def _lead(self, **kw):
+        base = {"src": "TED", "pays": "Mali", "zone": "Sahel", "titre": "AT",
+                "agence": "AFD", "final": 7.0, "surete": 6.0, "comm": 8.0,
+                "win": "immediate", "lien": "", "nom": "n.c.", "email": "n.c.",
+                "date_det": "2026-07-10", "action": "contacter", "statut": "nouveau",
+                "pub": ""}
+        base.update(kw)
+        return base
+
+    @unittest.skipIf(radar_digest is None, "radar_digest indisponible")
+    def test_ne_garde_que_les_a_contacter(self):
+        leads = [self._lead(pub="A", action="contacter"),
+                 self._lead(pub="B", action="surveiller"),
+                 self._lead(pub="C", action="ignorer")]
+        ids = [x["id"] for x in radar_digest.construire_payload(leads)["leads"]]
+        self.assertEqual(ids, ["A"])
+
+    @unittest.skipIf(radar_digest is None, "radar_digest indisponible")
+    def test_exclut_les_statuts_deja_pris_en_charge(self):
+        leads = [self._lead(pub="A", statut="nouveau"),
+                 self._lead(pub="B", statut="contacté"),
+                 self._lead(pub="C", statut="gagne"),
+                 self._lead(pub="D", statut="")]
+        ids = {x["id"] for x in radar_digest.construire_payload(leads)["leads"]}
+        self.assertEqual(ids, {"A", "D"})
+
+    @unittest.skipIf(radar_digest is None, "radar_digest indisponible")
+    def test_tri_par_score_decroissant_et_plafond(self):
+        leads = [self._lead(pub="bas", final=4.5),
+                 self._lead(pub="haut", final=9.1),
+                 self._lead(pub="moyen", final=6.0)]
+        ids = [x["id"] for x in radar_digest.construire_payload(leads)["leads"]]
+        self.assertEqual(ids, ["haut", "moyen", "bas"])
+        court = radar_digest.construire_payload(leads, max_leads=2)["leads"]
+        self.assertEqual([x["id"] for x in court], ["haut", "moyen"])
+
+    @unittest.skipIf(radar_digest is None, "radar_digest indisponible")
+    def test_lead_id_miroir_du_dashboard(self):
+        # publication_number prioritaire, puis lien, puis composite.
+        self.assertEqual(radar_digest.lead_id({"pub": "302871-2026"}), "302871-2026")
+        self.assertEqual(radar_digest.lead_id({"lien": "http://x/y"}), "http://x/y")
+        self.assertEqual(
+            radar_digest.lead_id({"src": "BM", "pays": "Niger", "agence": "BM", "titre": "T"}),
+            "BM|Niger|BM|T")
+
+    @unittest.skipIf(radar_digest is None, "radar_digest indisponible")
+    def test_contact_nc_normalise_en_vide(self):
+        item = radar_digest.construire_payload([self._lead(pub="A", nom="n.c.", email="n.c.")])["leads"][0]
+        self.assertEqual(item["contact"], "")
+        self.assertEqual(item["email"], "")
+        item2 = radar_digest.construire_payload(
+            [self._lead(pub="B", nom="Jean Dupont", email="j@ex.com")])["leads"][0]
+        self.assertEqual(item2["contact"], "Jean Dupont")
+        self.assertEqual(item2["email"], "j@ex.com")
+
+    @unittest.skipIf(radar_digest is None, "radar_digest indisponible")
+    def test_envoyer_best_effort_ne_leve_pas(self):
+        # Un POST vers une URL invalide ne doit jamais lever (best-effort).
+        # Session simple (sans reessai) pour un test rapide et deterministe.
+        import requests
+        ok = radar_digest.envoyer("http://127.0.0.1:1/exec", "tok",
+                                  {"type": "digest", "leads": []},
+                                  session=requests.Session())
+        self.assertFalse(ok)
 
 
 if __name__ == "__main__":
