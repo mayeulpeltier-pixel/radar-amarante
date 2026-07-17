@@ -48,6 +48,7 @@ jobs:
           RADAR_LOG_FILE: radar.log
           RELIEFWEB_APPNAME: amarante-radar-veille-x7q234hyu
           RADAR_GDELT: "0"
+          RADAR_ADB: "0"          # ADB desactive : portail rendu en JS, 0 resultat depuis l'infra CI (meme logique que GDELT). Retirer cette ligne pour reactiver.
           RADAR_PRIVES_DEBUG: "1"
           ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
           ADZUNA_APP_KEY: ${{ secrets.ADZUNA_APP_KEY }}
