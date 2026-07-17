@@ -202,8 +202,15 @@ for _code in (
 # ===========================================================================
 
 ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/messages"
-MODELE = "claude-haiku-4-5-20251001"  # modele rapide/economique pour le volume
-MODELE_RAFFINEMENT = "claude-sonnet-4-6"  # escalade sur les cas au-dessus du
+# Modeles surchargeables par env (upgrade intentionnel sans toucher au code, et
+# rollback instantane). Defauts = chaines VALIDES et actives, verifiees sur la
+# doc Anthropic : Haiku 4.5 (volume) et Sonnet 4.6 (raffinement). La forme `or`
+# tolere une variable vide (retombe sur le defaut). ATTENTION : passer le
+# raffinement a "claude-sonnet-5" exige AUSSI de retirer "temperature": 0 de
+# l'appel API -- Sonnet 5 rejette les parametres d'echantillonnage non-defaut.
+# Ne pas swapper a l'aveugle.
+MODELE = os.environ.get("RADAR_MODELE") or "claude-haiku-4-5-20251001"  # modele rapide/economique pour le volume
+MODELE_RAFFINEMENT = os.environ.get("RADAR_MODELE_RAFFINEMENT") or "claude-sonnet-4-6"  # escalade sur les cas au-dessus du
     # seuil de surveillance (deja prevu au cadrage initial section 7.3,
     # jamais cable jusqu'ici : "n'escalader que sur les cas limites").
 SEUIL_ALERTE = 6     # "fort", a contacter
