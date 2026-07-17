@@ -102,6 +102,24 @@ ZONE_PAR_NOM = {
     # Europe de l'Ouest (TED, faible interet operationnel)
     "france": ("France", "Europe de l'Ouest"), "germany": ("Allemagne", "Europe de l'Ouest"),
     "denmark": ("Danemark", "Europe de l'Ouest"), "new caledonia": ("Nouvelle-Calédonie", "Outre-mer"),
+    # -- Complement (audit juillet 2026) : mêmes pays que côté ISO3, mais par
+    # NOM (la Banque Mondiale et ReliefWeb stockent le nom du pays, pas le code).
+    "syria": ("Syrie", "Proche-Orient"), "syrian arab republic": ("Syrie", "Proche-Orient"),
+    "iran": ("Iran", "Proche-Orient"), "iran, islamic republic of": ("Iran", "Proche-Orient"),
+    "israel": ("Israël", "Proche-Orient"),
+    "saudi arabia": ("Arabie Saoudite", "Péninsule arabique"),
+    "united arab emirates": ("Émirats Arabes Unis", "Péninsule arabique"),
+    "qatar": ("Qatar", "Péninsule arabique"), "kuwait": ("Koweït", "Péninsule arabique"),
+    "bahrain": ("Bahreïn", "Péninsule arabique"), "oman": ("Oman", "Péninsule arabique"),
+    "russia": ("Russie", "Europe de l'Est"), "russian federation": ("Russie", "Europe de l'Est"),
+    "belarus": ("Biélorussie", "Europe de l'Est"),
+    "argentina": ("Argentine", "Amérique latine"), "bolivia": ("Bolivie", "Amérique latine"),
+    "chile": ("Chili", "Amérique latine"), "peru": ("Pérou", "Amérique latine"),
+    "paraguay": ("Paraguay", "Amérique latine"), "uruguay": ("Uruguay", "Amérique latine"),
+    "venezuela": ("Venezuela", "Amérique latine"),
+    "venezuela, republica bolivariana de": ("Venezuela", "Amérique latine"),
+    "guyana": ("Guyana", "Amérique latine"), "suriname": ("Suriname", "Amérique latine"),
+    "trinidad and tobago": ("Trinité-et-Tobago", "Caraïbes"),
 }
 
 # TED stocke des codes ISO. Table code -> (nom FR, zone).
@@ -160,6 +178,24 @@ ZONE_PAR_ISO3 = {
     "XKX": ("Kosovo", "Balkans"),
     "PNG": ("Papouasie-Nouvelle-Guinée", "Pacifique"), "FJI": ("Fidji", "Pacifique"),
     "SLB": ("Îles Salomon", "Pacifique"), "VUT": ("Vanuatu", "Pacifique"),
+    # -- Complement (audit juillet 2026) : pays suivis par le coeur TED mais
+    # absents de cette carte, qui tombaient donc en "Non classe" au dashboard
+    # (zone faible, pas de point carte, mauvais tri). On les rattache a leur
+    # zone reelle. Golfe -> "Peninsule arabique" (comme Oman, deja present).
+    "SYR": ("Syrie", "Proche-Orient"), "IRN": ("Iran", "Proche-Orient"),
+    "ISR": ("Israël", "Proche-Orient"),
+    "SAU": ("Arabie Saoudite", "Péninsule arabique"),
+    "ARE": ("Émirats Arabes Unis", "Péninsule arabique"),
+    "QAT": ("Qatar", "Péninsule arabique"), "KWT": ("Koweït", "Péninsule arabique"),
+    "BHR": ("Bahreïn", "Péninsule arabique"),
+    "RUS": ("Russie", "Europe de l'Est"), "BLR": ("Biélorussie", "Europe de l'Est"),
+    "GUF": ("Guyane", "Outre-mer"), "MYT": ("Mayotte", "Outre-mer"),
+    "ARG": ("Argentine", "Amérique latine"), "BOL": ("Bolivie", "Amérique latine"),
+    "CHL": ("Chili", "Amérique latine"), "COL": ("Colombie", "Amérique latine"),
+    "PER": ("Pérou", "Amérique latine"), "PRY": ("Paraguay", "Amérique latine"),
+    "URY": ("Uruguay", "Amérique latine"), "VEN": ("Venezuela", "Amérique latine"),
+    "GUY": ("Guyana", "Amérique latine"), "SUR": ("Suriname", "Amérique latine"),
+    "TTO": ("Trinité-et-Tobago", "Caraïbes"),
 }
 
 # Ordre d'affichage des zones (les autres suivent, "Non classé" en dernier)
@@ -318,6 +354,7 @@ RISQUE_ZONE = {
     "Sahel": 5.0, "Corne de l'Afrique": 5.0, "Afrique de l'Est": 3.5,
     "Afrique de l'Ouest": 4.0, "Afrique centrale": 4.5, "Afrique australe": 2.5,
     "Afrique du Nord": 4.0, "Proche-Orient": 5.0, "Moyen-Orient": 5.0,
+    "Péninsule arabique": 3.0,
     "Asie centrale": 4.0, "Asie du Sud": 4.0, "Asie du Sud-Est": 3.0,
     "Caucase": 4.0, "Balkans": 3.0, "Europe de l'Est": 4.0, "Pacifique": 2.5,
     "Amérique latine": 2.5, "Caraïbes": 2.5, "Europe de l'Ouest": 1.0,
@@ -1461,7 +1498,23 @@ const COORDS={
  "Bangladesh":[23.7,90.4],"Pakistan":[30.4,69.3],"Inde":[22.4,78.9],"Népal":[28.4,84.1],"Indonésie":[-2.5,118.0],"Philippines":[12.9,121.8],
  "Ukraine":[48.4,31.2],"Moldavie":[47.2,28.5],"Albanie":[41.2,20.0],"Macédoine du Nord":[41.6,21.7],"Serbie":[44.0,21.0],"Géorgie":[42.3,43.4],"Arménie":[40.1,45.0],"Azerbaïdjan":[40.1,47.6],
  "Haïti":[19.0,-72.3],"Jamaïque":[18.1,-77.3],"Mexique":[23.6,-102.6],"Équateur":[-1.8,-78.2],"Brésil":[-10.3,-53.2],"Colombie":[4.6,-74.3],
- "France":[46.6,2.2],"Allemagne":[51.2,10.4],"Danemark":[56.0,9.5],"Nouvelle-Calédonie":[-21.3,165.5]
+ "France":[46.6,2.2],"Allemagne":[51.2,10.4],"Danemark":[56.0,9.5],"Nouvelle-Calédonie":[-21.3,165.5],
+ // -- Complement carte (audit juillet 2026) : coordonnees des pays qui
+ // etaient mappes a une zone mais sans point sur la carte (Afghanistan,
+ // Soudan, Syrie, Russie...), plus les nouveaux pays ajoutes a ZONE_PAR_ISO3.
+ "Afghanistan":[33.9,67.7],"Arabie Saoudite":[24.0,45.1],"Argentine":[-38.4,-63.6],"Bahreïn":[26.1,50.6],
+ "Biélorussie":[53.7,27.9],"Bolivie":[-16.3,-63.6],"Bosnie-Herzégovine":[43.9,17.7],"Burundi":[-3.4,29.9],
+ "Cambodge":[12.6,104.9],"Cap-Vert":[16.0,-24.0],"Chili":[-35.7,-71.5],"Comores":[-11.6,43.3],
+ "Eswatini":[-26.5,31.5],"Fidji":[-17.7,178.0],"Gambie":[13.4,-15.3],"Guinée équatoriale":[1.6,10.3],
+ "Guinée-Bissau":[12.0,-15.0],"Guyana":[4.9,-58.9],"Guyane":[4.0,-53.0],"Iran":[32.4,53.7],
+ "Israël":[31.4,35.0],"Kosovo":[42.6,20.9],"Koweït":[29.3,47.6],"Laos":[19.9,102.5],
+ "Lesotho":[-29.6,28.2],"Liberia":[6.4,-9.4],"Maurice":[-20.3,57.6],"Mayotte":[-12.8,45.2],
+ "Monténégro":[42.7,19.4],"Myanmar":[21.9,95.9],"Namibie":[-22.6,17.1],"Papouasie-Nouvelle-Guinée":[-6.3,143.9],
+ "Paraguay":[-23.4,-58.4],"Pérou":[-9.2,-75.0],"Qatar":[25.3,51.2],"Russie":[61.5,90.0],
+ "Sao Tomé-et-Principe":[0.2,6.6],"Seychelles":[-4.7,55.5],"Sierra Leone":[8.5,-11.8],"Soudan":[15.5,30.2],
+ "Sri Lanka":[7.9,80.8],"Suriname":[4.0,-56.0],"Syrie":[35.0,38.5],"Trinité-et-Tobago":[10.5,-61.3],
+ "Turkménistan":[38.9,59.6],"Uruguay":[-32.5,-55.8],"Vanuatu":[-16.3,167.7],"Venezuela":[6.4,-66.6],
+ "Émirats Arabes Unis":[24.0,54.0],"Érythrée":[15.2,39.8],"Îles Salomon":[-9.6,160.2]
 };
 const TIER_COULEUR={contacter:'#C0273A',surveiller:'#C8893B',ignorer:'#5C6670'};
 const TIER_RANG={contacter:3,surveiller:2,ignorer:1};
