@@ -80,7 +80,23 @@ jobs:
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
           DASHBOARD_OUTPUT: public/index.html
+          # SUIVI_* : active le bouton "Je contacte" (POST vers le webapp Apps
+          # Script). Sans eux, le bouton ne s'affiche pas (dashboard intact).
+          SUIVI_WEBAPP_URL: ${{ secrets.SUIVI_WEBAPP_URL }}
+          SUIVI_TOKEN: ${{ secrets.SUIVI_TOKEN }}
         run: python radar_dashboard.py
+      # 4b) Digest hebdo push : envoie par e-mail les NOUVELLES opportunites "a
+      #     contacter" (via le meme webapp Apps Script que le bouton "Je
+      #     contacte"). Best-effort et isole : sans SUIVI_* il ne fait rien, et
+      #     un echec ici n'affecte ni le radar ni la publication du dashboard.
+      - name: Envoyer le digest hebdo
+        if: always()
+        env:
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          SUIVI_WEBAPP_URL: ${{ secrets.SUIVI_WEBAPP_URL }}
+          SUIVI_TOKEN: ${{ secrets.SUIVI_TOKEN }}
+        run: python radar_digest.py
       # 5) Publier la page sur Cloudflare Pages (hebergement statique gratuit).
       - name: Publier sur Cloudflare Pages
         if: always()
