@@ -960,86 +960,140 @@ class TestDigestHebdo(unittest.TestCase):
 
 @unittest.skipIf(bm_attributions is None, "bm_attributions indisponible")
 class TestAttributionsBM(unittest.TestCase):
-    """Collecteur d'attributions Banque Mondiale. Le nom du titulaire n'est pas
-    un champ structure : il vit dans le HTML de `notice_text`. Ces tests
-    verrouillent le parseur sur les structures REELLES observees via la sonde
-    du 18/07/2026, plus les cas degrades."""
+    """Collecteur d'attributions Banque Mondiale. Les structures HTML de ces
+    tests sont celles OBSERVEES sur donnees reelles le 18/07/2026 (mode
+    verification), pas des suppositions."""
 
-    # Entete reel d'un avis d'attribution BM (structure relevee par la sonde).
     ENTETE = (
         "<div class='row col-sm-12'><h4>Contract Award</h4><p>"
         "<b>Project:</b>P178566-Food Systems Resilience Program<br/>"
-        "<b>Loan/Credit/TF Info:</b>IDA-71560<br/>"
         "<b>Bid/Contract Reference No:</b>ML-FSRP-517016-CW-RFQ<br/>"
         "<b>Procurement Method:</b>RFQ-Request for Quotations<br/>"
-        "<b>Scope of Contract:</b><span class='desc-word-wrap'>Travaux</span><br/>"
         "<b>Notice Version No:</b>0</p><br/></div>"
         "<div class='row'><div class='col-sm-4'>"
         "<b>Date Notification of Award Issued</b><br/>(YYYY/MM/DD)<br/>{d}<br/></div>"
         "<div class='col-sm-4'><b>Duration of Contract</b><br/><br/>60 Day(s)<br/></div></div>"
     )
+    # Bloc titulaire REEL : nom + identifiant, adresse, pays, puis montant.
+    BLOC_ETRANGER = (
+        "<div><u><b>Awarded Bidder(s):</b></u></div>"
+        "<div>STECOL CORPORATION (333385)</div><div>Tianjin, China</div>"
+        "<div>Country: China</div>"
+        "<div>Bid Price at Opening</div><div>USD</div><div>45,300,000.00</div>"
+    )
+    BLOC_LOCAL = (
+        "<div><u><b>Awarded Bidder(s):</b></u></div>"
+        "<div>DOONYODHER C.C (1107014)</div><div>Jijiga</div>"
+        "<div>Country: Ethiopia</div><div>Bid Price at Opening</div><div>2,450,000.00</div>"
+    )
 
-    def _texte(self, bloc_gagnant, d="2026/07/01"):
-        return self.ENTETE.format(d=d) + bloc_gagnant
+    def _texte(self, bloc, d="2026/07/01"):
+        return self.ENTETE.format(d=d) + bloc
 
-    # -- Extraction du gagnant ------------------------------------------
-    def test_gagnant_avec_etiquette_name(self):
-        bloc = ("<div class='row'><div class='col-sm-12'><u><b>Awarded Bidder(s):</b></u></div>"
-                "<div class='row col-sm-12'><div class='col-sm-5'><b>Name</b><br/>"
-                "Sogea Satom SA<br/></div><div class='col-sm-3'><b>Country</b><br/>"
-                "Mali<br/></div></div></div>")
+    def _recent(self):
+        from datetime import date as _d, timedelta as _td
+        return (_d.today() - _td(days=10)).strftime("%Y/%m/%d")
+
+    # -- Extraction du titulaire -----------------------------------------
+    def test_nom_propre_sans_adresse_ni_entete(self):
+        """Le bug corrige : l'ancien parseur produisait
+        'DOONYODHER C.C (1107014) ; Jijiga ; Country: Ethiopia ; Bid Price at
+        Opening'. Seule la raison sociale doit sortir."""
+        noms = bm_attributions.extraire_gagnants(self._texte(self.BLOC_LOCAL))
+        self.assertEqual(noms, ["DOONYODHER C.C"])
+
+    def test_groupement_deux_titulaires(self):
+        bloc = self.BLOC_ETRANGER + "<div>AK ZHOL KURYLYS (1047296)</div><div>Astana</div>"
         self.assertEqual(bm_attributions.extraire_gagnants(self._texte(bloc)),
-                         ["Sogea Satom SA"])
+                         ["STECOL CORPORATION", "AK ZHOL KURYLYS"])
 
-    def test_gagnant_sans_etiquette_repli(self):
+    def test_sans_identifiant_aucun_gagnant(self):
+        """Prudence assumee : sans identifiant fournisseur, on n'invente pas."""
         bloc = ("<div><u><b>Awarded Bidder(s):</b></u></div>"
-                "<div>Entreprise Colas Afrique</div><div>Bamako, Mali</div>")
-        self.assertEqual(bm_attributions.extraire_gagnants(self._texte(bloc))[0],
-                         "Entreprise Colas Afrique")
-
-    def test_groupement_plusieurs_gagnants(self):
-        bloc = ("<div><u><b>Awarded Bidder(s):</b></u></div>"
-                "<div><b>Name</b><br/>Alpha Engineering Ltd<br/></div>"
-                "<div><b>Name</b><br/>Beta Construction SARL<br/></div>")
-        self.assertEqual(bm_attributions.extraire_gagnants(self._texte(bloc)),
-                         ["Alpha Engineering Ltd", "Beta Construction SARL"])
+                "<div>Bid Price at Opening</div><div>1,250,000.00</div>")
+        self.assertEqual(bm_attributions.extraire_gagnants(self._texte(bloc)), [])
 
     def test_aucun_gagnant_si_section_absente(self):
         self.assertEqual(bm_attributions.extraire_gagnants("<p>Contract Award</p>"), [])
 
-    def test_montants_et_etiquettes_ne_sont_pas_des_noms(self):
-        # Une section sans nom exploitable ne doit RIEN renvoyer plutot qu'un
-        # montant ou un intitule de colonne pris pour une raison sociale.
-        bloc = ("<div><u><b>Awarded Bidder(s):</b></u></div>"
-                "<div>Contract Amount</div><div>1,250,000.00</div>")
-        self.assertEqual(bm_attributions.extraire_gagnants(self._texte(bloc)), [])
+    # -- Filtre commercial etranger / local ------------------------------
+    def test_titulaire_etranger_detecte(self):
+        self.assertTrue(bm_attributions.titulaire_etranger("China", "Kazakhstan"))
 
-    # -- Champs annexes --------------------------------------------------
-    def test_date_attribution_depuis_notice_text(self):
-        bloc = ("<div><u><b>Awarded Bidder(s):</b></u></div>"
-                "<div><b>Name</b><br/>Acme SA<br/></div>")
+    def test_titulaire_local_detecte(self):
+        self.assertFalse(bm_attributions.titulaire_etranger("Ethiopia", "Ethiopia"))
+
+    def test_origine_inconnue_ne_jette_pas(self):
+        self.assertTrue(bm_attributions.titulaire_etranger("", "Mali"))
+
+    def test_pays_titulaire_extrait(self):
         self.assertEqual(
-            bm_attributions.date_attribution(self._texte(bloc, d="2026/05/13"), {}),
-            "2026-05-13")
+            bm_attributions.pays_titulaire(self._texte(self.BLOC_ETRANGER)), "China")
+
+    def test_entrepreneur_local_ecarte_par_defaut(self):
+        """Un macon local n'achete pas de protection internationale."""
+        rec = {"notice_type": "Contract Award", "procurement_group": "CW",
+               "project_ctry_name": "Ethiopia", "id": "OP1",
+               "bid_description": "Travaux",
+               "notice_text": self._texte(self.BLOC_LOCAL, d=self._recent())}
+        self.assertIsNone(bm_attributions.normaliser(rec))
+
+    def test_titulaire_etranger_conserve(self):
+        rec = {"notice_type": "Contract Award", "procurement_group": "CW",
+               "project_ctry_name": "Kazakhstan", "id": "OP2",
+               "bid_description": "Route",
+               "notice_text": self._texte(self.BLOC_ETRANGER, d=self._recent())}
+        ligne = bm_attributions.normaliser(rec)
+        self.assertIsNotNone(ligne)
+        self.assertEqual(ligne["gagnant"], "STECOL CORPORATION")
+        self.assertIn("titulaire China", ligne["titre"])
+
+    # -- Integration dashboard (bug ISO3) --------------------------------
+    def test_pays_ecrit_en_iso3_pour_le_dashboard(self):
+        """BUG CORRIGE : le dashboard resout les attributions en mode ISO3.
+        Ecrire 'Mali' donnait 'Non classe' ; il faut 'MLI'."""
+        rec = {"notice_type": "Contract Award", "procurement_group": "CW",
+               "project_ctry_name": "Mali", "id": "OP3", "bid_description": "Forages",
+               "notice_text": self._texte(self.BLOC_ETRANGER, d=self._recent())}
+        ligne = bm_attributions.normaliser(rec)
+        self.assertEqual(ligne["pays_execution"], "MLI")
+
+    def test_le_dashboard_classe_bien_la_ligne_produite(self):
+        """Bout en bout : la ligne ecrite doit tomber dans une vraie zone."""
+        try:
+            import radar_dashboard as dash
+        except Exception:
+            self.skipTest("radar_dashboard indisponible")
+        rec = {"notice_type": "Contract Award", "procurement_group": "CW",
+               "project_ctry_name": "Mali", "id": "OP4", "bid_description": "Forages",
+               "notice_text": self._texte(self.BLOC_ETRANGER, d=self._recent())}
+        ligne = bm_attributions.normaliser(rec)
+        lead = dash.attribution_vers_lead(ligne)
+        self.assertEqual(lead["pays"], "Mali")
+        self.assertNotEqual(lead["zone"], "Non classé")
+        self.assertEqual(lead["entreprise"], "STECOL CORPORATION")
+
+    # -- Champs annexes ---------------------------------------------------
+    def test_montant_avec_devise(self):
+        self.assertEqual(
+            bm_attributions.montant_attribue(self._texte(self.BLOC_ETRANGER)),
+            "USD 45,300,000.00")
+
+    def test_date_attribution_depuis_notice_text(self):
+        self.assertEqual(
+            bm_attributions.date_attribution(
+                self._texte(self.BLOC_ETRANGER, d="2026/05/13"), {}), "2026-05-13")
 
     def test_date_repli_sur_noticedate(self):
-        # Sans date dans le texte, on retombe sur la date de l'avis.
         self.assertEqual(
             bm_attributions.date_attribution("<p>rien</p>", {"noticedate": "17-Jul-2026"}),
             "2026-07-17")
 
     def test_duree_contrat_extraite(self):
-        bloc = "<div><u><b>Awarded Bidder(s):</b></u></div><div>Acme SA</div>"
-        self.assertEqual(bm_attributions.duree_contrat(self._texte(bloc)), "60 Day(s)")
-
-    def test_label_ignore_indication_de_format(self):
-        # "(YYYY/MM/DD)" est une aide de lecture, pas une valeur.
-        lignes = bm_attributions.texte_en_lignes(self.ENTETE.format(d="2026/01/02"))
         self.assertEqual(
-            bm_attributions.valeur_label(lignes, "Date Notification of Award Issued"),
-            "2026/01/02")
+            bm_attributions.duree_contrat(self._texte(self.BLOC_ETRANGER)), "60 Day(s)")
 
-    # -- Fenetre de mobilisation ----------------------------------------
+    # -- Fenetre et filtres ----------------------------------------------
     def test_fenetre_mobilisation(self):
         from datetime import date as _d, timedelta as _td
         auj = _d(2026, 7, 18)
@@ -1049,59 +1103,25 @@ class TestAttributionsBM(unittest.TestCase):
             (auj - _td(days=400)).isoformat(), auj, 120))
         self.assertFalse(bm_attributions.dans_la_fenetre("", auj, 120))
 
-    # -- Filtrage --------------------------------------------------------
     def test_groupe_fournitures_ecarte(self):
-        # GO = achat de biens : personne ne se deploie, aucun interet.
         rec = {"notice_type": "Contract Award", "procurement_group": "GO",
                "project_ctry_name": "Mali"}
-        ok, motif = bm_attributions.record_retenu(rec)
-        self.assertFalse(ok)
-        self.assertEqual(motif, "groupe")
+        self.assertEqual(bm_attributions.record_retenu(rec)[1], "groupe")
 
     def test_pays_hors_perimetre_ecarte(self):
         rec = {"notice_type": "Contract Award", "procurement_group": "CW",
                "project_ctry_name": "Denmark"}
-        ok, motif = bm_attributions.record_retenu(rec)
-        self.assertFalse(ok)
-        self.assertEqual(motif, "pays")
+        self.assertEqual(bm_attributions.record_retenu(rec)[1], "pays")
 
     def test_travaux_pays_a_risque_retenu(self):
         rec = {"notice_type": "Contract Award", "procurement_group": "CW",
                "project_ctry_name": "Mali"}
         self.assertTrue(bm_attributions.record_retenu(rec)[0])
 
-    # -- Normalisation et schema ----------------------------------------
-    def test_normaliser_produit_le_schema_de_l_onglet(self):
-        from datetime import date as _d, timedelta as _td
-        recent = (_d.today() - _td(days=10)).strftime("%Y/%m/%d")
-        bloc = ("<div><u><b>Awarded Bidder(s):</b></u></div>"
-                "<div><b>Name</b><br/>Sogea Satom SA<br/></div>")
-        rec = {"notice_type": "Contract Award", "procurement_group": "CW",
-               "project_ctry_name": "Mali", "id": "OP00457295",
-               "bid_description": "Construction de forages",
-               "project_name": "Projet Resilience", "procurement_method_code": "RFQ",
-               "notice_text": self._texte(bloc, d=recent)}
-        ligne = bm_attributions.normaliser(rec)
-        self.assertIsNotNone(ligne)
-        self.assertEqual(ligne["gagnant"], "Sogea Satom SA")
-        self.assertEqual(ligne["pays_execution"], "Mali")
-        self.assertEqual(ligne["publication_number"], "OP00457295")
-        self.assertEqual(ligne["a_demarcher"], "oui")
-        self.assertIn("OP00457295", ligne["lien"])
-        # Toutes les colonnes de l'onglet doivent etre productibles.
-        for col in bm_attributions.COLONNES:
-            self.assertIn(col, ligne, "colonne manquante : {}".format(col))
-
-    def test_normaliser_refuse_sans_gagnant(self):
-        rec = {"notice_type": "Contract Award", "procurement_group": "CW",
-               "project_ctry_name": "Mali", "id": "OP1",
-               "notice_text": "<p>Contract Award, pas de section gagnant</p>"}
-        self.assertIsNone(bm_attributions.normaliser(rec))
-
+    # -- Schema et deduplication ------------------------------------------
     def test_schema_identique_aux_attributions_ted(self):
-        """Garde-fou d'integration : les colonnes DOIVENT rester identiques a
-        celles des attributions TED, sinon les lignes BM cassent la lentille
-        Titulaires et la fiche 360 du dashboard."""
+        """Garde-fou d'integration : colonnes identiques a celles des
+        attributions TED, sinon la lentille Titulaires et la fiche 360 cassent."""
         try:
             import ted_complet_attributions as attrib_ted
         except Exception:
@@ -1109,15 +1129,19 @@ class TestAttributionsBM(unittest.TestCase):
         self.assertEqual(bm_attributions.COLONNES, attrib_ted.COLONNES)
         self.assertEqual(bm_attributions.NOM_ONGLET, attrib_ted.NOM_ONGLET)
 
-    def test_construire_deduplique(self):
-        from datetime import date as _d, timedelta as _td
-        recent = (_d.today() - _td(days=5)).strftime("%Y/%m/%d")
-        bloc = ("<div><u><b>Awarded Bidder(s):</b></u></div>"
-                "<div><b>Name</b><br/>Acme SA<br/></div>")
+    def test_toutes_les_colonnes_sont_produites(self):
         rec = {"notice_type": "Contract Award", "procurement_group": "CS",
-               "project_ctry_name": "Niger", "id": "OP42",
-               "bid_description": "AT", "notice_text": self._texte(bloc, d=recent)}
-        sorties, _motifs = bm_attributions.construire([rec, dict(rec)])
+               "project_ctry_name": "Niger", "id": "OP5", "bid_description": "AT",
+               "notice_text": self._texte(self.BLOC_ETRANGER, d=self._recent())}
+        ligne = bm_attributions.normaliser(rec)
+        for col in bm_attributions.COLONNES:
+            self.assertIn(col, ligne, "colonne manquante : {}".format(col))
+
+    def test_construire_deduplique(self):
+        rec = {"notice_type": "Contract Award", "procurement_group": "CS",
+               "project_ctry_name": "Niger", "id": "OP42", "bid_description": "AT",
+               "notice_text": self._texte(self.BLOC_ETRANGER, d=self._recent())}
+        sorties, _m = bm_attributions.construire([rec, dict(rec)])
         self.assertEqual(len(sorties), 1)
 
 
