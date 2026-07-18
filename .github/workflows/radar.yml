@@ -84,7 +84,7 @@ jobs:
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
           # Mettre a 1 pour verifier les noms extraits SANS rien ecrire.
-          RADAR_BM_ATTRIB_DEBUG: "1"
+          RADAR_BM_ATTRIB_DEBUG: "0"
         run: python bm_attributions.py
 
       - name: Generer le tableau de bord
