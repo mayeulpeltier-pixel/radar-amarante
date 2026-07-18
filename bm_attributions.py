@@ -65,6 +65,11 @@ DEBUG = os.environ.get("RADAR_BM_ATTRIB_DEBUG", "0") == "1"
 # besoin de surete a ete arbitre. 120 jours couvre large sans noyer le Sheet.
 JOURS_FENETRE = int(os.environ.get("RADAR_BM_ATTRIB_JOURS", "120"))
 
+# Par defaut on ECARTE les titulaires locaux (entreprise du pays du chantier) :
+# ils n'expatrient personne et n'achetent pas de protection internationale.
+# RADAR_BM_ATTRIB_LOCAUX=1 les reintegre si tu veux voir tout le marche.
+GARDER_LOCAUX = os.environ.get("RADAR_BM_ATTRIB_LOCAUX", "0") == "1"
+
 # Onglet PARTAGE avec les attributions TED (integration dashboard gratuite).
 NOM_ONGLET = "attributions_radar"
 COLONNES = [
@@ -82,17 +87,85 @@ PAGES_MAX = int(os.environ.get("RADAR_BM_ATTRIB_PAGES", "12"))
 # Groupes d'achat ou du personnel se deploie reellement.
 LIBELLE_GROUPE = {"CS": "Conseil / AT", "CW": "Travaux / BTP"}
 
-# Etiquettes rencontrees dans le bloc "Awarded Bidder(s)" : ce sont des
-# EN-TETES, jamais des noms d'entreprise. Sert a ne pas confondre les deux.
-ETIQUETTES = {
-    "name", "supplier", "bidder", "bidder name", "supplier name",
-    "address", "country", "city", "state", "province", "zip", "postal code",
-    "contract amount", "evaluated cost", "bid price", "amount",
-    "beneficial ownership", "awarded bidder", "awarded bidder(s)",
-    "e-mail", "email", "phone", "fax", "web", "website", "contact",
-}
-# Etiquettes qui ANNONCENT un nom d'entreprise a la ligne suivante.
-ETIQUETTES_NOM = {"name", "supplier", "bidder", "bidder name", "supplier name"}
+# Un titulaire reel est TOUJOURS suivi de son identifiant fournisseur BM entre
+# parentheses : "STECOL CORPORATION (333385)", "SNTM (1103160)". Le bruit du
+# bloc (adresse "Jijiga", libelle "Country: Ethiopia", en-tete "Bid Price at
+# Opening") n'en a JAMAIS. Ce motif, releve sur donnees reelles le 18/07/2026,
+# remplace l'ancienne heuristique qui ramassait tout.
+RE_TITULAIRE = re.compile(r"^(?P<nom>.{2,150}?)\s*\((?P<id>\d{4,})\)\s*$")
+
+# Pays du titulaire, tel qu'ecrit dans le bloc : "Country: China".
+RE_PAYS_TITULAIRE = re.compile(r"(?i)^country\s*:\s*(?P<pays>.+?)\s*$")
+
+# Etiquettes de montant rencontrees dans le bloc titulaire.
+LABELS_MONTANT = ("Contract Amount", "Bid Price at Opening", "Evaluated Bid Price",
+                  "Contract Price", "Evaluated Cost", "Bid Price", "Amount")
+
+
+def _lignes_bloc_titulaire(notice_text):
+    """Lignes de la section 'Awarded Bidder(s)', ou [] si absente."""
+    brut = str(notice_text or "")
+    m = re.search(r"(?i)awarded\s+bidder", brut)
+    if not m:
+        return []
+    lignes = texte_en_lignes(brut[m.start():])
+    if lignes and re.match(r"(?i)^awarded\s+bidder", lignes[0]):
+        lignes = lignes[1:]
+    return lignes
+
+
+def extraire_gagnants(notice_text, maxi=4):
+    """Noms d'entreprises de la section "Awarded Bidder(s)".
+
+    Strategie STRICTE : on ne retient que les lignes portant un identifiant
+    fournisseur BM entre parentheses. C'est le seul marqueur fiable observe.
+    Consequence assumee : un avis dont le titulaire n'a pas d'identifiant est
+    IGNORE plutot qu'ecrit avec une adresse prise pour une raison sociale.
+    Mieux vaut un lead en moins qu'un faux titulaire dans le CRM."""
+    noms, vus = [], set()
+    for ligne in _lignes_bloc_titulaire(notice_text):
+        m = RE_TITULAIRE.match(ligne)
+        if not m:
+            continue
+        nom = _norm(m.group("nom")).strip(" .,;:")
+        if len(nom) < 3 or not re.search(r"[A-Za-zÀ-ÿ]{2}", nom):
+            continue
+        cle = nom.lower()
+        if cle in vus:
+            continue
+        vus.add(cle)
+        noms.append(nom)
+        if len(noms) >= maxi:
+            break
+    return noms
+
+
+def pays_titulaire(notice_text):
+    """Pays d'origine du titulaire ("Country: China"). Sert a distinguer une
+    entreprise qui SE DEPLACE d'un entrepreneur local."""
+    for ligne in _lignes_bloc_titulaire(notice_text):
+        m = RE_PAYS_TITULAIRE.match(ligne)
+        if m:
+            return _norm(m.group("pays"))
+    return ""
+
+
+def titulaire_etranger(pays_titulaire_nom, pays_projet):
+    """Vrai si le titulaire vient d'un autre pays que celui du chantier.
+
+    C'EST LE FILTRE COMMERCIAL DECISIF. Un macon local qui construit dans sa
+    propre ville n'achetera jamais de protection rapprochee internationale.
+    Une entreprise etrangere qui arrive sur un chantier de 11 ans en zone a
+    risque expatrie du personnel : c'est le prospect d'Amarante.
+    Sans information de pays, on repond True (on ne jette pas dans le doute)."""
+    a = _norm(pays_titulaire_nom).lower()
+    b = _norm(pays_projet).lower()
+    if not a or not b:
+        return True
+    return a != b
+
+
+
 
 
 # ===========================================================================
@@ -135,75 +208,10 @@ def valeur_label(lignes, label):
         for suivante in lignes[i + 1:i + 4]:
             if suivante.startswith("(") and suivante.endswith(")"):
                 continue               # "(YYYY/MM/DD)"
-            if _norm(suivante).lower().rstrip(":") in ETIQUETTES:
+            if suivante.endswith(":") or RE_PAYS_TITULAIRE.match(suivante):
                 break                  # on est tombe sur l'etiquette suivante
             return _norm(suivante)
     return ""
-
-
-def extraire_gagnants(notice_text, maxi=4):
-    """Noms d'entreprises de la section "Awarded Bidder(s)".
-
-    Tolerant par construction : la sous-structure exacte du bloc varie d'un
-    avis a l'autre. On procede en deux temps :
-      1. si une etiquette de nom ("Name", "Supplier"...) est presente, on prend
-         la ligne qui la suit (cas le plus fiable) ;
-      2. sinon, on prend les premieres lignes qui ne sont pas des etiquettes,
-         ni des montants, ni des codes.
-    Renvoie [] si rien de credible : le lead est alors ignore plutot
-    qu'ecrit avec un gagnant faux."""
-    brut = str(notice_text or "")
-    m = re.search(r"(?i)awarded\s+bidder", brut)
-    if not m:
-        return []
-    lignes = texte_en_lignes(brut[m.start():])
-    if lignes and re.match(r"(?i)^awarded\s+bidder", lignes[0]):
-        lignes = lignes[1:]
-
-    noms, vus = [], set()
-
-    def _ajouter(candidat):
-        c = _norm(candidat).strip(" .,;:")
-        if not _nom_plausible(c):
-            return
-        cle = c.lower()
-        if cle not in vus:
-            vus.add(cle)
-            noms.append(c)
-
-    # 1. Etiquette de nom -> valeur a la ligne suivante.
-    for i, ligne in enumerate(lignes):
-        if _norm(ligne).lower().rstrip(":") in ETIQUETTES_NOM and i + 1 < len(lignes):
-            _ajouter(lignes[i + 1])
-            if len(noms) >= maxi:
-                return noms
-
-    # 2. Repli : premieres lignes non etiquettes.
-    if not noms:
-        for ligne in lignes:
-            if _norm(ligne).lower().rstrip(":") in ETIQUETTES:
-                continue
-            _ajouter(ligne)
-            if len(noms) >= maxi:
-                break
-    return noms[:maxi]
-
-
-def _nom_plausible(c):
-    """Ecarte ce qui ne peut pas etre une raison sociale : trop court, purement
-    numerique, montant, date, ou mention d'absence de publication."""
-    if len(c) < 3 or len(c) > 160:
-        return False
-    bas = c.lower()
-    if bas in ETIQUETTES:
-        return False
-    if re.match(r"^[\d\s.,/%-]+$", c):                 # nombres, dates, montants
-        return False
-    if re.match(r"(?i)^(n/?a|none|not applicable|non publie|not disclosed)$", bas):
-        return False
-    if not re.search(r"[A-Za-zÀ-ÿ]{3}", c):            # doit contenir des lettres
-        return False
-    return True
 
 
 def date_attribution(notice_text, record):
@@ -227,12 +235,32 @@ def date_attribution(notice_text, record):
 
 
 def montant_attribue(notice_text):
-    """Montant du contrat s'il figure dans l'avis, sinon chaine vide."""
+    """Montant du contrat s'il figure dans l'avis, sinon chaine vide.
+
+    Sur les donnees reelles, l'etiquette ("Bid Price at Opening", "Contract
+    Amount"...) est sur sa propre ligne et la valeur suit, parfois precedee du
+    code devise ("PHP", "USD"). On balaie donc les lignes suivantes jusqu'a en
+    trouver une contenant des chiffres. Le montant alimente le poids de valeur
+    du mini-score des attributions : sans lui, tout retombe au minimum."""
     lignes = texte_en_lignes(notice_text)
-    for label in ("Contract Amount", "Evaluated Cost", "Bid Price", "Amount"):
-        v = valeur_label(lignes, label)
-        if v and re.search(r"\d", v):
-            return _norm(v)[:60]
+    for label in LABELS_MONTANT:
+        cible = label.lower()
+        for i, ligne in enumerate(lignes):
+            if not ligne.lower().startswith(cible):
+                continue
+            reste = ligne[len(cible):].lstrip(" :")
+            if reste and re.search(r"\d", reste):
+                return _norm(reste)[:60]
+            devise = ""
+            for suivante in lignes[i + 1:i + 5]:
+                s = _norm(suivante)
+                if re.fullmatch(r"[A-Z]{3}", s):        # code devise isole
+                    devise = s
+                    continue
+                if RE_TITULAIRE.match(s) or RE_PAYS_TITULAIRE.match(s):
+                    break                               # bloc titulaire suivant
+                if re.search(r"\d", s) and not re.match(r"(?i)^\d{4}[/-]\d", s):
+                    return _norm((devise + " " + s).strip())[:60]
     return ""
 
 
@@ -287,20 +315,30 @@ def normaliser(record):
 
     groupe = _norm(record.get("procurement_group")).upper()
     pays_nom = _norm(record.get("project_ctry_name"))
+    origine = pays_titulaire(texte)
+    etranger = titulaire_etranger(origine, pays_nom)
+    if not etranger and not GARDER_LOCAUX:
+        return None                     # entrepreneur local : pas un prospect
+
     duree = duree_contrat(texte)
     titre = _norm(record.get("bid_description")) or _norm(record.get("project_name"))
-    secteur = LIBELLE_GROUPE.get(groupe, groupe or "Attribution")
+    morceaux = [titre] if titre else []
+    if origine and etranger:
+        morceaux.append("titulaire {}".format(origine))
     if duree:
-        secteur_affiche = secteur
-        titre = "{} (duree {})".format(titre, duree) if titre else titre
-    else:
-        secteur_affiche = secteur
+        morceaux.append("duree {}".format(duree))
+    titre = " · ".join(morceaux)
+
+    # BUG D'INTEGRATION CORRIGE : le dashboard resout le pays des attributions
+    # en mode ISO3 (resoudre_pays(..., "TED")). Ecrire "Mali" donnait
+    # "Non classe" ; il faut le CODE. Verifie le 18/07/2026.
+    iso3 = bm.code_iso3_pays(pays_nom)
 
     return {
         "date_maj": date.today().isoformat(),
         "gagnant": " ; ".join(gagnants),
-        "secteur": secteur_affiche,
-        "pays_execution": pays_nom,
+        "secteur": LIBELLE_GROUPE.get(groupe, groupe or "Attribution"),
+        "pays_execution": iso3 or pays_nom,
         "valeur_attribuee": montant_attribue(texte),
         "acheteur": _norm(record.get("project_name")) or "Banque Mondiale",
         "titre": titre[:300],
@@ -312,6 +350,8 @@ def normaliser(record):
         "a_demarcher": "oui",
         "_nb_gagnants": len(gagnants),
         "_duree": duree,
+        "_origine": origine,
+        "_etranger": etranger,
     }
 
 
@@ -352,7 +392,8 @@ def collecte(session=None):
 def construire(records):
     """Records bruts -> attributions normalisees, dedupliquees par identifiant."""
     sorties, vus = [], set()
-    motifs = {"type": 0, "groupe": 0, "pays": 0, "sans_gagnant": 0, "hors_fenetre": 0}
+    motifs = {"type": 0, "groupe": 0, "pays": 0, "sans_gagnant": 0,
+              "hors_fenetre": 0, "local": 0}
     for rec in records:
         ok, motif = record_retenu(rec)
         if not ok:
@@ -363,8 +404,10 @@ def construire(records):
             texte = rec.get("notice_text") or ""
             if not extraire_gagnants(texte):
                 motifs["sans_gagnant"] += 1
-            else:
+            elif not dans_la_fenetre(date_attribution(texte, rec)):
                 motifs["hors_fenetre"] += 1
+            else:
+                motifs["local"] += 1
             continue
         pub = ligne["publication_number"]
         if pub and pub in vus:
@@ -434,16 +477,17 @@ def main():
 
     attributions, motifs = construire(records)
     print("  ecartes -> groupe hors CS/CW : {groupe} | pays hors perimetre : {pays} | "
-          "sans gagnant lisible : {sans_gagnant} | hors fenetre : {hors_fenetre}".format(**motifs))
+          "sans gagnant lisible : {sans_gagnant} | hors fenetre : {hors_fenetre} | "
+          "titulaire local : {local}".format(**motifs))
     print("  {} attribution(s) exploitable(s).".format(len(attributions)))
 
     if DEBUG:
         print("\n--- MODE VERIFICATION (RADAR_BM_ATTRIB_DEBUG=1) : AUCUNE ECRITURE ---")
         for a in attributions[:25]:
-            print("  [{}] {} | {} | {} | {}{}".format(
-                a["date_publication"], a["gagnant"], a["pays_execution"],
-                a["secteur"], (a["valeur_attribuee"] or "montant n.c."),
-                (" | duree " + a["_duree"]) if a.get("_duree") else ""))
+            print("  [{}] {:38} | {} <- {} | {} | {}".format(
+                a["date_publication"], a["gagnant"][:38], a["pays_execution"],
+                (a.get("_origine") or "origine n.c."), a["secteur"],
+                (a["valeur_attribuee"] or "montant n.c.")))
         print("--- Verifie que les noms ci-dessus sont bien des entreprises. ---")
         return
 
