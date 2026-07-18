@@ -1,0 +1,35 @@
+name: Sonde sources
+
+# Diagnostic ponctuel, DECLENCHEMENT MANUEL UNIQUEMENT (workflow_dispatch).
+# Ne touche a rien : ni Google Sheet, ni etat, ni dashboard, ni publication.
+# Son unique role est de repondre a la question "cette source est-elle
+# accessible depuis l'infra GitHub Actions ?" AVANT d'ecrire un collecteur.
+#
+# UTILISATION : onglet Actions > "Sonde sources" > Run workflow.
+# Puis lire le journal de l'etape "Sonder les sources candidates".
+#
+# Une fois les verdicts obtenus, ce workflow et sonde_sources.py peuvent etre
+# supprimes du depot : aucun autre fichier n'en depend.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sonder:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Installer les dependances
+        run: pip install requests
+
+      - name: Sonder les sources candidates
+        run: python sonde_sources.py
