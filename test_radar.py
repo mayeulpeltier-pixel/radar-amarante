@@ -1075,9 +1075,10 @@ class TestAttributionsBM(unittest.TestCase):
 
     # -- Champs annexes ---------------------------------------------------
     def test_montant_avec_devise(self):
+        # USD 45 300 000 -> exprime en millions pour que le dashboard le lise.
         self.assertEqual(
             bm_attributions.montant_attribue(self._texte(self.BLOC_ETRANGER)),
-            "USD 45,300,000.00")
+            "USD 45.300 million")
 
     def test_date_attribution_depuis_notice_text(self):
         self.assertEqual(
@@ -1143,6 +1144,80 @@ class TestAttributionsBM(unittest.TestCase):
                "notice_text": self._texte(self.BLOC_ETRANGER, d=self._recent())}
         sorties, _m = bm_attributions.construire([rec, dict(rec)])
         self.assertEqual(len(sorties), 1)
+
+    def test_attribution_republiee_dedupliquee(self):
+        """La BM republie le meme marche sous plusieurs identifiants (constate :
+        BETH BETSALEEL SARL trois fois, meme jour, meme montant)."""
+        base = {"notice_type": "Contract Award", "procurement_group": "CW",
+                "project_ctry_name": "Mali", "bid_description": "Travaux",
+                "notice_text": self._texte(self.BLOC_ETRANGER, d=self._recent())}
+        a = dict(base, id="OP100")
+        b = dict(base, id="OP101")          # identifiant different, meme marche
+        sorties, motifs = bm_attributions.construire([a, b])
+        self.assertEqual(len(sorties), 1)
+        self.assertEqual(motifs["republie"], 1)
+
+    # -- Devises : conversion et lecture par le dashboard ------------------
+    def test_devise_non_dupliquee(self):
+        """Bug corrige : la sortie valait 'USD USD 7918777.87'."""
+        txt = ("<div>Bid Price at Opening</div><div>USD</div>"
+               "<div>USD 7918777.87</div>")
+        self.assertEqual(bm_attributions.montant_attribue(txt), "USD 7.919 million")
+
+    def test_conversion_devise_locale_en_usd(self):
+        """XOF 4 806 034 530 vaut ~8 M USD, pas 4 806 M."""
+        txt = "<div>Bid Price at Opening</div><div>XOF</div><div>4806034530</div>"
+        self.assertEqual(bm_attributions.montant_attribue(txt), "USD 8.010 million")
+
+    def test_petit_marche_ne_sature_pas_le_score(self):
+        """XAF 8 487 678 vaut ~14 000 USD : il doit peser le MINIMUM.
+        Bug corrige : il etait lu comme 8,5 M et scorait comme un marche moyen."""
+        try:
+            import radar_dashboard as dash
+        except Exception:
+            self.skipTest("radar_dashboard indisponible")
+        txt = "<div>Bid Price at Opening</div><div>XAF</div><div>8487678</div>"
+        valeur = bm_attributions.montant_attribue(txt)
+        self.assertLess(dash._valeur_en_millions(valeur), 1.0)
+
+    def test_gros_marche_bien_lu_par_le_dashboard(self):
+        try:
+            import radar_dashboard as dash
+        except Exception:
+            self.skipTest("radar_dashboard indisponible")
+        txt = ("<div>Bid Price at Opening</div><div>KZT</div>"
+               "<div>KZT 102797683320.75</div>")
+        valeur = bm_attributions.montant_attribue(txt)
+        self.assertGreater(dash._valeur_en_millions(valeur), 20.0)
+
+    def test_devise_inconnue_conserve_le_brut(self):
+        txt = "<div>Bid Price at Opening</div><div>QQQ</div><div>1234567</div>"
+        self.assertIn("1234567", bm_attributions.montant_attribue(txt))
+
+    # -- Pays bilingues et accents perdus ---------------------------------
+    def test_meme_pays_en_deux_langues_est_local(self):
+        """Faux positifs du journal : le titulaire etait ecrit en francais et
+        le projet en anglais, d'ou des entreprises LOCALES prises pour des
+        etrangeres (RDC, Cameroun, Benin)."""
+        for fr, en in (("Congo, Rpublique dmocratique du", "Congo, Democratic Republic of"),
+                       ("Cameroun", "Cameroon"), ("Bnin", "Benin")):
+            self.assertFalse(bm_attributions.titulaire_etranger(fr, en),
+                             "{} / {} devrait etre local".format(fr, en))
+
+    def test_vrais_etrangers_conserves(self):
+        for a, b in (("Chine", "Madagascar"), ("China", "Philippines"),
+                     ("Turquie", "Niger"), ("Burkina Faso", "Mali")):
+            self.assertTrue(bm_attributions.titulaire_etranger(a, b))
+
+    def test_niger_et_nigeria_ne_sont_pas_confondus(self):
+        """Piege classique : deux pays voisins aux noms proches."""
+        self.assertEqual(bm_attributions.iso3_pays_libre("Niger"), "NER")
+        self.assertEqual(bm_attributions.iso3_pays_libre("Nigeria"), "NGA")
+        self.assertTrue(bm_attributions.titulaire_etranger("Nigeria", "Niger"))
+
+    def test_les_deux_congo_distingues(self):
+        self.assertEqual(bm_attributions.iso3_pays_libre("Congo, Democratic Republic of"), "COD")
+        self.assertEqual(bm_attributions.iso3_pays_libre("Congo"), "COG")
 
 
 @unittest.skipIf(signaux_prives is None, "signaux_prives indisponible")
