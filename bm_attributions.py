@@ -83,7 +83,11 @@ COL_DETECTION = "date_detection"
 TOUTES_COLONNES = COLONNES + [COL_STATUT, COL_DETECTION]
 
 TYPE_ATTRIBUTION = "Contract Award"
-PAGES_MAX = int(os.environ.get("RADAR_BM_ATTRIB_PAGES", "12"))
+# Avec le tri par date decroissante, les premieres pages sont les plus
+# fraiches et la collecte s'arrete d'elle-meme en sortant de la fenetre.
+# On peut donc relever le plafond sans gaspiller : il ne sert plus que de
+# garde-fou en cas de tri non honore par l'API.
+PAGES_MAX = int(os.environ.get("RADAR_BM_ATTRIB_PAGES", "30"))
 
 # Groupes d'achat ou du personnel se deploie reellement.
 LIBELLE_GROUPE = {"CS": "Conseil / AT", "CW": "Travaux / BTP"}
@@ -241,6 +245,16 @@ TAUX_USD = {
     "PHP": 57.0, "IDR": 16000.0, "VND": 25000.0, "KHR": 4100.0, "LAK": 21500.0,
     "MMK": 2100.0, "IQD": 1310.0, "JOD": 0.71, "LBP": 89000.0, "AFN": 70.0,
     "HTG": 132.0, "COP": 4100.0, "PEN": 3.7, "BOB": 6.9, "ARS": 1100.0,
+    # Complement apres run reel du 18/07/2026 (BIF apparaissait non converti).
+    "BIF": 2950.0, "CDF": 2800.0, "RWF_": 1300.0, "DJF": 178.0,
+    "GNF": 8600.0, "LRD": 190.0, "SLE": 23.0, "SLL": 23000.0,
+    "MRU": 40.0, "GMD": 70.0, "CVE": 100.0, "KMF": 450.0, "SCR": 14.0,
+    "STN": 22.0, "BWP": 13.5, "NAD": 18.0, "SZL": 18.0, "LSL": 18.0,
+    "LYD": 4.8, "YER": 250.0, "SYP": 13000.0, "SSP": 4500.0,
+    "MVR": 15.4, "BTN": 84.0, "MNT": 3400.0, "PGK": 3.9, "FJD": 2.3,
+    "SBD": 8.4, "VUV": 119.0, "WST": 2.7, "TOP": 2.4, "XPF": 110.0,
+    "AMD": 390.0, "MDL": 17.5, "BAM": 1.8, "RSD": 108.0, "MKD": 57.0,
+    "ALL": 90.0, "TMT": 3.5, "IRR": 42000.0, "TWD": 32.0,
 }
 
 
@@ -486,33 +500,83 @@ def normaliser(record):
 # ===========================================================================
 
 def collecte(session=None):
-    """Pagine les attributions BM. Best-effort : une page en echec interrompt
-    la pagination sans faire echouer le run."""
+    """Pagine les attributions BM, LES PLUS RECENTES D'ABORD.
+
+    Le tri serveur (srt/ord, supporte par l'API de recherche BM) est essentiel :
+    sans lui, la pagination ramenait des avis dans un ordre arbitraire et le
+    plafond de pages etait atteint sur des attributions trop anciennes (577
+    ecartees "hors fenetre" au run du 18/07/2026, pour 12 pages sur 12 = plafond
+    sature). Trie, le meme budget de pages couvre les avis les PLUS FRAIS, et
+    l'on peut s'arreter des qu'on sort de la fenetre de mobilisation.
+
+    Best-effort : une page en echec interrompt la pagination sans faire echouer
+    le run. Si le tri n'etait pas honore, le comportement reste correct (on
+    lit simplement autant de pages qu'avant)."""
     session = session or ted.session_robuste()
-    records, stats = [], {"pages": 0, "recus": 0}
+    records, stats = [], {"pages": 0, "recus": 0, "arret": "plafond de pages"}
+    # Marge : la date de NOTIFICATION d'attribution (lue dans notice_text) peut
+    # preceder la date de publication de l'avis. On ne coupe donc pas au ras de
+    # la fenetre, sous peine de perdre des attributions encore valides.
+    marge = JOURS_FENETRE + 60
     for page in range(PAGES_MAX):
         params = {"format": "json", "rows": bm.ROWS_BM,
                   "os": page * bm.ROWS_BM,
-                  "notice_type_exact": TYPE_ATTRIBUTION}
+                  "notice_type_exact": TYPE_ATTRIBUTION,
+                  "srt": "noticedate", "ord": "desc"}
         try:
             rep = session.get(bm.BM_ENDPOINT, params=params, timeout=45)
             if rep.status_code >= 400:
                 print("(bm-attrib) page {} : HTTP {}, arret de la pagination.".format(
                     page, rep.status_code))
+                stats["arret"] = "erreur HTTP"
                 break
             data = rep.json()
         except Exception as e:
             print("(bm-attrib) page {} illisible ({}), arret.".format(page, e))
+            stats["arret"] = "reponse illisible"
             break
         lot = data.get("procnotices") or []
         if not lot:
+            stats["arret"] = "fin des donnees"
             break
         records.extend(lot)
         stats["pages"] += 1
         stats["recus"] += len(lot)
         if len(lot) < bm.ROWS_BM:
+            stats["arret"] = "fin des donnees"
+            break
+        if _page_trop_ancienne(lot, marge):
+            stats["arret"] = "avis anterieurs a la fenetre (tri par date)"
             break
     return records, stats
+
+
+def _page_trop_ancienne(lot, marge_jours, aujourdhui=None):
+    """Vrai si TOUS les avis de la page precedent la fenetre utile. Sert a
+    stopper la pagination une fois le tri par date epuise. Prudent : si aucune
+    date n'est lisible, on ne coupe pas."""
+    aujourdhui = aujourdhui or date.today()
+    limite = aujourdhui - timedelta(days=marge_jours)
+    vues = 0
+    for rec in lot:
+        d = _date_notice(rec)
+        if not d:
+            continue
+        vues += 1
+        if d >= limite:
+            return False
+    return vues > 0
+
+
+def _date_notice(record):
+    """Date de publication de l'avis ('17-Jul-2026'), ou None."""
+    brut = _norm(record.get("noticedate"))
+    for fmt in ("%d-%b-%Y", "%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(brut, fmt).date()
+        except (ValueError, TypeError):
+            continue
+    return None
 
 
 def construire(records):
@@ -608,8 +672,8 @@ def main():
           "(groupes {}, fenetre {} jours)...".format(
               "/".join(sorted(bm.BM_GROUPES_RETENUS)), JOURS_FENETRE))
     records, stats = collecte()
-    print("  {} enregistrement(s) recu(s) sur {} page(s).".format(
-        stats["recus"], stats["pages"]))
+    print("  {} enregistrement(s) recu(s) sur {} page(s) (arret : {}).".format(
+        stats["recus"], stats["pages"], stats.get("arret", "n.c.")))
 
     attributions, motifs = construire(records)
     print("  ecartes -> groupe hors CS/CW : {groupe} | pays hors perimetre : {pays} | "
