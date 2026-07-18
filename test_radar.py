@@ -1121,5 +1121,102 @@ class TestAttributionsBM(unittest.TestCase):
         self.assertEqual(len(sorties), 1)
 
 
+@unittest.skipIf(signaux_prives is None, "signaux_prives indisponible")
+class TestRendementWatchlist(unittest.TestCase):
+    """Rendement de la rotation privee (audit juillet 2026). Trois corrections
+    verrouillees ici : repartition du quota Adzuna, curseur honnete, et
+    colonne pays optionnelle."""
+
+    # -- Repartition du quota Adzuna ------------------------------------
+    def test_quota_reparti_donne_une_couverture_a_chacune(self):
+        """Le bug corrige : 7 pays x 35 entreprises = 245 appels pour un
+        plafond de 120. Les 18 dernieres entreprises n'avaient AUCUNE
+        couverture Adzuna. Desormais chacune recoit au moins un portail."""
+        q = signaux_prives.quota_pays_adzuna(120, 35, maxi=7)
+        self.assertGreaterEqual(q, 1)
+        self.assertLessEqual(q, 7)
+        # Simulation d'un run complet : personne ne doit finir a zero.
+        reste = 120
+        couvertures = []
+        for i in range(35):
+            quota = signaux_prives.quota_pays_adzuna(reste, 35 - i, maxi=7)
+            couvertures.append(quota)
+            reste -= quota
+        self.assertTrue(all(c >= 1 for c in couvertures),
+                        "une entreprise se retrouve sans couverture Adzuna")
+
+    def test_quota_nul_si_plus_d_appels(self):
+        self.assertEqual(signaux_prives.quota_pays_adzuna(0, 10), 0)
+        self.assertEqual(signaux_prives.quota_pays_adzuna(50, 0), 0)
+
+    def test_quota_large_quand_peu_d_entreprises(self):
+        # Peu d'entreprises : on peut interroger tous les portails.
+        self.assertEqual(signaux_prives.quota_pays_adzuna(120, 2, maxi=7), 7)
+
+    # -- Choix des portails ---------------------------------------------
+    def test_colonne_pays_adzuna_prioritaire(self):
+        compte = {"entreprise": "Acme", "pays_adzuna": "za, fr"}
+        self.assertEqual(signaux_prives.pays_pour_compte(compte, 2), ["za", "fr"])
+
+    def test_colonne_absente_repli_automatique(self):
+        # Aucune saisie : on prend les premiers portails par defaut.
+        pays = signaux_prives.pays_pour_compte({"entreprise": "Acme"}, 3)
+        self.assertEqual(pays, list(signaux_prives.ADZUNA_PAYS)[:3])
+
+    def test_quota_zero_ne_donne_aucun_portail(self):
+        self.assertEqual(signaux_prives.pays_pour_compte({"pays_adzuna": "fr"}, 0), [])
+
+    def test_pays_tronques_au_quota(self):
+        compte = {"pays_adzuna": "fr,gb,za,de"}
+        self.assertEqual(len(signaux_prives.pays_pour_compte(compte, 2)), 2)
+
+    # -- La liste de pays est bien transmise a la collecte ---------------
+    def test_collecter_adzuna_respecte_la_liste_fournie(self):
+        appeles = []
+
+        def faux(pays, params):
+            appeles.append(pays)
+            return {"results": []}
+
+        signaux_prives.collecter_adzuna("Acme", fetch=faux, session=object(),
+                                        pays=["fr", "za"])
+        self.assertEqual(appeles, ["fr", "za"])
+
+    def test_collecter_adzuna_sans_liste_garde_le_defaut(self):
+        """Retro-compatibilite : pays=None conserve le comportement historique."""
+        appeles = []
+
+        def faux(pays, params):
+            appeles.append(pays)
+            return {"results": []}
+
+        signaux_prives._ADZUNA_STATS.update({"appels": 0, "coupe": False})
+        signaux_prives.collecter_adzuna("Acme", fetch=faux, session=object())
+        self.assertEqual(appeles, list(signaux_prives.ADZUNA_PAYS))
+
+    # -- Colonne optionnelle lue depuis la watchlist ---------------------
+    def test_watchlist_lit_la_colonne_optionnelle(self):
+        valeurs = [["entreprise", "secteur", "actif", "pays_adzuna"],
+                   ["Sogea Satom", "BTP", "oui", "fr,za"]]
+        comptes = signaux_prives.lire_watchlist_multisecteurs(valeurs)
+        self.assertEqual(comptes[0]["pays_adzuna"], "fr,za")
+
+    def test_watchlist_sans_la_colonne_reste_valide(self):
+        """La colonne est OPTIONNELLE : son absence ne casse rien."""
+        valeurs = [["entreprise", "secteur", "actif"],
+                   ["Sogea Satom", "BTP", "oui"]]
+        comptes = signaux_prives.lire_watchlist_multisecteurs(valeurs)
+        self.assertEqual(comptes[0]["entreprise"], "Sogea Satom")
+        self.assertEqual(comptes[0]["pays_adzuna"], "")
+        self.assertEqual(signaux_prives.pays_pour_compte(comptes[0], 2),
+                         list(signaux_prives.ADZUNA_PAYS)[:2])
+
+    # -- Garde-temps ------------------------------------------------------
+    def test_garde_temps_configurable(self):
+        self.assertGreater(signaux_prives.MINUTES_MAX, 0)
+        self.assertLess(signaux_prives.MINUTES_MAX, 45,
+                        "le garde-temps doit rester sous le timeout du job (45 min)")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
