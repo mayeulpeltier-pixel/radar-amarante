@@ -74,6 +74,19 @@ jobs:
       #    if: always() => le dashboard se rafraichit meme si le radar a eu un
       #    souci, en lisant le dernier etat du Sheet. L'echec radar reste visible
       #    (le job est marque en echec, alerte mail) mais la page reste a jour.
+      # 3b) Attributions Banque Mondiale : titulaires nommes, en mobilisation.
+      #     Ecrit dans le MEME onglet que les attributions TED, donc remonte
+      #     automatiquement dans la lentille Titulaires et la fiche 360.
+      #     Isole : un echec ici n'empeche ni le dashboard ni la publication.
+      - name: Collecter les attributions Banque Mondiale
+        if: always()
+        env:
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          # Mettre a 1 pour verifier les noms extraits SANS rien ecrire.
+          RADAR_BM_ATTRIB_DEBUG: "1"
+        run: python bm_attributions.py
+
       - name: Generer le tableau de bord
         if: always()
         env:
