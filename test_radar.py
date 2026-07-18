@@ -1219,6 +1219,54 @@ class TestAttributionsBM(unittest.TestCase):
         self.assertEqual(bm_attributions.iso3_pays_libre("Congo, Democratic Republic of"), "COD")
         self.assertEqual(bm_attributions.iso3_pays_libre("Congo"), "COG")
 
+    # -- Couverture : tri par date et arret anticipe -----------------------
+    def test_page_ancienne_declenche_l_arret(self):
+        """Avec le tri par date decroissante, une page entierement anterieure a
+        la fenetre signifie qu'il n'y a plus rien d'utile en dessous."""
+        from datetime import date as _d, timedelta as _td
+        auj = _d(2026, 7, 18)
+        vieux = [{"noticedate": (auj - _td(days=900)).strftime("%d-%b-%Y")}] * 3
+        self.assertTrue(bm_attributions._page_trop_ancienne(vieux, 180, auj))
+
+    def test_page_recente_ne_coupe_pas(self):
+        from datetime import date as _d, timedelta as _td
+        auj = _d(2026, 7, 18)
+        lot = [{"noticedate": (auj - _td(days=900)).strftime("%d-%b-%Y")},
+               {"noticedate": (auj - _td(days=10)).strftime("%d-%b-%Y")}]
+        self.assertFalse(bm_attributions._page_trop_ancienne(lot, 180, auj))
+
+    def test_dates_illisibles_ne_coupent_jamais(self):
+        """Prudence : sans date exploitable, on ne s'arrete pas."""
+        lot = [{"noticedate": ""}, {"autre": "champ"}]
+        self.assertFalse(bm_attributions._page_trop_ancienne(lot, 180))
+
+    def test_collecte_demande_le_tri_par_date(self):
+        """Le tri serveur evite de saturer le plafond de pages sur des avis
+        anciens (577 ecartes hors fenetre au run du 18/07/2026)."""
+        vus = {}
+
+        class FausseSession:
+            def get(self, url, params=None, timeout=None):
+                vus.update(params or {})
+                class R:
+                    status_code = 200
+                    @staticmethod
+                    def json():
+                        return {"procnotices": []}
+                return R()
+
+        bm_attributions.collecte(session=FausseSession())
+        self.assertEqual(vus.get("srt"), "noticedate")
+        self.assertEqual(vus.get("ord"), "desc")
+
+    # -- Devises completees apres run reel ---------------------------------
+    def test_devise_africaine_convertie(self):
+        """BIF ressortait non converti au run du 18/07/2026."""
+        txt = "<div>Bid Price at Opening</div><div>BIF</div><div>63308997584</div>"
+        valeur = bm_attributions.montant_attribue(txt)
+        self.assertTrue(valeur.startswith("USD "), valeur)
+        self.assertIn("million", valeur)
+
 
 @unittest.skipIf(signaux_prives is None, "signaux_prives indisponible")
 class TestRendementWatchlist(unittest.TestCase):
