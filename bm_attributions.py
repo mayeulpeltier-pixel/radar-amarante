@@ -50,6 +50,7 @@ import os
 import re
 from datetime import date, datetime, timedelta
 
+import bitd_signaux as bitd
 import ted_complet_v14 as ted
 import ted_complet_bm as bm
 
@@ -150,6 +151,58 @@ def pays_titulaire(notice_text):
     return ""
 
 
+# --- Resolution de pays tolerante (anglais / francais / accents perdus) -----
+# Le notice_text est tantot anglais ("Congo, Democratic Republic of"), tantot
+# francais, et les accents y sont parfois perdus ("Rpublique dmocratique du",
+# "Bnin", "Chine"). Comparer les chaines brutes faisait passer des entreprises
+# LOCALES pour des etrangeres (constate le 18/07/2026 sur la RDC, le Cameroun,
+# le Benin). On resout donc les deux cotes en ISO3 avant de comparer.
+
+# Noms dont l'accent n'est pas desaccentue mais SUPPRIME par la source
+# ("Bénin" -> "Bnin", "Sénégal" -> "Sngal"). Desaccentuer ne suffit alors pas :
+# la lettre a disparu. Table explicite, limitee aux pays a risque concernes.
+ALIAS_TRONQUES = {
+    "bnin": "BEN", "sngal": "SEN", "guine": "GIN", "guine bissau": "GNB",
+    "guine quatoriale": "GNQ", "algrie": "DZA", "libria": "LBR",
+    "nigria": "NGA", "hati": "HTI", "gypte": "EGY", "thiopie": "ETH",
+    "rythre": "ERI", "mirats arabes unis": "ARE", "prou": "PER",
+    "vnzula": "VEN", "ouzbkistan": "UZB", "npal": "NPL", "zimbabw": "ZWE",
+    "camroun": "CMR", "trkiye": "TUR", "turkiye": "TUR",
+}
+
+
+def _cle_pays(nom):
+    """Cle comparable : minuscules, sans accents ni ponctuation."""
+    import unicodedata
+    s = unicodedata.normalize("NFD", str(nom or ""))
+    s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+    s = re.sub(r"[^A-Za-z ]", " ", s).lower()
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def iso3_pays_libre(nom):
+    """ISO3 depuis un nom de pays en anglais OU en francais. '' si inconnu.
+    Un pays inconnu ici (Chine, Turquie hors perimetre, "World") est hors de
+    l'univers de risque : le titulaire est donc bien etranger au chantier."""
+    cle = _cle_pays(nom)
+    if not cle:
+        return ""
+    # Cas ambigus ou reordonnes, traites par motif (les deux Congo surtout).
+    if "congo" in cle:
+        return "COD" if re.search(r"democr|dmocr|drc|rdc|kinshasa", cle) else "COG"
+    if "ivoire" in cle or "ivory" in cle:
+        return "CIV"
+    if "central african" in cle or "centrafric" in cle:
+        return "CAF"
+    if cle in ALIAS_TRONQUES:
+        return ALIAS_TRONQUES[cle]
+    for essai in (nom, cle):
+        code = bm.code_iso3_pays(essai)
+        if code:
+            return code
+    return bitd.NOM_VERS_ISO3.get(cle, "") or ""
+
+
 def titulaire_etranger(pays_titulaire_nom, pays_projet):
     """Vrai si le titulaire vient d'un autre pays que celui du chantier.
 
@@ -157,12 +210,47 @@ def titulaire_etranger(pays_titulaire_nom, pays_projet):
     propre ville n'achetera jamais de protection rapprochee internationale.
     Une entreprise etrangere qui arrive sur un chantier de 11 ans en zone a
     risque expatrie du personnel : c'est le prospect d'Amarante.
-    Sans information de pays, on repond True (on ne jette pas dans le doute)."""
-    a = _norm(pays_titulaire_nom).lower()
-    b = _norm(pays_projet).lower()
+    Sans information exploitable, on repond True (on ne jette pas dans le doute)."""
+    a, b = _norm(pays_titulaire_nom), _norm(pays_projet)
     if not a or not b:
         return True
-    return a != b
+    if _cle_pays(a) == _cle_pays(b):
+        return False
+    iso_a, iso_b = iso3_pays_libre(a), iso3_pays_libre(b)
+    if iso_a and iso_b:
+        return iso_a != iso_b
+    return True
+
+
+# --- Conversion des montants en USD ----------------------------------------
+# Les avis expriment le montant en devise LOCALE. Sans conversion, le poids de
+# valeur du mini-score est absurde : XAF 8 487 678 (~14 000 USD) etait lu comme
+# "8,5 M" et scorait comme un marche moyen, tandis que XOF 4 806 034 530
+# (~8 M USD) passait pour 4 806 M et saturait le score.
+# Taux APPROXIMATIFS (1 USD = N unites), suffisants pour des paliers a 1/5/20 M.
+# A reajuster si les paliers deviennent faux : c'est une table, pas un dogme.
+TAUX_USD = {
+    "USD": 1.0, "EUR": 0.92, "GBP": 0.78, "CHF": 0.88, "JPY": 155.0,
+    "XOF": 600.0, "XAF": 600.0, "MAD": 10.0, "TND": 3.1, "DZD": 135.0,
+    "EGP": 48.0, "NGN": 1500.0, "GHS": 15.0, "KES": 130.0, "TZS": 2600.0,
+    "UGX": 3700.0, "RWF": 1300.0, "ETB": 130.0, "SDG": 600.0, "SOS": 570.0,
+    "ZAR": 18.0, "ZMW": 26.0, "MWK": 1750.0, "MZN": 64.0, "AOA": 900.0,
+    "MGA": 4500.0, "MUR": 46.0, "KZT": 500.0, "UZS": 12800.0, "KGS": 87.0,
+    "TJS": 11.0, "AZN": 1.7, "GEL": 2.7, "UAH": 41.0, "TRY": 38.0,
+    "PKR": 280.0, "BDT": 120.0, "INR": 84.0, "LKR": 300.0, "NPR": 135.0,
+    "PHP": 57.0, "IDR": 16000.0, "VND": 25000.0, "KHR": 4100.0, "LAK": 21500.0,
+    "MMK": 2100.0, "IQD": 1310.0, "JOD": 0.71, "LBP": 89000.0, "AFN": 70.0,
+    "HTG": 132.0, "COP": 4100.0, "PEN": 3.7, "BOB": 6.9, "ARS": 1100.0,
+}
+
+
+def convertir_en_usd(devise, montant):
+    """Montant converti en USD, ou None si la devise est inconnue."""
+    taux = TAUX_USD.get(str(devise or "").upper())
+    if not taux or montant is None:
+        return None
+    return montant / taux
+
 
 
 
@@ -235,33 +323,71 @@ def date_attribution(notice_text, record):
 
 
 def montant_attribue(notice_text):
-    """Montant du contrat s'il figure dans l'avis, sinon chaine vide.
+    """Montant du contrat CONVERTI EN USD ("USD 8010057"), sinon chaine vide.
 
-    Sur les donnees reelles, l'etiquette ("Bid Price at Opening", "Contract
-    Amount"...) est sur sa propre ligne et la valeur suit, parfois precedee du
-    code devise ("PHP", "USD"). On balaie donc les lignes suivantes jusqu'a en
-    trouver une contenant des chiffres. Le montant alimente le poids de valeur
-    du mini-score des attributions : sans lui, tout retombe au minimum."""
+    Deux pieges corriges sur donnees reelles (18/07/2026) :
+      - la devise apparaissait deux fois ("USD USD 7918777.87") car la ligne de
+        valeur la reprend deja ;
+      - le montant etait laisse en devise locale, ce qui faussait gravement le
+        poids de valeur du mini-score (voir TAUX_USD).
+    Format de sortie "USD X million" : c'est le SEUL que
+    `_valeur_en_millions` du dashboard lise correctement sur toute la plage.
+    Son heuristique ne divise par un million qu'au-dela de 100 000, si bien
+    qu'un petit marche ("USD 14146") etait lu comme 14 146 MILLIONS. Le mot
+    "million" leve l'ambiguite quel que soit l'ordre de grandeur."""
     lignes = texte_en_lignes(notice_text)
     for label in LABELS_MONTANT:
         cible = label.lower()
         for i, ligne in enumerate(lignes):
             if not ligne.lower().startswith(cible):
                 continue
+            candidats = []
             reste = ligne[len(cible):].lstrip(" :")
-            if reste and re.search(r"\d", reste):
-                return _norm(reste)[:60]
+            if reste:
+                candidats.append(reste)
             devise = ""
-            for suivante in lignes[i + 1:i + 5]:
+            for suivante in lignes[i + 1:i + 6]:
                 s = _norm(suivante)
-                if re.fullmatch(r"[A-Z]{3}", s):        # code devise isole
-                    devise = s
+                if re.fullmatch(r"[A-Za-z]{3}", s):     # code devise isole
+                    devise = s.upper()
                     continue
                 if RE_TITULAIRE.match(s) or RE_PAYS_TITULAIRE.match(s):
                     break                               # bloc titulaire suivant
-                if re.search(r"\d", s) and not re.match(r"(?i)^\d{4}[/-]\d", s):
-                    return _norm((devise + " " + s).strip())[:60]
+                if re.search(r"\d", s):
+                    candidats.append(s)
+                    break
+            for cand in candidats:
+                valeur = _lire_montant(cand, devise)
+                if valeur:
+                    return valeur
     return ""
+
+
+def _lire_montant(texte, devise_contexte=""):
+    """'USD 7918777.87' ou '4806034530' -> 'USD 7918777'. '' si illisible."""
+    s = _norm(texte)
+    if re.match(r"(?i)^\d{4}[/-]\d", s):                # une date, pas un montant
+        return ""
+    m_dev = re.search(r"(?i)\b([A-Z]{3})\b", s)
+    # La devise de la ligne prime ; sinon celle vue juste au-dessus. On ne la
+    # concatene JAMAIS deux fois (bug "USD USD ...").
+    devise = (m_dev.group(1).upper() if m_dev else "") or devise_contexte
+    nombre = re.search(r"(\d[\d\s.,]*\d|\d)", s)
+    if not nombre:
+        return ""
+    brut = nombre.group(1).replace(" ", "")
+    # Separateurs : la virgule groupe les milliers, le point est decimal.
+    brut = brut.replace(",", "")
+    try:
+        montant = float(brut)
+    except ValueError:
+        return ""
+    if montant <= 0:
+        return ""
+    usd = convertir_en_usd(devise, montant)
+    if usd is None:
+        return "{} {:.0f}".format(devise, montant).strip()   # devise inconnue
+    return "USD {:.3f} million".format(usd / 1_000_000.0)
 
 
 def duree_contrat(notice_text):
@@ -393,7 +519,7 @@ def construire(records):
     """Records bruts -> attributions normalisees, dedupliquees par identifiant."""
     sorties, vus = [], set()
     motifs = {"type": 0, "groupe": 0, "pays": 0, "sans_gagnant": 0,
-              "hors_fenetre": 0, "local": 0}
+              "hors_fenetre": 0, "local": 0, "republie": 0}
     for rec in records:
         ok, motif = record_retenu(rec)
         if not ok:
@@ -412,7 +538,17 @@ def construire(records):
         pub = ligne["publication_number"]
         if pub and pub in vus:
             continue
+        # Dedoublonnage SECONDAIRE : la BM republie le meme marche sous
+        # plusieurs identifiants (constate : BETH BETSALEEL SARL trois fois le
+        # meme jour pour le meme montant). Meme titulaire + meme date + meme
+        # montant = meme attribution, on n'en garde qu'une.
+        empreinte = (ligne["gagnant"].lower(), ligne["date_publication"],
+                     ligne["valeur_attribuee"])
+        if empreinte in vus:
+            motifs["republie"] = motifs.get("republie", 0) + 1
+            continue
         vus.add(pub)
+        vus.add(empreinte)
         sorties.append(ligne)
     return sorties, motifs
 
@@ -478,7 +614,7 @@ def main():
     attributions, motifs = construire(records)
     print("  ecartes -> groupe hors CS/CW : {groupe} | pays hors perimetre : {pays} | "
           "sans gagnant lisible : {sans_gagnant} | hors fenetre : {hors_fenetre} | "
-          "titulaire local : {local}".format(**motifs))
+          "titulaire local : {local} | republie : {republie}".format(**motifs))
     print("  {} attribution(s) exploitable(s).".format(len(attributions)))
 
     if DEBUG:
