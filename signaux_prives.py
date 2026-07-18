@@ -52,6 +52,13 @@ ACTIVER = os.environ.get("RADAR_SIGNAUX_PRIVES", "1") != "0"
 
 # Anti rate-limit Google News (503) : pause entre entreprises + re-tentative.
 PAUSE_ENTREPRISE = float(os.environ.get("RADAR_PRIVES_PAUSE", "0.7"))
+
+# Garde-temps de la boucle entreprises (minutes). Le job GitHub est plafonne a
+# 45 min et cette boucle en est l'etape la plus longue. On s'arrete AVANT pour
+# que le run se termine normalement : etat commite, dashboard regenere, digest
+# envoye. Les entreprises non traitees sont reprises au run suivant grace au
+# curseur honnete. Reglable si tu elargis la fenetre (RADAR_PRIVES_ENTREPRISES).
+MINUTES_MAX = float(os.environ.get("RADAR_PRIVES_MINUTES", "25"))
 PAUSE_REPLI = 2.5   # attente avant la 2e (et derniere) tentative sur 503
 PAUSE_LOCALE = float(os.environ.get("RADAR_PRIVES_PAUSE_LOCALE", "0.4"))  # entre 2 locales
 
@@ -188,6 +195,9 @@ def lire_watchlist_multisecteurs(valeurs):
         return entetes.index(nom) if nom in entetes else -1
     i_ent, i_sec = idx("entreprise"), idx("secteur")
     i_act, i_req = idx("actif"), idx("requete_optionnelle")
+    # Colonne OPTIONNELLE : portails Adzuna a privilegier pour cette entreprise
+    # (ex. "fr,za"). Absente -> repartition automatique, aucune saisie requise.
+    i_pays = idx("pays_adzuna")
     comptes = []
     for row in valeurs[1:]:
         get = lambda i: (row[i].strip() if 0 <= i < len(row) else "")
@@ -200,6 +210,7 @@ def lire_watchlist_multisecteurs(valeurs):
             "entreprise": ent,
             "secteur": get(i_sec) or "Autre",
             "requete_personnalisee": get(i_req),
+            "pays_adzuna": get(i_pays),
             "priorite_socle": "moyenne",
             "angle_contact": "Entreprise deployant du personnel en zone a risque.",
         })
@@ -301,11 +312,53 @@ def _iso_vers_rfc822(iso):
         return ""
 
 
-def collecter_adzuna(entreprise, fetch=None, session=None):
+def quota_pays_adzuna(reste_appels, reste_entreprises, maxi=None):
+    """Nombre de portails Adzuna a interroger pour l'entreprise courante.
+
+    POURQUOI : le plafond ADZUNA_MAX_APPELS est GLOBAL au run. Avec 7 pays par
+    entreprise et un plafond de 120, seules les ~17 premieres entreprises d'une
+    fenetre de 35 recevaient une couverture Adzuna ; les 18 suivantes n'en
+    avaient AUCUNE, silencieusement. On repartit donc le quota restant sur les
+    entreprises restantes, pour que chacune ait au moins un portail.
+
+    Toujours >= 1 tant qu'il reste des appels : mieux vaut un portail pour
+    tout le monde que sept pour la moitie."""
+    maxi = len(ADZUNA_PAYS) if maxi is None else maxi
+    if reste_appels <= 0 or reste_entreprises <= 0:
+        return 0
+    return max(1, min(maxi, reste_appels // reste_entreprises))
+
+
+def pays_pour_compte(compte, quota):
+    """Portails Adzuna a interroger pour ce compte, dans l'ordre de pertinence.
+
+    Priorite a la colonne OPTIONNELLE `pays_adzuna` de la watchlist (ex.
+    "fr,za") quand l'analyste l'a renseignee : c'est lui qui sait ou une
+    entreprise publie ses offres. Sinon on prend les premiers d'ADZUNA_PAYS,
+    dont l'ordre est deja classe par rendement observe. Aucune saisie n'est
+    requise : la colonne absente, le comportement reste automatique."""
+    if quota <= 0:
+        return []
+    brut = str((compte or {}).get("pays_adzuna") or "").strip()
+    if brut:
+        choisis = [p.strip().lower() for p in brut.replace(";", ",").split(",") if p.strip()]
+        if choisis:
+            return choisis[:quota]
+    return list(ADZUNA_PAYS)[:quota]
+
+
+def collecter_adzuna(entreprise, fetch=None, session=None, pays=None):
     """Offres d'emploi mentionnant un pays a risque pour cette entreprise.
     Interroge les portails Adzuna des pays sieges (France, UK...). Renvoie des
     'articles' au meme format que Google News (titre/lien/date/resume), pour
     passer dans le meme pipeline d'analyse.
+
+    `pays` : liste de portails a interroger POUR CETTE ENTREPRISE. Si None, on
+    retombe sur ADZUNA_PAYS (comportement historique). Ce parametre existe car
+    le plafond d'appels est GLOBAL au run : sans repartition, les premieres
+    entreprises de la fenetre consommaient tout le quota et les suivantes
+    n'avaient aucune couverture Adzuna (perte silencieuse du signal de
+    deploiement le mieux date). Voir quota_pays_adzuna().
 
     `fetch` injectable pour tests : callable(pays, params) -> dict JSON.
     Sans cle et sans fetch : renvoie [] (source simplement inactive)."""
@@ -313,7 +366,7 @@ def collecter_adzuna(entreprise, fetch=None, session=None):
         return []
     session = session or ted.session_robuste()
     articles = []
-    for pays in ADZUNA_PAYS:
+    for pays in (ADZUNA_PAYS if pays is None else pays):
         if _ADZUNA_STATS["coupe"] or _ADZUNA_STATS["appels"] >= ADZUNA_MAX_APPELS:
             break
         params = {
@@ -517,13 +570,15 @@ def collecter_news(entreprise, requete="", session=None):
     return articles[:MAX_ARTICLES_PRIVE]
 
 
-def collecter_signaux(entreprise, requete, session=None, fetch_adzuna=None):
+def collecter_signaux(entreprise, requete, session=None, fetch_adzuna=None,
+                      pays_adzuna=None):
     """Fusionne les sources, ADZUNA EN PREMIER puis Google News multi-locale,
     dedup par URL. Adzuna est prioritaire car une offre d'emploi ("Country
     Manager Mali", "HSE Supervisor Iraq") est le signal de deploiement le plus
     net et le mieux date ; en le placant en tete, il passe l'analyse avant que
     le budget LLM du run ne s'epuise sur des articles de presse plus bruites."""
-    articles = collecter_adzuna(entreprise, fetch=fetch_adzuna, session=session)
+    articles = collecter_adzuna(entreprise, fetch=fetch_adzuna, session=session,
+                                pays=pays_adzuna)
     articles += collecter_news(entreprise, requete, session=session)
     vus, uniques = set(), []
     for a in articles:
@@ -536,7 +591,7 @@ def collecter_signaux(entreprise, requete, session=None, fetch_adzuna=None):
 
 def traiter_entreprise(compte, deja_vus, cles_existantes, appel=None,
                        appel_verif=None, session=None, budget=None,
-                       vus_ce_run=None, fetch_adzuna=None):
+                       vus_ce_run=None, fetch_adzuna=None, pays_adzuna=None):
     """Renvoie les signaux retenus pour une entreprise (dedup par evenement).
     Reutilise le scoring, la verification Sonnet et la memoire de BITD."""
     entreprise = compte.get("entreprise", "").strip()
@@ -547,7 +602,8 @@ def traiter_entreprise(compte, deja_vus, cles_existantes, appel=None,
     retenus = {}
 
     for article in collecter_signaux(entreprise, requete, session=session,
-                                     fetch_adzuna=fetch_adzuna):
+                                     fetch_adzuna=fetch_adzuna,
+                                     pays_adzuna=pays_adzuna):
         if not bitd.article_frais(article):
             _dbg(article, "rejetee: annonce trop ancienne")
             continue
@@ -701,16 +757,35 @@ def main():
     n = len(comptes)
     debut = curseur % n if n else 0
     fenetre = [comptes[(debut + i) % n] for i in range(min(taille_fenetre, n))]
-    prochain = (debut + len(fenetre)) % n
+    print("Watchlist : {} compte(s) au total. Fenetre de ce run : {} "
+          "(curseur {} -> ...).".format(n, len(fenetre), debut))
 
     budget = {"reste": bitd.MAX_ANALYSES_PAR_RUN}
     vus_ce_run = set()
     t0 = time.time()
     resultats = []
+    traitees = 0                  # entreprises REELLEMENT traitees (curseur)
+    arret = ""
     for i, compte in enumerate(fenetre, start=1):
+        # Garde-temps : le job GitHub est plafonne (45 min) et cette boucle est
+        # la plus longue du run. Sans cet arret propre, un depassement tuerait
+        # TOUT le job : etat non commite, dashboard non regenere, digest non
+        # envoye. On prefere traiter moins d'entreprises et finir le run.
+        ecoule = (time.time() - t0) / 60.0
+        if ecoule >= MINUTES_MAX:
+            arret = "garde-temps ({:.0f} min)".format(ecoule)
+            print("  (garde-temps atteint apres {:.0f} min, arret propre)".format(ecoule))
+            break
+
+        # Repartition du quota Adzuna sur les entreprises RESTANTES : chacune
+        # garde une couverture, au lieu que les premieres epuisent le plafond.
+        quota = quota_pays_adzuna(
+            ADZUNA_MAX_APPELS - _ADZUNA_STATS["appels"], len(fenetre) - i + 1)
         signaux = traiter_entreprise(
             compte, deja_vus, cles_existantes, session=None,
-            budget=budget, vus_ce_run=vus_ce_run)
+            budget=budget, vus_ce_run=vus_ce_run,
+            pays_adzuna=pays_pour_compte(compte, quota))
+        traitees = i
         for s in signaux:
             cles_existantes.add(bitd.clef_evenement(
                 s["entreprise"], s["sc"]["nom"], ""))  # anti-doublon intra-run
@@ -718,9 +793,20 @@ def main():
         etat = "{} signal(aux)".format(len(signaux)) if signaux else "0 signal"
         print("  [{:>3}/{}] {:34} : {}".format(i, len(fenetre), compte["entreprise"][:34], etat))
         if budget["reste"] <= 0:
+            arret = "budget d'analyses epuise"
             print("  (budget d'analyses epuise, on s'arrete proprement)")
             break
         time.sleep(PAUSE_ENTREPRISE)   # respiration anti rate-limit Google News
+
+    # CURSEUR HONNETE : il n'avance que des entreprises REELLEMENT traitees.
+    # Avant, il etait calcule sur la fenetre entiere AVANT la boucle : un arret
+    # anticipe (budget epuise) faisait sauter les entreprises non traitees, qui
+    # n'etaient alors revues qu'au cycle suivant. Elles sont desormais reprises
+    # des le prochain run.
+    prochain = (debut + traitees) % n if n else 0
+    if arret and traitees < len(fenetre):
+        print("  -> {} entreprise(s) non traitee(s) ({}) : elles seront reprises "
+              "au prochain run.".format(len(fenetre) - traitees, arret))
 
     print("Temps moteur : {:.0f}s. Signaux retenus : {}. Prochain curseur : {}.".format(
         time.time() - t0, len(resultats), prochain))
