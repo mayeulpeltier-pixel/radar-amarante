@@ -118,15 +118,17 @@ RE_DATE = re.compile(
     r"\b(\d{1,2})[-/\s]([A-Za-z]{3,9}|\d{1,2})[-/\s](\d{4})\b|\b(\d{4})-(\d{2})-(\d{2})\b")
 RE_REFERENCE = re.compile(r"^[A-Z0-9][A-Z0-9/_.\-]{5,}$")
 
-# Types d'avis courants sur UNGM : ce sont des LIBELLES DE PROCEDURE, jamais
-# le nom de l'agence emettrice. Sans cette liste, "Request for Proposal" etait
-# pris pour l'acheteur (constate au premier essai du parseur).
+# Types d'avis courants sur UNGM. La cellule doit correspondre ENTIEREMENT au
+# libelle : un titre comme "ITB for Supply of veterinary drugs" commence par un
+# type mais n'en est pas un (constate sur donnees reelles le 20/07/2026, il
+# etait pris pour le type et le vrai type devenait le titre).
 RE_TYPE_AVIS = re.compile(
-    r"(?i)^(request for (proposal|quotation|information|expression)"
-    r"|invitation to bid|invitation for bids?|expression of interest"
-    r"|call for (proposals?|expressions?)|pre[- ]?qualification"
-    r"|notice of|general procurement notice|advance procurement notice"
-    r"|tender|rfp|rfq|rfi|itb|eoi)\b")
+    r"(?i)^(request for (proposals?|quotations?|information|expressions? of interest)"
+    r"|invitation to bids?|invitation for bids?|expressions? of interest"
+    r"|calls? for (proposals?|expressions?( of interest)?)"
+    r"|pre[- ]?qualification( notice)?|general procurement notice"
+    r"|advance procurement notice|procurement notice|notice of award"
+    r"|tender( notice)?|rfp|rfq|rfi|itb|eoi)$")
 
 # Agences ONU et apparentees. Sert a reconnaitre l'emetteur quelle que soit la
 # position de la colonne. La liste n'a pas besoin d'etre exhaustive : un nom
@@ -185,7 +187,7 @@ def extraire_lignes(html_brut):
         m = RE_ID.search(bloc)
         if not m:
             continue                      # ligne d'en-tete ou de mise en forme
-        cellules = [_texte(c) for c in RE_CELLULE.findall(bloc)]
+        cellules = [nettoyer_cellule(_texte(c)) for c in RE_CELLULE.findall(bloc)]
         cellules = [c for c in cellules if c]
         if cellules:
             lignes.append({"id": m.group(1), "cellules": cellules})
@@ -225,6 +227,170 @@ def _iso3_depuis_texte(txt):
     return _pays.iso3_pays_libre(cle) or ""
 
 
+# Cellule de service presente sur CHAQUE ligne (boutons UNGM Pro) : aucun
+# contenu metier, on l'ecarte avant toute interpretation.
+RE_BRUIT = re.compile(r"(?i)(unsave|save) this procurement opportunity|subscribe to ungm pro")
+# Suffixes d'accessibilite colles aux libelles cliquables.
+RE_SUFFIXE = re.compile(r"(?i)\s*open in a new window\s*$")
+# Les cellules de date portent l'heure, le fuseau, et un flottant technique
+# ("20-Aug-2026 04:00 (GMT 3.00) 30.6971513338947") : on ne garde que la date.
+RE_RESIDU_DATE = re.compile(r"(?i)\s*\d{1,2}:\d{2}.*$")
+
+
+def nettoyer_cellule(txt):
+    """Retire le bruit d'interface d'une cellule. '' si la cellule est
+    purement technique."""
+    t = re.sub(r"\s+", " ", str(txt or "")).strip()
+    if not t or RE_BRUIT.search(t):
+        return ""
+    return RE_SUFFIXE.sub("", t).strip()
+
+
+# --- Detection du pays : UNGM N'A PAS DE COLONNE PAYS ----------------------
+# Constate sur donnees reelles le 20/07/2026 : le tableau de resultats expose
+# titre, echeance, publication, agence, type et reference, mais AUCUN pays.
+# Le pays se trouve en revanche dans le titre ("...for the WHO Djibouti") et
+# souvent code dans la reference ("EM/ACO/DJI/P/0009332" -> DJI). On tente donc
+# ces deux pistes gratuites avant d'envisager la page de detail.
+
+def _table_pays():
+    """Noms de pays -> ISO3, anglais ET francais, les plus longs d'abord.
+    L'ordre est essentiel : sans lui, "South Sudan" serait reconnu comme
+    "Sudan" et le lead atterrirait dans le mauvais pays."""
+    table = {}
+    try:
+        import ted_complet_bm as _bm
+        table.update({k.lower(): v for k, v in
+                      getattr(_bm, "PAYS_NOM_VERS_ISO3", {}).items()})
+    except Exception:
+        pass
+    try:
+        import bitd_signaux as _bitd
+        for k, v in getattr(_bitd, "NOM_VERS_ISO3", {}).items():
+            table.setdefault(k.lower(), v)
+    except Exception:
+        pass
+    return sorted(table.items(), key=lambda kv: -len(kv[0]))
+
+
+_TABLE_PAYS = None
+
+
+def pays_depuis_texte(txt):
+    """ISO3 d'un pays CITE dans un texte libre (titre d'avis). '' si aucun.
+    Recherche par mot entier pour eviter qu'un fragment ne declenche une
+    fausse detection."""
+    global _TABLE_PAYS
+    if _TABLE_PAYS is None:
+        _TABLE_PAYS = _table_pays()
+    bas = " " + re.sub(r"[^a-zA-ZÀ-ÿ ]", " ", str(txt or "")).lower() + " "
+    bas = re.sub(r"\s+", " ", bas)
+    for nom, iso in _TABLE_PAYS:
+        if len(nom) < 4:
+            continue                      # trop court : trop de faux positifs
+        if " " + nom + " " in bas:
+            return iso
+    return ""
+
+
+def pays_depuis_reference(ref):
+    """ISO3 code dans une reference d'avis ("EM/ACO/DJI/P/0009332" -> DJI).
+    On n'accepte qu'un segment de 3 lettres qui EST un code pays connu ; les
+    segments internes comme "ACO" ou "ROAS" ne matchent rien et sont ignores."""
+    segments = re.split(r"[^A-Za-z]+", str(ref or ""))
+    for seg in segments:
+        if len(seg) != 3:
+            continue
+        iso = seg.upper()
+        if iso in ted.MULTIPLICATEUR_ZONE:
+            return iso
+    return ""
+
+
+def detecter_pays(champs):
+    """Cascade de detection, de la piste la plus sure a la plus indirecte."""
+    if champs.get("pays"):
+        return champs["pays"], "cellule"
+    iso = pays_depuis_texte(champs.get("titre", ""))
+    if iso:
+        return iso, "titre"
+    iso = pays_depuis_reference(champs.get("reference", ""))
+    if iso:
+        return iso, "reference"
+    for autre in champs.get("autres", []):
+        iso = pays_depuis_texte(autre)
+        if iso:
+            return iso, "autre cellule"
+    return "", ""
+
+
+def diagnostic_pays(session=None, ident_exemple=""):
+    """DIAGNOSTIC (mode verification seulement) : cherche par ou obtenir le
+    pays, puisque le tableau de resultats ne l'expose pas.
+
+    Deux pistes imprimees pour arbitrage :
+      A. le formulaire de filtres de la page publique, qui contient la liste
+         des pays et leurs identifiants internes. Si on les recupere, on peut
+         interroger UNGM PAYS PAR PAYS et connaitre le pays avec certitude,
+         sans plus dependre du titre.
+      B. la page de detail d'un avis, ou le pays est peut-etre affiche.
+    N'ecrit rien, n'echoue jamais."""
+    session = session or ted.session_robuste()
+
+    print("\n[3] Piste A : liste des pays dans le formulaire de filtres")
+    try:
+        rep = session.get(PAGE_PUBLIQUE, headers=ENTETES, timeout=45)
+        html = rep.text or ""
+        print("    GET {} -> HTTP {} ({} octets)".format(
+            PAGE_PUBLIQUE, rep.status_code, len(rep.content)))
+        motifs = [
+            (r'<option[^>]*value="([^"]+)"[^>]*>\s*([^<]{3,40})\s*</option>', "option"),
+            (r'data-value="([^"]+)"[^>]*>\s*([^<]{3,40})\s*<', "data-value"),
+            (r'<li[^>]*data-id="([^"]+)"[^>]*>\s*([^<]{3,40})\s*<', "li data-id"),
+        ]
+        # On ne retient que les entrees dont le LIBELLE est un pays connu :
+        # c'est ce qui distingue la liste des pays des autres filtres.
+        for motif, nom in motifs:
+            paires = re.findall(motif, html, re.I | re.S)
+            trouves = []
+            for val, lib in paires:
+                iso = _iso3_depuis_texte(lib.strip())
+                if iso:
+                    trouves.append((iso, val.strip(), lib.strip()))
+            if trouves:
+                print("    via {} : {} pays reconnus. Exemples :".format(nom, len(trouves)))
+                for iso, val, lib in trouves[:12]:
+                    print("        {} -> identifiant {!r} ({})".format(iso, val, lib))
+                break
+        else:
+            print("    aucune liste de pays reconnue dans la page. "
+                  "Piste A a abandonner, voir piste B.")
+    except Exception as e:
+        print("    echec piste A : {}".format(e))
+
+    print("\n[4] Piste B : le pays figure-t-il sur la page de detail d'un avis ?")
+    if not ident_exemple:
+        print("    (aucun avis a tester)")
+        return
+    url = LIEN_AVIS.format(ident_exemple)
+    try:
+        rep = session.get(url, headers=ENTETES, timeout=45)
+        html = rep.text or ""
+        print("    GET {} -> HTTP {} ({} octets)".format(url, rep.status_code, len(rep.content)))
+        texte = _texte(html)
+        # On cherche les libelles qui precedent habituellement un pays.
+        for etiquette in ("Beneficiary countries", "Beneficiary country",
+                          "Country", "Duty station", "Place of delivery",
+                          "Pays", "Location"):
+            m = re.search(r"(?i)" + re.escape(etiquette) + r"\s*:?\s*(.{0,90})", texte)
+            if m:
+                print("    {!r} -> {!r}".format(etiquette, m.group(1).strip()[:90]))
+        iso = pays_depuis_texte(texte[:6000])
+        print("    pays reconnu dans le debut de page : {}".format(iso or "AUCUN"))
+    except Exception as e:
+        print("    echec piste B : {}".format(e))
+
+
 def interpreter_ligne(cellules):
     """Cellules brutes -> champs identifies PAR LEUR CONTENU.
 
@@ -237,7 +403,9 @@ def interpreter_ligne(cellules):
             pays = iso
             continue
         d = lire_date(c)
-        if d and len(c) <= 40:            # une cellule courte contenant une date
+        if d and RE_DATE.match(RE_RESIDU_DATE.sub("", c).strip()):
+            # La cellule EST une date (eventuellement suivie d'une heure, d'un
+            # fuseau et d'un flottant technique), et non un texte qui en cite une.
             dates.append(d)
             continue
         if not reference and RE_REFERENCE.match(c) and any(ch.isdigit() for ch in c):
@@ -296,7 +464,7 @@ def normaliser(ligne):
     """Ligne UNGM -> avis dict compatible ted.appeler_llm / ted.calculer_scores.
     None si hors perimetre (pays non suivi, avis trop ancien, titre vide)."""
     champs = interpreter_ligne(ligne.get("cellules") or [])
-    iso3 = champs["pays"]
+    iso3, origine_pays = detecter_pays(champs)
     if not iso3 or iso3 not in ted.MULTIPLICATEUR_ZONE:
         return None
     if not champs["titre"]:
@@ -318,6 +486,7 @@ def normaliser(ligne):
         "date_publication": champs["date_publication"],
         "pays_execution_incertitude": False,
         "_reference": champs["reference"],
+        "_origine_pays": origine_pays,
     }
 
 
@@ -378,7 +547,8 @@ def construire(lignes):
             avis.append(a)
             continue
         champs = interpreter_ligne(ligne.get("cellules") or [])
-        if not champs["pays"] or champs["pays"] not in ted.MULTIPLICATEUR_ZONE:
+        iso, _ = detecter_pays(champs)
+        if not iso or iso not in ted.MULTIPLICATEUR_ZONE:
             motifs["sans_pays"] += 1
         elif not champs["titre"]:
             motifs["sans_titre"] += 1
@@ -497,14 +667,20 @@ def main():
     avis, motifs = construire(lignes)
     print("  ecartes -> pays hors perimetre : {sans_pays} | sans titre : "
           "{sans_titre} | hors fenetre : {hors_fenetre}".format(**motifs))
-    print("  {} avis exploitable(s).".format(len(avis)))
+    voies = {}
+    for a_ in avis:
+        v = a_.get("_origine_pays") or "?"
+        voies[v] = voies.get(v, 0) + 1
+    print("  {} avis exploitable(s){}.".format(
+        len(avis), " (pays via {})".format(voies) if voies else ""))
 
     if DEBUG:
         print("\n--- MODE VERIFICATION (RADAR_UNGM_DEBUG=1) : AUCUNE ECRITURE ---")
         print("\n[1] Avis interpretes :")
         for a in avis[:20]:
-            print("  {} | {} | {} | pub {} | deadline {}".format(
-                a["pays_execution"], a["acheteur"][:28], a["titre"][:60],
+            print("  {} (via {}) | {} | {} | pub {} | fin {}".format(
+                a["pays_execution"], a.get("_origine_pays") or "?",
+                a["acheteur"][:20], a["titre"][:52],
                 a["date_publication"] or "n.c.", a["deadline"] or "n.c."))
         print("\n[2] Structure BRUTE des 3 premieres lignes (pour corriger le")
         print("    parseur si l'interpretation ci-dessus est fausse) :")
@@ -513,7 +689,10 @@ def main():
                 ligne["id"], len(ligne["cellules"])))
             for i, c in enumerate(ligne["cellules"]):
                 print("      [{}] {}".format(i, c[:110]))
-        print("\n--- Verifie que pays, titre et dates sont au bon endroit. ---")
+        # Le pays n'est PAS dans le tableau : on diagnostique par ou l'obtenir.
+        diagnostic_pays(ident_exemple=lignes[0]["id"] if lignes else "")
+        print("\n--- Verifie que titre, agence et dates sont au bon endroit,")
+        print("    puis lis les pistes [3] et [4] pour la question du pays. ---")
         return
 
     sheet_id = os.environ.get("TED_SHEET_ID")
