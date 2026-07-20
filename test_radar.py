@@ -1926,5 +1926,83 @@ class TestAppelsInterModules(unittest.TestCase):
                          "attributs inexistants dans ted_complet_v14 : {}".format(manquants))
 
 
+@unittest.skipIf(radar_dashboard is None or ungm_radar is None,
+                 "radar_dashboard ou ungm_radar indisponible")
+class TestCablageUNGMDashboard(unittest.TestCase):
+    """Branchement de la source UNGM au tableau de bord. Le schema etant
+    identique a celui d'AfDB, le cablage est mecanique ; ces tests verifient
+    qu'aucun des points de branchement n'a ete oublie."""
+
+    def _ligne_onglet(self):
+        """Ligne telle que le collecteur l'ecrit REELLEMENT dans l'onglet."""
+        avis = {"acheteur": "UNOPS", "pays_acheteur": "", "pays_execution": "AFG",
+                "titre": "Construction of Three Water Points",
+                "type_notice": "Invitation to bid", "phase": "avis",
+                "lien_avis": "https://www.ungm.org/Public/Notice/307870",
+                "publication_number": "UNGM-307870",
+                "deadline": "2026-08-02", "date_publication": "2026-07-20"}
+        extraction = ungm_radar.ted.normaliser_securite({
+            "type_client": "organisation_internationale",
+            "type_mobilite": "terrain_isole",
+            "profil_personnes_exposees": "expert_international",
+            "duree_estimee": "longue_ou_residente",
+            "accessibilite_commerciale": "facile",
+            "securite_existante": "aucune", "deploiement_terrain_reel": True,
+            "niveau_opportunite_amarante": "FORT",
+            "profils_acteurs_probables": [], "justification": "x",
+            "confiance": "haute"})
+        valeurs = ungm_radar.ligne_depuis_resultat(
+            {"avis": avis, "extraction": extraction, "surete": 8.0,
+             "commercial": 6.5, "final": 7.2, "raffine": False})
+        return dict(zip(ungm_radar.COLONNES_UNGM, valeurs))
+
+    def test_lead_construit_depuis_l_onglet(self):
+        leads = radar_dashboard.construire_leads(
+            [], [], [], {}, [], [], [], [], [], lignes_ungm=[self._ligne_onglet()])
+        self.assertEqual(len(leads), 1)
+        self.assertEqual(leads[0]["src"], "UNGM")
+
+    def test_pays_resolu_en_iso3_pas_non_classe(self):
+        """UNGM ecrit des ISO3 : la source doit figurer dans la liste ISO de
+        resoudre_pays, sinon tous les avis tombent en 'Non classé'."""
+        leads = radar_dashboard.construire_leads(
+            [], [], [], {}, [], [], [], [], [], lignes_ungm=[self._ligne_onglet()])
+        self.assertEqual(leads[0]["pays"], "Afghanistan")
+        self.assertNotEqual(leads[0]["zone"], "Non classé")
+
+    def test_cible_commerciale_renseignee(self):
+        """Le titulaire deploie, pas l'agence : la cible doit le dire."""
+        leads = radar_dashboard.construire_leads(
+            [], [], [], {}, [], [], [], [], [], lignes_ungm=[self._ligne_onglet()])
+        self.assertTrue(leads[0]["cible"])
+
+    def test_points_de_branchement_dans_le_gabarit(self):
+        html = radar_dashboard.GABARIT_HTML
+        for nom, marqueur in (("badge CSS", ".src.ungm{"),
+                              ("bouton de filtre", 'data-src="UNGM"'),
+                              ("libelle de carte", "UNGM:'UNGM · ONU'"),
+                              ("libelle du bandeau", "UNGM:'UNGM (agences ONU)'"),
+                              ("lentille avis", "l.src==='UNGM'")):
+            self.assertIn(marqueur, html, "point de branchement absent : {}".format(nom))
+
+    def test_lead_present_dans_le_json_embarque(self):
+        import json as _json, re as _re
+        leads = radar_dashboard.construire_leads(
+            [], [], [], {}, [], [], [], [], [], lignes_ungm=[self._ligne_onglet()])
+        html = radar_dashboard.generer_html(leads, [])
+        m = _re.search(r"const LEADS = (\[.*?\]);\n", html, _re.S)
+        self.assertIsNotNone(m, "bloc LEADS introuvable")
+        js = _json.loads(m.group(1))
+        self.assertEqual(js[0]["src"], "UNGM")
+        self.assertEqual(js[0]["pays"], "Afghanistan")
+
+    def test_absence_de_l_onglet_ne_casse_rien(self):
+        """Au premier run l'onglet n'existe pas encore : le dashboard doit se
+        generer normalement, comme il le fait deja pour adb_radar."""
+        leads = radar_dashboard.construire_leads([], [], [], {}, [], [], [], [], [])
+        html = radar_dashboard.generer_html(leads, [])
+        self.assertIn("<html", html.lower())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
