@@ -1713,6 +1713,80 @@ class TestUNGM(unittest.TestCase):
         self.assertIsNone(
             ungm_radar.normaliser(ungm_radar.extraire_lignes(self._html(cellules))[0]))
 
+    # -- Collecte PAYS PAR PAYS (correctif decisif du 20/07/2026) ----------
+    # UNGM n'expose pas le pays. Deviner depuis le titre produisait des erreurs
+    # graves : un billet "from Lusaka, Zambia" ressortait en Malawi, un avis
+    # pour l'Inde en Sierra Leone. On interroge donc pays par pays.
+    FORMULAIRE = ('<select id="Countries">'
+                  '<option value="2293">Afghanistan</option>'
+                  '<option value="2324">Burkina Faso</option>'
+                  '<option value="2400">Mali</option>'
+                  '<option value="2401">Denmark</option>'
+                  '<option value="2501">South Sudan</option>'
+                  '<option value="">-- Select --</option></select>')
+
+    def test_identifiants_pays_extraits_du_formulaire(self):
+        table = ungm_radar.charger_pays_ungm(fetch=lambda: self.FORMULAIRE)
+        self.assertEqual(table.get("AFG"), "2293")
+        self.assertEqual(table.get("MLI"), "2400")
+        self.assertEqual(table.get("SSD"), "2501")
+
+    def test_option_vide_ignoree(self):
+        table = ungm_radar.charger_pays_ungm(fetch=lambda: self.FORMULAIRE)
+        self.assertNotIn("", table.values())
+
+    def test_pays_hors_univers_de_risque_non_interroges(self):
+        """Interroger le Danemark gaspillerait une requete."""
+        table = ungm_radar.charger_pays_ungm(fetch=lambda: self.FORMULAIRE)
+        cibles = dict(ungm_radar.pays_a_interroger(table))
+        self.assertIn("MLI", cibles)
+        self.assertNotIn("DNK", cibles)
+
+    def test_formulaire_illisible_renvoie_table_vide(self):
+        """Repli : si le formulaire change, on ne plante pas."""
+        self.assertEqual(ungm_radar.charger_pays_ungm(fetch=lambda: "<html/>"), {})
+
+    def _faux_portail(self, iso, page):
+        if page > 0:
+            return ""
+        return self._html(["Escorte de convois et gardiennage",
+                           "30-Jul-2026 14:00 (GMT 2.00) 1.5", "20-Jul-2026",
+                           "WFP", "Invitation to bid", "REF-1"],
+                          ident=str(abs(hash(iso)) % 99999))
+
+    def test_pays_de_la_requete_prime_sur_toute_detection(self):
+        """C'est tout l'interet : le pays est CERTAIN, plus devine."""
+        table = ungm_radar.charger_pays_ungm(fetch=lambda: self.FORMULAIRE)
+        lignes, stats = ungm_radar.collecte_par_pays(
+            fetch=self._faux_portail, table_pays=table)
+        avis, _ = ungm_radar.construire(lignes)
+        self.assertTrue(avis)
+        for a in avis:
+            self.assertEqual(a["_origine_pays"], "requete")
+        self.assertEqual({a["pays_execution"] for a in avis},
+                         {"AFG", "BFA", "MLI", "SSD"})
+
+    def test_pays_certain_ecrase_une_detection_erronee(self):
+        """Un titre citant la Zambie ne doit pas deplacer un avis malien."""
+        ligne = ungm_radar.extraire_lignes(self._html(
+            ["Air ticket from Lusaka, Zambia", "20-Jul-2026", "ILO",
+             "Request for quotation", "REF-9"]))[0]
+        ligne["pays_iso3"] = "MLI"
+        self.assertEqual(ungm_radar.normaliser(ligne)["pays_execution"], "MLI")
+
+    def test_collecte_sans_pays_exploitable(self):
+        lignes, stats = ungm_radar.collecte_par_pays(
+            fetch=self._faux_portail, table_pays={})
+        self.assertEqual(lignes, [])
+        self.assertEqual(stats["arret"], "aucun pays exploitable")
+
+    def test_reference_avec_numero_n_est_pas_une_agence(self):
+        """Bug reel : "UNDP-IC-2026-177: Legal expert..." etait pris pour
+        l'emetteur parce qu'il contient "UNDP"."""
+        self.assertFalse(ungm_radar._est_agence("UNDP-IC-2026-177: Legal expert"))
+        self.assertTrue(ungm_radar._est_agence("UNDP"))
+        self.assertTrue(ungm_radar._est_agence("UNHCR"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
