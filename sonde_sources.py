@@ -1,288 +1,211 @@
 # -*- coding: utf-8 -*-
 """
-RADAR AMARANTE -- SONDE v3 (jetable) : obtenir les titulaires ONU autrement.
-=============================================================================
+RADAR AMARANTE -- SONDE v4 (jetable) : finir les deux pistes ouvertes.
+======================================================================
 
-CONTEXTE
---------
-L'endpoint public des attributions UNGM repond mais renvoie le NOM DE TYPE .NET
-de sa liste au lieu des donnees :
-    System.Collections.Generic.List`1[UNGM.Models.ViewModels.ContractAward.
-    ContractAwardGeneralInfoModel]
-Quatorze formes de requete ont ete essayees en vain. Avant d'abandonner, trois
-pistes restaient inexplorees. Cette sonde les traite en un seul run.
+La sonde v3 a ouvert deux portes. Celle-ci les franchit.
 
-  A. LE JAVASCRIPT EXTERNE. On avait constate que l'appel de recherche n'est
-     pas dans le HTML... sans jamais aller telecharger les fichiers .js de la
-     page pour l'y chercher. C'est la piste la plus directe.
+  A. UNGM. Le bundle `ungmcommon` (662 Ko) contient bien l'objet
+     `window.UNGM.ContractAwardSearch = { pageIndex, selectedCountries, ... }`.
+     La fenetre d'affichage de la v3 etait trop etroite pour capturer la
+     FONCTION qui lance la requete. On dumpe donc l'objet en entier et tous
+     les appels AJAX du fichier qui mentionnent "Award".
 
-  B. LES EN-TETES. Un controleur ASP.NET peut changer de serialisation selon
-     Accept ou X-Requested-With. On fait varier ces en-tetes sur l'endpoint.
+  B. IATI (miroir ouvert Code for IATI, accessible SANS cle : verifie).
+     Attention a la qualite : beaucoup de transactions sont AGREGEES
+     ("Total expenditure to date") et ne nomment aucune contrepartie. On
+     mesure donc la PROPORTION de transactions qui nomment un vrai
+     fournisseur, agence ONU par agence ONU, sur des pays a risque.
 
-  C. IATI (International Aid Transparency Initiative). PNUD, UNICEF, PAM,
-     UNOPS, HCR y publient leurs transactions, avec le detail du fournisseur
-     et du beneficiaire, via une API publique et standardisee. Si cela marche,
-     UNGM devient inutile pour les titulaires : on aurait du JSON propre,
-     requetable par pays, plutot qu'un portail a gratter.
-
-Aucune ecriture. Sortie toujours en code 0. Supprimable apres usage.
+Aucune ecriture. Sortie toujours en code 0.
 LANCEMENT : workflow "Sonde sources" (declenchement manuel).
 """
 
-import json
 import re
 import sys
 
 try:
     import requests
 except Exception:                                    # pragma: no cover
-    print("requests indisponible : pip install requests")
+    print("requests indisponible")
     sys.exit(0)
 
-
-TIMEOUT = 45
+TIMEOUT = 60
 NAVIGATEUR = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 PAGE_AWARDS = "https://www.ungm.org/Public/ContractAward"
-ENDPOINT_AWARDS = "https://www.ungm.org/Public/ContractAward/Search"
 RESULTATS = []
 
 
 def _titre(t):
-    print("\n" + "=" * 72)
-    print(t)
-    print("=" * 72)
+    print("\n" + "=" * 72); print(t); print("=" * 72)
 
 
 def _verdict(nom, ok, detail):
     RESULTATS.append((nom, ok, detail))
-    print("  => {} : {}".format("PISTE OUVERTE" if ok else "impasse", detail))
+    print("  => {} : {}".format("RESOLU" if ok else "non resolu", detail))
 
 
-def _apercu(t, n=280):
-    return " ".join(str(t or "").split())[:n]
+def _plat(t, n=None):
+    s = " ".join(str(t or "").split())
+    return s[:n] if n else s
 
 
 # ===========================================================================
-# A -- Chercher l'appel dans les fichiers JavaScript EXTERNES
+# A -- Dumper l'objet de recherche UNGM en entier
 # ===========================================================================
 
-def sonde_a_javascript(s):
-    _titre("A -- L'appel de recherche est-il dans un fichier JS externe ?")
+def sonde_a(s):
+    _titre("A -- UNGM : contenu COMPLET de UNGM.ContractAwardSearch")
     try:
-        rep = s.get(PAGE_AWARDS, timeout=TIMEOUT)
-        html = rep.text or ""
-        print("Page : HTTP {} ({} octets)".format(rep.status_code, len(rep.content)))
+        html = s.get(PAGE_AWARDS, timeout=TIMEOUT).text or ""
     except Exception as e:
-        _verdict("A javascript", False, "page illisible : {}".format(e))
+        _verdict("A UNGM", False, "page illisible : {}".format(e))
         return
 
     srcs = re.findall(r'<script[^>]+src\s*=\s*["\']([^"\']+)["\']', html, re.I)
-    # On resout les URL relatives et on ecarte les librairies tierces, qui ne
-    # contiennent evidemment pas le code metier d'UNGM.
-    tiers = ("jquery", "bootstrap", "modernizr", "popper", "moment",
-             "googletagmanager", "google-analytics", "recaptcha", "polyfill")
-    urls = []
+    cible = None
     for src in srcs:
-        if any(t in src.lower() for t in tiers):
+        if "ungmcommon" not in src.lower():
             continue
-        if src.startswith("//"):
-            u = "https:" + src
-        elif src.startswith("http"):
-            u = src
-        else:
-            u = "https://www.ungm.org" + ("" if src.startswith("/") else "/") + src
-        if "ungm.org" in u and u not in urls:
-            urls.append(u)
-    print("{} fichier(s) JS propres a UNGM a inspecter.".format(len(urls)))
+        cible = src if src.startswith("http") else (
+            "https://www.ungm.org" + ("" if src.startswith("/") else "/") + src)
+        break
+    if not cible:
+        _verdict("A UNGM", False, "bundle ungmcommon introuvable dans la page.")
+        return
 
-    motifs = [
-        (r'url\s*:\s*[\'"]([^\'"]{4,140})[\'"]', "url:"),
-        (r'\$\.(?:post|get|ajax)\s*\(\s*[\'"]([^\'"]{4,140})[\'"]', "$.post/get"),
-        (r'[\'"](\/Public\/[A-Za-z0-9_/]*(?:Award|Search)[A-Za-z0-9_/]*)[\'"]', "chemin"),
-    ]
-    trouvailles = []
-    for u in urls[:25]:
-        try:
-            r = s.get(u, timeout=TIMEOUT)
-            if r.status_code >= 400:
-                continue
-            code = r.text or ""
-        except Exception:
-            continue
-        if "contractaward" not in code.lower():
-            continue
-        print("\n  --- {} ({} octets) contient 'ContractAward' ---".format(
-            u.split("/")[-1][:60], len(r.content)))
-        for motif, libelle in motifs:
-            for m in re.findall(motif, code, re.I):
-                if re.search(r"(?i)award|search", m):
-                    trouvailles.append(m.strip())
-                    print("      [{}] {}".format(libelle, m.strip()[:110]))
-        # Contexte autour des appels : revele souvent les noms de champs.
-        for m in list(re.finditer(r"(?i)contractaward\w*search|search\w*contractaward",
-                                  code))[:4]:
-            deb, fin = max(0, m.start() - 160), min(len(code), m.end() + 260)
-            print("      contexte : ...{}...".format(_apercu(code[deb:fin], 300)))
+    try:
+        code = s.get(cible, timeout=TIMEOUT).text or ""
+    except Exception as e:
+        _verdict("A UNGM", False, "bundle illisible : {}".format(e))
+        return
+    print("Bundle recupere : {} octets".format(len(code)))
 
-    uniques = sorted(set(trouvailles))
-    if uniques:
-        _verdict("A javascript", True,
-                 "{} chemin(s) candidat(s) trouve(s) : {}".format(
-                     len(uniques), uniques[:6]))
+    # 1. L'objet complet : c'est la que vit la fonction de recherche.
+    m = re.search(r"UNGM\.ContractAwardSearch\s*=\s*\{", code)
+    if m:
+        extrait = code[m.start():m.start() + 9000]
+        print("\n[A1] Objet UNGM.ContractAwardSearch (9 000 premiers caracteres) :")
+        print("-" * 72)
+        print(_plat(extrait))
+        print("-" * 72)
     else:
-        _verdict("A javascript", False,
-                 "aucun fichier JS d'UNGM ne revele d'appel de recherche.")
+        print("\n[A1] objet UNGM.ContractAwardSearch introuvable.")
+
+    # 2. Tous les appels AJAX du fichier mentionnant "Award".
+    print("\n[A2] Appels AJAX/POST mentionnant 'Award' :")
+    trouves = []
+    for m in re.finditer(r"\$\.(?:ajax|post|get)\s*\(", code):
+        bloc = code[m.start():m.start() + 700]
+        if not re.search(r"(?i)award", bloc):
+            continue
+        trouves.append(_plat(bloc, 620))
+    for t in trouves[:8]:
+        print("    - {}".format(t))
+    if not trouves:
+        print("    (aucun)")
+
+    # 3. Toute URL citee a proximite du mot Award.
+    print("\n[A3] Chemins cites pres de 'Award' :")
+    chemins = set()
+    for m in re.finditer(r"(?i)award", code):
+        fenetre = code[max(0, m.start() - 260): m.start() + 260]
+        for u in re.findall(r'["\'](\/[A-Za-z0-9_\-/]{4,90})["\']', fenetre):
+            chemins.add(u)
+    for c in sorted(chemins)[:30]:
+        print("    {}".format(c))
+
+    _verdict("A UNGM", bool(m or trouves),
+             "objet dumpe : lire [A1]/[A2] pour l'URL et la charge utile.")
 
 
 # ===========================================================================
-# B -- Faire varier les en-tetes sur l'endpoint qui repond
+# B -- IATI : mesurer la proportion de fournisseurs NOMMES
 # ===========================================================================
 
-def sonde_b_entetes(s):
-    _titre("B -- La serialisation change-t-elle selon les en-tetes ?")
-    charge = {"PageIndex": 0, "PageSize": 15, "Title": "", "Description": "",
-              "Reference": "", "Supplier": "", "Agencies": [], "Countries": [],
-              "SortField": "AwardDate", "SortAscending": False}
-    variantes = [
-        ("JSON + Accept json", {"Content-Type": "application/json",
-                                "Accept": "application/json",
-                                "X-Requested-With": "XMLHttpRequest"}),
-        ("JSON sans X-Requested-With", {"Content-Type": "application/json",
-                                        "Accept": "application/json"}),
-        ("JSON + Accept html", {"Content-Type": "application/json",
-                                "Accept": "text/html,*/*",
-                                "X-Requested-With": "XMLHttpRequest"}),
-        ("form + Accept json", {"Content-Type": "application/x-www-form-urlencoded",
-                                "Accept": "application/json",
-                                "X-Requested-With": "XMLHttpRequest"}),
-    ]
-    ouvert = False
-    for nom, entetes in variantes:
-        h = dict(entetes)
-        h["User-Agent"] = NAVIGATEUR
-        h["Referer"] = PAGE_AWARDS
-        corps = (json.dumps(charge) if "json" in h["Content-Type"] else charge)
-        try:
-            r = s.post(ENDPOINT_AWARDS, data=corps, headers=h, timeout=TIMEOUT)
-            txt = r.text or ""
-            print("  {:30} -> HTTP {} ({} octets)".format(nom, r.status_code, len(txt)))
-            print("      {}".format(_apercu(txt, 200)))
-            # Une reponse differente du nom de type .NET est un progres.
-            if r.status_code < 400 and txt.strip() and "System.Collections" not in txt:
-                ouvert = True
-                _verdict("B entetes", True,
-                         "la variante {!r} change la reponse : a exploiter.".format(nom))
-                return
-        except Exception as e:
-            print("  {:30} -> exception {}".format(nom, e))
-    if not ouvert:
-        _verdict("B entetes", False,
-                 "toutes les variantes renvoient le meme nom de type .NET.")
+BASE_IATI = "https://datastore.codeforiati.org/api/1/access/transaction.csv"
+# Identifiants IATI des agences ONU qui deploient en zone a risque.
+AGENCES = [("PNUD", "XM-DAC-41114"), ("UNICEF", "XM-DAC-41122"),
+           ("PAM", "XM-DAC-41140"), ("UNOPS", "XM-DAC-41127"),
+           ("HCR", "XM-DAC-41121"), ("OIM", "XM-DAC-47066")]
+PAYS = [("Mali", "ML"), ("Somalie", "SO"), ("Soudan du Sud", "SS"),
+        ("RDC", "CD"), ("Afghanistan", "AF"), ("Ukraine", "UA")]
 
 
-# ===========================================================================
-# C -- IATI : les agences ONU publient-elles leurs fournisseurs ?
-# ===========================================================================
+def _colonnes(entete):
+    return [c.strip().strip('"') for c in entete.split(",")]
 
-def sonde_c_iati(s):
-    _titre("C -- IATI : obtenir les fournisseurs des agences ONU par API")
 
-    # C1. API officielle. Elle exige souvent une cle d'abonnement gratuite
-    #     (en-tete Ocp-Apim-Subscription-Key) : un 401/403 ici n'est donc PAS
-    #     une impasse, c'est une inscription a faire.
-    base = "https://api.iatistandard.org/datastore/transaction/select"
-    params = {
-        "q": 'transaction_recipient_country_code:ML AND '
-             '(transaction_transaction_type_code:3 OR transaction_transaction_type_code:4)',
-        "fl": ("iati_identifier,title_narrative,reporting_org_narrative,"
-               "transaction_receiver_org_narrative,transaction_provider_org_narrative,"
-               "transaction_value,transaction_value_currency,"
-               "transaction_transaction_date_iso_date"),
-        "rows": 5, "format": "json",
-    }
-    besoin_cle = False
+def sonde_b(s):
+    _titre("B -- IATI : les agences ONU nomment-elles leurs fournisseurs ?")
+    import csv, io
+
+    # B1. Structure : quelles colonnes servent a identifier une contrepartie ?
     try:
-        r = s.get(base, params=params, timeout=TIMEOUT)
-        print("C1. API officielle -> HTTP {} ({} octets)".format(
-            r.status_code, len(r.content)))
-        if r.status_code in (401, 403):
-            besoin_cle = True
-            print("    {}".format(_apercu(r.text, 200)))
-            print("    -> cle d'abonnement gratuite probablement requise "
-                  "(portail developpeur IATI).")
-        elif r.status_code < 400:
-            data = r.json()
-            docs = (data.get("response") or {}).get("docs") or []
-            total = (data.get("response") or {}).get("numFound", "?")
-            print("    {} transaction(s) au total, {} rapatriee(s).".format(
-                total, len(docs)))
-            nommes = _afficher_transactions(docs)
-            if docs:
-                print("    champs : {}".format(sorted(docs[0].keys())))
-                _verdict("C IATI", True,
-                         "{}/{} transactions nomment un beneficiaire "
-                         "(API officielle).".format(nommes, len(docs)))
-                return
+        r = s.get(BASE_IATI, params={"recipient-country": "ML", "limit": 3},
+                  timeout=TIMEOUT)
+        lignes = (r.text or "").splitlines()
+        if lignes:
+            cols = _colonnes(lignes[0])
+            interessantes = [c for c in cols if re.search(
+                r"(?i)provider|receiver|participating|reporting|description|"
+                r"transaction-type|value", c)]
+            print("[B1] {} colonnes. Colonnes utiles :".format(len(cols)))
+            for c in interessantes:
+                print("     {}".format(c))
     except Exception as e:
-        print("C1. exception : {}".format(e))
+        print("[B1] exception : {}".format(e))
 
-    # C2. Miroir ouvert de Code for IATI : meme donnee, SANS cle. C'est le
-    #     repli si l'API officielle demande une inscription.
-    base2 = "https://datastore.codeforiati.org/api/1/access/transaction.csv"
-    params2 = {"recipient-country": "ML", "limit": 5}
-    try:
-        r = s.get(base2, params=params2, timeout=TIMEOUT)
-        print("\nC2. miroir Code for IATI -> HTTP {} ({} octets)".format(
-            r.status_code, len(r.content)))
-        txt = r.text or ""
-        lignes = [l for l in txt.splitlines() if l.strip()][:6]
-        for l in lignes:
-            print("    {}".format(_apercu(l, 220)))
-        if r.status_code < 400 and len(lignes) > 1:
-            entete = lignes[0].lower()
-            a_fournisseur = any(m in entete for m in
-                                ("receiver", "provider", "participating"))
-            _verdict("C IATI", True,
-                     "miroir ouvert exploitable SANS cle ; colonnes "
-                     "fournisseur presentes : {}".format(a_fournisseur))
-            return
-    except Exception as e:
-        print("C2. exception : {}".format(e))
+    # B2. Proportion de transactions nommant un beneficiaire, par agence.
+    print("\n[B2] Part des transactions qui NOMMENT une contrepartie :")
+    total_ok = 0
+    for nom_ag, ident in AGENCES:
+        for nom_p, iso2 in PAYS[:3]:
+            try:
+                r = s.get(BASE_IATI, params={
+                    "reporting-org": ident, "recipient-country": iso2,
+                    "transaction-type": "3", "limit": 40}, timeout=TIMEOUT)
+                if r.status_code >= 400:
+                    print("    {:7} {:14} HTTP {}".format(nom_ag, nom_p, r.status_code))
+                    continue
+                texte = r.text or ""
+                lecteur = list(csv.DictReader(io.StringIO(texte)))
+                if not lecteur:
+                    print("    {:7} {:14} aucune transaction".format(nom_ag, nom_p))
+                    continue
+                cle_recv = next((c for c in lecteur[0]
+                                 if c and re.search(r"(?i)receiver.*org", c)), None)
+                nommes = [l for l in lecteur
+                          if cle_recv and (l.get(cle_recv) or "").strip()]
+                print("    {:7} {:14} {:3} transaction(s), {:3} avec beneficiaire nomme"
+                      .format(nom_ag, nom_p, len(lecteur), len(nommes)))
+                for l in nommes[:2]:
+                    desc = next((l[c] for c in l if c and "description" in c.lower()
+                                 and l[c]), "")
+                    print("            -> {} | {} | {}".format(
+                        _plat(l.get(cle_recv), 40), l.get("transaction-value", ""),
+                        _plat(desc, 46)))
+                total_ok += len(nommes)
+            except Exception as e:
+                print("    {:7} {:14} exception {}".format(nom_ag, nom_p, _plat(e, 60)))
 
-    _verdict("C IATI", False,
-             "API officielle {} et miroir ouvert indisponibles.".format(
-                 "necessite une cle" if besoin_cle else "en echec"))
-
-
-def _afficher_transactions(docs):
-    nommes = 0
-    for d in docs:
-        recv = d.get("transaction_receiver_org_narrative")
-        org = d.get("reporting_org_narrative")
-        print("      - bailleur : {} | beneficiaire : {} | {} {}".format(
-            _apercu(org, 30) or "n.c.", _apercu(recv, 38) or "NON NOMME",
-            d.get("transaction_value"), d.get("transaction_value_currency") or ""))
-        if recv:
-            nommes += 1
-    return nommes
+    _verdict("B IATI", total_ok > 0,
+             "{} transaction(s) avec beneficiaire nomme au total.".format(total_ok))
 
 
 def main():
-    print("SONDE v3 -- titulaires ONU : trois pistes restantes (aucune ecriture)")
+    print("SONDE v4 -- finir les deux pistes ouvertes (aucune ecriture)")
     s = requests.Session()
     s.headers.update({"User-Agent": NAVIGATEUR, "Accept-Language": "en-US,en;q=0.9"})
-    for f in (sonde_a_javascript, sonde_b_entetes, sonde_c_iati):
+    for f in (sonde_a, sonde_b):
         try:
             f(s)
         except Exception as e:
             _verdict(f.__name__, False, "exception non rattrapee : {}".format(e))
-
-    _titre("VERDICT v3")
+    _titre("VERDICT v4")
     for nom, ok, detail in RESULTATS:
         print("  [{}] {} -- {}".format("OUI" if ok else "NON", nom, detail))
-    print("\nUne seule piste ouverte suffit : A ou B debloquerait UNGM,")
-    print("C le rendrait inutile en fournissant les memes noms par API propre.")
 
 
 if __name__ == "__main__":
