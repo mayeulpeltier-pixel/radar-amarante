@@ -264,6 +264,20 @@ def main():
         logger.info("  %-18s : %-5s (%.0fs)", nom, etat, duree)
     logger.info("  %-18s : %.0fs", "Duree totale", duree_totale)
 
+    # --- 5 bis. Sante des appels au modele -----------------------------------
+    # Un modele retire ferait echouer tous les appels sans faire echouer le run :
+    # le radar tournerait "vert" en ne produisant plus aucune analyse. On le
+    # remonte donc en echec pour declencher l'alerte e-mail de l'ordonnanceur.
+    try:
+        import ted_complet_v14 as ted
+        llm_ok, message_llm = ted.sante_llm()
+    except Exception:
+        llm_ok, message_llm = True, "sante LLM indisponible"
+    logger.info("  %-18s : %s", "Modele", message_llm)
+    if not llm_ok:
+        au_moins_un_echec = True
+        logger.error("SANTE DU MODELE : %s", message_llm)
+
     # --- 6. Code de sortie pour l'ordonnanceur -------------------------------
     if au_moins_un_echec:
         logger.error("Au moins un collecteur a echoue : code de sortie 1 "
