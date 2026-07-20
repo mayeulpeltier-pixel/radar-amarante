@@ -1365,5 +1365,67 @@ class TestRendementWatchlist(unittest.TestCase):
                         "le garde-temps doit rester sous le timeout du job (45 min)")
 
 
+@unittest.skipIf(ted is None, "ted_complet_v14 indisponible")
+class TestSanteModele(unittest.TestCase):
+    """Detection d'une panne d'appels au modele. Sans elle, un modele retire
+    ferait echouer tous les appels et le run se terminerait VERT en ne
+    produisant plus aucune analyse (constate a l'audit : horizon de retrait de
+    haiku-4-5 au 15/10/2026)."""
+
+    def setUp(self):
+        self._sauve = dict(ted.STATS_LLM)
+        ted.STATS_LLM.update({"appels": 0, "echecs": 0,
+                              "modele_invalide": 0, "detail": ""})
+
+    def tearDown(self):
+        ted.STATS_LLM.update(self._sauve)
+
+    def test_run_sain(self):
+        ted.STATS_LLM["appels"] = 50
+        ok, msg = ted.sante_llm()
+        self.assertTrue(ok)
+        self.assertIn("aucun echec", msg)
+
+    def test_quelques_echecs_tolerables(self):
+        """Un avis rate n'est pas un incident : le pipeline degrade en silence."""
+        ted.STATS_LLM.update({"appels": 100, "echecs": 5})
+        ok, _ = ted.sante_llm()
+        self.assertTrue(ok)
+
+    def test_echec_massif_signale(self):
+        ted.STATS_LLM.update({"appels": 100, "echecs": 95})
+        ok, msg = ted.sante_llm()
+        self.assertFalse(ok)
+        self.assertIn("MASSIVEMENT", msg)
+
+    def test_modele_retire_signale_immediatement(self):
+        """Une erreur de MODELE doit alerter des le premier cas : elle exige
+        une action (changer la chaine), pas de la patience."""
+        ted.STATS_LLM["appels"] = 3
+        ted._marquer_echec_llm(
+            '{"type":"error","error":{"type":"not_found_error",'
+            '"message":"model: claude-xxx"}}')
+        ok, msg = ted.sante_llm()
+        self.assertFalse(ok)
+        self.assertIn("MODELE REFUSE", msg)
+        self.assertIn("RADAR_MODELE", msg)
+
+    def test_timeout_compte_mais_n_est_pas_une_erreur_de_modele(self):
+        ted.STATS_LLM["appels"] = 3
+        ted._marquer_echec_llm("timeout")
+        self.assertEqual(ted.STATS_LLM["modele_invalide"], 0)
+
+    def test_pas_d_alerte_sur_trop_peu_d_appels(self):
+        """Deux echecs sur trois appels ne prouvent rien : on n'alerte pas."""
+        ted.STATS_LLM.update({"appels": 3, "echecs": 3})
+        ok, _ = ted.sante_llm()
+        self.assertTrue(ok)
+
+    def test_modeles_surchargeables_sans_toucher_au_code(self):
+        """Le remede a un retrait doit etre une variable d'environnement."""
+        self.assertTrue(ted.MODELE)
+        self.assertTrue(ted.MODELE_RAFFINEMENT)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
