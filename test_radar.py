@@ -1427,5 +1427,82 @@ class TestSanteModele(unittest.TestCase):
         self.assertTrue(ted.MODELE_RAFFINEMENT)
 
 
+@unittest.skipIf(radar_dashboard is None, "radar_dashboard indisponible")
+class TestExportCSV(unittest.TestCase):
+    """Export "liste d'appels". La logique est en JavaScript dans le gabarit ;
+    ces tests l'EXECUTENT reellement via Node (present sur ubuntu-latest, donc
+    en CI) plutot que de se contenter de verifier des chaines de caracteres.
+    Sans Node, ils sont ignores et le reste de la suite continue."""
+
+    JS_TESTS = r"""
+const m = require(process.argv[2]);
+function eq(a, b, nom){
+  if(a !== b) { console.error('ECHEC ' + nom + ' : ' + JSON.stringify(a) +
+                              ' != ' + JSON.stringify(b)); process.exit(1); }
+}
+// Le point-virgule est le separateur : un titre qui en contient doit etre
+// protege, sinon les colonnes se decalent dans Excel.
+eq(m.csvChamp('Securite; convois'), '"Securite; convois"', 'point-virgule');
+eq(m.csvChamp('convois "VIP"'), '"convois ""VIP""' + '"', 'guillemets');
+eq(m.csvChamp('a\nb'), '"a\nb"', 'saut de ligne');
+eq(m.csvChamp('Mali'), 'Mali', 'champ simple non quote');
+eq(m.csvChamp(null), '', 'null');
+eq(m.csvChamp(undefined), '', 'undefined');
+// "n.c." ne doit jamais polluer une liste d'appels.
+eq(m.nc('n.c.'), '', 'n.c. nettoye');
+eq(m.nc('a@b.com'), 'a@b.com', 'valeur conservee');
+const csv = m.exportAvis([{final:8,surete:7,comm:9,action:'contacter',
+  win:'immediate',deadline:'2026-08-01',pays:'Mali',zone:'Sahel',agence:'AFD',
+  titre:'Securite; convois',nom:'n.c.',email:'a@b.com',tel:'n.c.',
+  statut:'nouveau',src:'TED',date_det:'2026-07-10',lien:'http://x'}]);
+const L = csv.split('\r\n');
+eq(L.length, 2, 'entete + une ligne');
+eq(L[0].split(';')[0], 'Score', 'premiere colonne');
+eq(L[1].indexOf('"Securite; convois"') > -1, true, 'titre protege');
+eq(L[1].indexOf('n.c.') > -1, false, 'aucun n.c. exporte');
+const f = m.exportFiches([{nom:'STECOL',prio:'contacter',n:3,zones:['Sahel'],
+  secteurs:['BTP'],enr:{nom:'',email:'x@y.com',siren:'',ca:''},
+  dernier:'2026-07-01',meilleur:{final:9,titre:'Route',lien:'http://z'}}]);
+eq(f.split('\r\n')[0].split(';')[0], 'Entreprise', 'entete fiches');
+eq(f.indexOf('Sahel') > -1, true, 'zones jointes');
+console.log('OK');
+"""
+
+    def _extraire_js(self):
+        src = radar_dashboard.GABARIT_HTML
+        deb = src.index("function csvChamp(v){")
+        fin = src.index("document.getElementById('export').addEventListener")
+        return (src[deb:fin] +
+                "\nmodule.exports={csvChamp,csvLignes,exportAvis,exportFiches,nc};\n")
+
+    def test_structure_presente_dans_le_gabarit(self):
+        html = radar_dashboard.GABARIT_HTML
+        for attendu in ('id="export"', "function exporterCSV",
+                        "function exportAvis", "function exportFiches",
+                        "\\uFEFF"):          # BOM : sans lui, Excel casse les accents
+            self.assertIn(attendu, html, "absent du gabarit : {}".format(attendu))
+
+    def test_logique_javascript_reelle(self):
+        import shutil, subprocess, tempfile, os as _os
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node absent de cet environnement")
+        dossier = tempfile.mkdtemp()
+        try:
+            mod = _os.path.join(dossier, "export.js")
+            tst = _os.path.join(dossier, "tests.js")
+            with open(mod, "w", encoding="utf-8") as f:
+                f.write(self._extraire_js())
+            with open(tst, "w", encoding="utf-8") as f:
+                f.write(self.JS_TESTS)
+            r = subprocess.run([node, tst, mod], capture_output=True,
+                               text=True, timeout=60)
+            self.assertEqual(r.returncode, 0,
+                             "tests JS en echec :\n{}\n{}".format(r.stdout, r.stderr))
+        finally:
+            import shutil as _sh
+            _sh.rmtree(dossier, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
