@@ -67,6 +67,12 @@ JOURS_FENETRE = int(os.environ.get("RADAR_UNGM_JOURS", "45"))
 PAGES_MAX = int(os.environ.get("RADAR_UNGM_PAGES", "8"))
 TAILLE_PAGE = int(os.environ.get("RADAR_UNGM_TAILLE", "50"))
 BUDGET_LLM = int(os.environ.get("RADAR_UNGM_BUDGET", "60"))
+# Collecte pays par pays : nombre de pays interroges et pages par pays.
+PAYS_MAX = int(os.environ.get("RADAR_UNGM_PAYS_MAX", "60"))
+PAGES_PAR_PAYS = int(os.environ.get("RADAR_UNGM_PAGES_PAYS", "3"))
+# Garde-temps : cette boucle fait une requete par pays. Sans borne, elle
+# pourrait manger le budget du job (45 min) et tuer dashboard et digest.
+MINUTES_MAX = float(os.environ.get("RADAR_UNGM_MINUTES", "12"))
 
 NOM_ONGLET = "ungm_radar"
 # Schema IDENTIQUE a celui des autres bailleurs : le dashboard peut alors lire
@@ -150,6 +156,11 @@ def _est_agence(txt):
     pour l'emetteur (constate a l'ecriture du parseur)."""
     t = re.sub(r"\s+", " ", str(txt or "")).strip()
     if not t or len(t) > 50 or len(t.split()) > 7:
+        return False
+    # Une cellule d'agence ne contient jamais d'annee ni de numero d'ordre.
+    # Sans ce garde-fou, un titre comme "UNDP-IC-2026-177: Legal expert..."
+    # etait pris pour l'emetteur (constate au run du 20/07/2026).
+    if re.search(r"\d{3,}", t):
         return False
     h = re.sub(r"[^A-Z ]", " ", t.upper())
     jetons = set(h.split())
@@ -324,6 +335,60 @@ def detecter_pays(champs):
     return "", ""
 
 
+RE_OPTION = re.compile(
+    r'<option[^>]*value="([^"]+)"[^>]*>\s*([^<]{3,60}?)\s*</option>', re.I | re.S)
+
+
+def charger_pays_ungm(session=None, fetch=None):
+    """{ISO3: identifiant UNGM} depuis le formulaire de filtres de la page
+    publique.
+
+    POURQUOI C'EST LA CLE DE CE COLLECTEUR : le tableau de resultats d'UNGM
+    n'expose AUCUNE colonne pays (verifie le 20/07/2026). Deviner le pays
+    depuis le titre produit des faux positifs graves : un billet d'avion "from
+    Lusaka, Zambia" ressortait en Malawi, et un avis pour l'Inde en Sierra
+    Leone. En interrogeant UNGM PAYS PAR PAYS, le pays est connu avec certitude
+    puisque c'est nous qui le demandons.
+
+    Renvoie {} en cas d'echec : le collecteur retombe alors sur la detection
+    par titre/reference, degradee mais non nulle."""
+    try:
+        if fetch is not None:
+            html = fetch()
+        else:
+            session = session or ted.session_robuste()
+            rep = session.get(PAGE_PUBLIQUE, headers=ENTETES, timeout=45)
+            if rep.status_code >= 400:
+                print("(ungm) page publique HTTP {} : filtre pays indisponible.".format(
+                    rep.status_code))
+                return {}
+            html = rep.text
+    except Exception as e:
+        print("(ungm) liste des pays illisible ({}).".format(e))
+        return {}
+
+    table = {}
+    for valeur, libelle in RE_OPTION.findall(html or ""):
+        iso = _iso3_depuis_texte(libelle.strip())
+        if not iso or iso in table:
+            continue
+        val = valeur.strip()
+        if val and val.isdigit():
+            table[iso] = val
+    return table
+
+
+def pays_a_interroger(table_pays):
+    """Pays a interroger ce run, LES PLUS RISQUES D'ABORD.
+
+    On se limite a l'univers de risque : interroger la Suisse ou le Danemark
+    consommerait des requetes pour des avis sans interet commercial."""
+    candidats = [(iso, ident) for iso, ident in (table_pays or {}).items()
+                 if iso in ted.MULTIPLICATEUR_ZONE]
+    candidats.sort(key=lambda c: (-ted.MULTIPLICATEUR_ZONE.get(c[0], 0), c[0]))
+    return candidats[:PAYS_MAX]
+
+
 def diagnostic_pays(session=None, ident_exemple=""):
     """DIAGNOSTIC (mode verification seulement) : cherche par ou obtenir le
     pays, puisque le tableau de resultats ne l'expose pas.
@@ -464,7 +529,12 @@ def normaliser(ligne):
     """Ligne UNGM -> avis dict compatible ted.appeler_llm / ted.calculer_scores.
     None si hors perimetre (pays non suivi, avis trop ancien, titre vide)."""
     champs = interpreter_ligne(ligne.get("cellules") or [])
-    iso3, origine_pays = detecter_pays(champs)
+    # Si la ligne vient d'une requete ciblee, le pays est CERTAIN : on ne
+    # redevine rien. La detection par titre/reference n'est qu'un repli.
+    if ligne.get("pays_iso3"):
+        iso3, origine_pays = ligne["pays_iso3"], "requete"
+    else:
+        iso3, origine_pays = detecter_pays(champs)
     if not iso3 or iso3 not in ted.MULTIPLICATEUR_ZONE:
         return None
     if not champs["titre"]:
@@ -538,6 +608,63 @@ def collecte(session=None, fetch=None):
     return lignes, stats
 
 
+def collecte_par_pays(session=None, fetch=None, table_pays=None):
+    """Interroge UNGM PAYS PAR PAYS. Chaque ligne obtenue est etiquetee avec le
+    pays demande : l'attribution est certaine, plus aucune devinette.
+
+    Renvoie (lignes, stats). Chaque ligne porte une cle 'pays_iso3'.
+    Best-effort : un pays en echec est saute, le reste continue."""
+    import json as _json
+    import time as _time
+    session = session or ted.session_robuste()
+    table = table_pays if table_pays is not None else charger_pays_ungm(session)
+    cibles = pays_a_interroger(table)
+    lignes, vus = [], set()
+    stats = {"pays_interroges": 0, "pays_avec_avis": 0, "lignes": 0,
+             "requetes": 0, "arret": "termine"}
+    if not cibles:
+        stats["arret"] = "aucun pays exploitable"
+        return lignes, stats
+
+    debut = _time.time()
+    for iso, ident in cibles:
+        if (_time.time() - debut) / 60.0 >= MINUTES_MAX:
+            stats["arret"] = "garde-temps"
+            break
+        stats["pays_interroges"] += 1
+        avant = len(lignes)
+        for page in range(PAGES_PAR_PAYS):
+            charge = charge_recherche(page)
+            charge["Countries"] = [ident]
+            try:
+                if fetch is not None:
+                    texte = fetch(iso, page)
+                else:
+                    rep = session.post(
+                        ENDPOINT_RECHERCHE,
+                        data=_json.dumps(charge).encode("utf-8"),
+                        headers=dict(ENTETES, **{"Content-Type": "application/json"}),
+                        timeout=45)
+                    stats["requetes"] += 1
+                    if rep.status_code >= 400:
+                        break
+                    texte = rep.text
+            except Exception:
+                break                      # pays saute, on continue les autres
+            lot = extraire_lignes(texte)
+            nouvelles = [l for l in lot if l["id"] not in vus]
+            for l in nouvelles:
+                vus.add(l["id"])
+                l["pays_iso3"] = iso       # attribution CERTAINE
+            lignes.extend(nouvelles)
+            if len(lot) < TAILLE_PAGE or not nouvelles:
+                break                      # derniere page pour ce pays
+        if len(lignes) > avant:
+            stats["pays_avec_avis"] += 1
+    stats["lignes"] = len(lignes)
+    return lignes, stats
+
+
 def construire(lignes):
     """Lignes brutes -> avis normalises, avec le detail des rejets."""
     avis, motifs = [], {"sans_pays": 0, "sans_titre": 0, "hors_fenetre": 0}
@@ -547,7 +674,7 @@ def construire(lignes):
             avis.append(a)
             continue
         champs = interpreter_ligne(ligne.get("cellules") or [])
-        iso, _ = detecter_pays(champs)
+        iso = ligne.get("pays_iso3") or detecter_pays(champs)[0]
         if not iso or iso not in ted.MULTIPLICATEUR_ZONE:
             motifs["sans_pays"] += 1
         elif not champs["titre"]:
@@ -654,11 +781,25 @@ def main():
         print("(info) Collecteur UNGM desactive (RADAR_UNGM=0).")
         return
 
-    print("Collecte UNGM (fenetre {} jours, {} pages max)...".format(
-        JOURS_FENETRE, PAGES_MAX))
-    lignes, stats = collecte()
-    print("  {} ligne(s) sur {} page(s) (arret : {}).".format(
-        stats["lignes"], stats["pages"], stats["arret"]))
+    print("Collecte UNGM (fenetre {} jours)...".format(JOURS_FENETRE))
+    table = charger_pays_ungm()
+    if table:
+        cibles = pays_a_interroger(table)
+        print("  {} pays connus d'UNGM, {} dans l'univers de risque a interroger.".format(
+            len(table), len(cibles)))
+        lignes, stats = collecte_par_pays(table_pays=table)
+        print("  {} ligne(s) | {} pays interroges dont {} avec des avis | "
+              "{} requetes (arret : {}).".format(
+                  stats["lignes"], stats["pays_interroges"],
+                  stats["pays_avec_avis"], stats["requetes"], stats["arret"]))
+    else:
+        # Repli : le formulaire a change. On collecte globalement et on devine
+        # le pays, ce qui est moins fiable mais vaut mieux que rien.
+        print("  (!) liste des pays indisponible : repli sur la collecte globale "
+              "avec detection du pays par titre/reference (moins fiable).")
+        lignes, stats = collecte()
+        print("  {} ligne(s) sur {} page(s) (arret : {}).".format(
+            stats["lignes"], stats["pages"], stats["arret"]))
     if not lignes:
         print("  Aucune ligne : structure du portail a revoir "
               "(relancer avec RADAR_UNGM_DEBUG=1).")
