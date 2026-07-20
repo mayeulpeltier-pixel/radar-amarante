@@ -2122,10 +2122,53 @@ class TestAttributionsUNGM(unittest.TestCase):
 
     def test_charges_candidates_incluent_le_filtre_pays(self):
         """L'hypothese testee : l'endpoint repondait vide faute de filtre."""
-        noms = [n for n, _ in ungm_attributions.charges_candidates(0, 25, "2500")]
-        self.assertIn("awards+pays", noms)
-        charge = dict(ungm_attributions.charges_candidates(0, 25, "2500"))["awards+pays"]
-        self.assertEqual(charge["Countries"], ["2500"])
+        formes = ungm_attributions.charges_candidates(0, 25, "2500")
+        noms = [n for n, _u, _c, _e in formes]
+        self.assertTrue(any("form" in n for n in noms))
+        # Les noms de champs viennent de la page REELLE (releves le 20/07/2026).
+        charges = [c for _n, _u, c, _e in formes]
+        self.assertTrue(any("txtContractAwardFilterSupplier" in c for c in charges))
+        self.assertTrue(any("selContractAwardCountry" in c for c in charges))
+
+    def test_les_deux_url_sont_essayees(self):
+        """[E] ne citait que /Public/ContractAward : la recherche poste
+        peut-etre sur la page elle-meme, pas sur /Search."""
+        urls = {u for _n, u, _c, _e in ungm_attributions.charges_candidates(0, 25, "1")}
+        self.assertIn(ungm_attributions.PAGE_AWARDS, urls)
+        self.assertIn(ungm_attributions.ENDPOINT_AWARDS, urls)
+
+    def test_encodage_formulaire_et_json_essayes(self):
+        """Un formulaire ASP.NET n'accepte generalement pas un corps JSON."""
+        encodages = {e for _n, _u, _c, e in
+                     ungm_attributions.charges_candidates(0, 25, "1")}
+        self.assertEqual(encodages, {"form", "json"})
+
+    # -- Detection multi-format de la reponse ------------------------------
+    # Erreur corrigee : on ne cherchait que des <div role="row">. Une reponse
+    # JSON (ce que 101 octets constants suggerent) etait declaree en echec
+    # sans qu'on ait jamais regarde son contenu.
+    def test_reponse_html(self):
+        html = self._html(["Escorte", "Bancroft Global Development"])
+        self.assertEqual(len(ungm_attributions.lignes_depuis_reponse(html)), 1)
+
+    def test_reponse_json_liste(self):
+        txt = '[{"Id":7,"Supplier":"Acme Ltd","Title":"Escorte"}]'
+        self.assertEqual(len(ungm_attributions.lignes_depuis_reponse(txt)), 1)
+
+    def test_reponse_json_enveloppe(self):
+        txt = '{"Total":1,"Rows":[{"Id":7,"Supplier":"Acme Ltd"}]}'
+        lignes = ungm_attributions.lignes_depuis_reponse(txt)
+        self.assertEqual(len(lignes), 1)
+        self.assertEqual(lignes[0]["id"], "7")
+
+    def test_reponse_json_contenant_du_html(self):
+        import json as _json
+        txt = _json.dumps({"Total": 1, "Html": self._html(["Escorte", "Acme Ltd"])})
+        self.assertEqual(len(ungm_attributions.lignes_depuis_reponse(txt)), 1)
+
+    def test_reponse_vide_ou_illisible(self):
+        for txt in ('{"Total":0,"Rows":[]}', "", "pas du json"):
+            self.assertEqual(ungm_attributions.lignes_depuis_reponse(txt), [])
 
 
 if __name__ == "__main__":
