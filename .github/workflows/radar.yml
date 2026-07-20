@@ -98,7 +98,7 @@ jobs:
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          RADAR_UNGM_DEBUG: "1"
+          RADAR_UNGM_DEBUG: "0"
         run: python ungm_radar.py
 
       - name: Generer le tableau de bord
