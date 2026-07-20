@@ -1844,6 +1844,87 @@ class TestUNGM(unittest.TestCase):
             ungm_radar.ted.appeler_llm = vrai
         self.assertEqual(appels["n"], 5)
 
+    # -- Chemin d'ECRITURE ------------------------------------------------
+    # Le run du 20/07/2026 a echoue ici : "ted_complet_v14 has no attribute
+    # 'action_recommandee'". Les tests couvraient le parsing mais JAMAIS la
+    # mise en ligne. Ces deux tests ferment ce trou.
+    def test_ligne_produite_de_bout_en_bout(self):
+        avis = {"acheteur": "UNOPS", "pays_acheteur": "", "pays_execution": "AFG",
+                "titre": "Construction of water points", "cpv": "",
+                "description": "travaux", "type_notice": "Invitation to bid",
+                "phase": "avis", "lien_avis": "https://www.ungm.org/Public/Notice/1",
+                "publication_number": "UNGM-1", "deadline": "2026-08-02",
+                "date_publication": "2026-07-20", "pays_execution_incertitude": False}
+        extraction = ungm_radar.ted.normaliser_securite({
+            "type_client": "organisation_internationale",
+            "type_mobilite": "terrain_isole",
+            "profil_personnes_exposees": "expert_international",
+            "duree_estimee": "longue_ou_residente",
+            "accessibilite_commerciale": "facile",
+            "securite_existante": "aucune", "deploiement_terrain_reel": True,
+            "niveau_opportunite_amarante": "FORT",
+            "profils_acteurs_probables": ["ingenieurs"],
+            "justification": "test", "confiance": "haute"})
+        s, c, f = ungm_radar.ted.calculer_scores(avis, extraction)
+        ligne = ungm_radar.ligne_depuis_resultat(
+            {"avis": avis, "extraction": extraction, "surete": s,
+             "commercial": c, "final": f, "raffine": False})
+        self.assertEqual(len(ligne), len(ungm_radar.COLONNES_UNGM))
+        champs = dict(zip(ungm_radar.COLONNES_UNGM, ligne))
+        self.assertEqual(champs["pays_execution"], "AFG")
+        self.assertEqual(champs["publication_number"], "UNGM-1")
+        self.assertTrue(champs["action_recommandee"])
+        self.assertTrue(champs["fenetre_action"])
+
+    def test_extraction_vide_ne_casse_pas_l_ecriture(self):
+        """Le modele peut renvoyer None : la ligne doit rester produisible."""
+        avis = {"acheteur": "WFP", "pays_execution": "MLI", "titre": "Escorte",
+                "publication_number": "UNGM-2", "deadline": "", "date_publication": ""}
+        ligne = ungm_radar.ligne_depuis_resultat(
+            {"avis": avis, "extraction": None, "surete": 5, "commercial": 5,
+             "final": 5, "raffine": False})
+        self.assertEqual(len(ligne), len(ungm_radar.COLONNES_UNGM))
+
+
+class TestAppelsInterModules(unittest.TestCase):
+    """Garde-fou GENERAL contre la classe de bug rencontree le 20/07/2026 :
+    un collecteur appelait `ted.action_recommandee`, qui n'existe pas. Rien ne
+    le signalait avant l'execution reelle, en toute fin de run.
+
+    On verifie ici que CHAQUE attribut `ted.X` reference dans le code source
+    des collecteurs existe reellement. Un renommage dans le coeur fera echouer
+    la CI au lieu de casser un run en production."""
+
+    MODULES = ("ungm_radar", "bm_attributions", "afdb_radar", "ebrd_radar",
+               "signaux_prives", "radar_digest", "ted_complet_bm",
+               "ted_complet_reliefweb", "ted_complet_attributions")
+
+    def test_tous_les_attributs_ted_existent(self):
+        import importlib, inspect, re as _re
+        try:
+            coeur = importlib.import_module("ted_complet_v14")
+        except Exception:
+            self.skipTest("ted_complet_v14 indisponible")
+        manquants = []
+        for nom in self.MODULES:
+            try:
+                mod = importlib.import_module(nom)
+                source = inspect.getsource(mod)
+            except Exception:
+                continue                      # module absent : rien a verifier
+            for attr in sorted(set(_re.findall(
+                    r"(?<![\w./])ted\.([a-zA-Z_][a-zA-Z0-9_]*)\s*(?=[(\[.,)\s]|$)",
+                    source))):
+                # "https://ted.europa.eu/..." n'est pas un appel : on ignore ce
+                # qui est suivi d'un point (nom de domaine) ou precede d'un
+                # caractere d'URL.
+                if _re.search(r"ted\.{}\.".format(_re.escape(attr)), source):
+                    continue
+                if not hasattr(coeur, attr):
+                    manquants.append("{} -> ted.{}".format(nom, attr))
+        self.assertEqual(manquants, [],
+                         "attributs inexistants dans ted_complet_v14 : {}".format(manquants))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
