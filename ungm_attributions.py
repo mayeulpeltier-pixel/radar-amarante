@@ -90,47 +90,71 @@ RE_ID_AWARD = re.compile(
 # ===========================================================================
 
 def charges_candidates(page=0, taille=25, id_pays=None):
-    """Formes de requete a essayer, de la plus probable a la moins probable.
+    """Formes de requete a essayer, fondees sur les NOMS DE CHAMPS REELS
+    releves dans la page publique le 20/07/2026.
 
-    La sonde a montre que la forme "awards1" est ACCEPTEE (HTTP 200) mais
-    renvoie une reponse vide : il manque vraisemblablement un filtre. On
-    decline donc la meme forme avec un filtre pays, puis avec une fenetre de
-    dates, avant de retomber sur les variantes nues."""
-    base = {
-        "PageIndex": page, "PageSize": taille,
-        "Description": "", "Supplier": "", "Reference": "",
-        "AwardDateFrom": "", "AwardDateTo": "",
-        "Agencies": [], "Countries": [], "UNSPSCs": [],
-        "SortField": "AwardDate", "SortAscending": False,
-    }
-    formes = []
-    if id_pays:
-        avec_pays = dict(base); avec_pays["Countries"] = [id_pays]
-        formes.append(("awards+pays", avec_pays))
+    Trois familles, car la page melange deux conventions :
+      1. controles de formulaire ASP.NET (txtContractAwardFilterSupplier,
+         selContractAwardCountry, txtContractAwardFrom...) -> POST form-encode ;
+      2. proprietes de modele serveur (AgencyId, AwardDate, FirstCountry,
+         Reference, description) -> POST JSON ;
+      3. la convention des AVIS, qui fonctionne deja sur /Public/Notice/Search.
+    Chaque forme est renvoyee avec son encodage, car un formulaire ASP.NET
+    n'accepte generalement pas un corps JSON.
+
+    Renvoie [(nom, url, charge, encodage), ...]."""
     debut = (date.today() - timedelta(days=JOURS_FENETRE)).strftime("%d-%b-%Y")
     fin = date.today().strftime("%d-%b-%Y")
-    avec_dates = dict(base, AwardDateFrom=debut, AwardDateTo=fin)
-    if id_pays:
-        avec_dates = dict(avec_dates); avec_dates["Countries"] = [id_pays]
-    formes.append(("awards+dates", avec_dates))
-    formes.append(("awards nu", base))
-    # Variante 1-based : certains portails ASP.NET comptent les pages a partir
-    # de 1, ce qui renvoie un resultat vide en page 0.
-    une_base = dict(base); une_base["PageIndex"] = page + 1
-    if id_pays:
-        une_base["Countries"] = [id_pays]
-    formes.append(("awards page 1-based", une_base))
+    formes = []
+
+    # 1. Convention formulaire, sur les deux URL plausibles. [E] ne citait que
+    #    /Public/ContractAward : la recherche poste peut-etre sur la page meme.
+    form = {
+        "txtContractAwardFilterTitle": "", "txtContractAwardFilterDesc": "",
+        "txtContractAwardFilterRef": "", "txtContractAwardFilterSupplier": "",
+        "txtContractAwardFrom": debut, "txtContractAwardTo": fin,
+        "selContractAwardAgency": "", "selContractAwardSupplierCountry": "",
+        "selContractAwardCountry": id_pays or "",
+        "PageIndex": page, "PageSize": taille,
+    }
+    formes.append(("form -> /ContractAward", PAGE_AWARDS, form, "form"))
+    formes.append(("form -> /Search", ENDPOINT_AWARDS, form, "form"))
+
+    # 2. Convention modele serveur.
+    modele = {
+        "description": "", "Reference": "", "AgencyId": "",
+        "FirstCountry": id_pays or "", "AwardDate": "",
+        "PageIndex": page, "PageSize": taille,
+    }
+    formes.append(("modele JSON -> /Search", ENDPOINT_AWARDS, modele, "json"))
+    formes.append(("modele form -> /ContractAward", PAGE_AWARDS, modele, "form"))
+
+    # 3. Convention des avis (celle qui marche pour /Public/Notice/Search).
+    comme_avis = {
+        "PageIndex": page, "PageSize": taille,
+        "Title": "", "Description": "", "Reference": "", "Supplier": "",
+        "AwardDateFrom": debut, "AwardDateTo": fin,
+        "Agencies": [], "Countries": [id_pays] if id_pays else [],
+        "SupplierCountries": [], "UNSPSCs": [],
+        "SortField": "AwardDate", "SortAscending": False,
+    }
+    formes.append(("comme les avis -> /Search", ENDPOINT_AWARDS, comme_avis, "json"))
+    formes.append(("comme les avis -> /ContractAward", PAGE_AWARDS, comme_avis, "json"))
     return formes
 
 
-def interroger(session, charge, timeout=45):
+def interroger(session, url, charge, encodage="json", timeout=45):
     """POST best-effort. Renvoie (status, texte). N'exception jamais."""
     try:
-        rep = session.post(
-            ENDPOINT_AWARDS,
-            data=json.dumps(charge).encode("utf-8"),
-            headers=dict(ENTETES, **{"Content-Type": "application/json"}),
-            timeout=timeout)
+        if encodage == "json":
+            corps = json.dumps(charge).encode("utf-8")
+            ctype = "application/json"
+        else:
+            corps = charge
+            ctype = "application/x-www-form-urlencoded"
+        rep = session.post(url, data=corps,
+                           headers=dict(ENTETES, **{"Content-Type": ctype}),
+                           timeout=timeout)
         return rep.status_code, (rep.text or "")
     except Exception as e:
         return 0, "exception: {}".format(e)
@@ -314,18 +338,70 @@ def normaliser(ligne, iso3):
 # COLLECTE
 # ===========================================================================
 
+def lignes_depuis_reponse(texte):
+    """Lignes exploitables d'une reponse, QUEL QUE SOIT SON FORMAT.
+
+    Erreur corrigee le 20/07/2026 : on ne cherchait que des <div role="row">.
+    Si l'endpoint repond en JSON (ce que 101 octets constants suggerent), on
+    concluait a tort a l'echec sans jamais regarder le contenu."""
+    t = (texte or "").strip()
+    if not t:
+        return []
+    # Piste HTML (meme rendu que les avis).
+    lignes = extraire_attributions(t)
+    if lignes:
+        return lignes
+    # Piste JSON : enveloppe {..., "Rows"/"Data"/"Items": [...]} ou liste nue.
+    if t[:1] in "[{":
+        try:
+            data = json.loads(t)
+        except Exception:
+            return []
+        bloc = data if isinstance(data, list) else None
+        if bloc is None and isinstance(data, dict):
+            for cle in ("Rows", "rows", "Data", "data", "Items", "items",
+                        "Results", "results", "ContractAwards"):
+                if isinstance(data.get(cle), list):
+                    bloc = data[cle]
+                    break
+            # L'enveloppe peut aussi contenir le HTML du tableau.
+            if bloc is None:
+                for cle in ("Html", "html", "Content", "content", "View"):
+                    if isinstance(data.get(cle), str) and data[cle].strip():
+                        return extraire_attributions(data[cle])
+        if not bloc:
+            return []
+        sorties = []
+        for element in bloc:
+            if isinstance(element, dict):
+                cellules = [str(v) for v in element.values()
+                            if v not in (None, "", [], {})]
+                sorties.append({"id": str(element.get("Id")
+                                          or element.get("id") or ""),
+                                "cellules": cellules, "_json": element})
+        return sorties
+    return []
+
+
 def trouver_charge_qui_marche(session, id_pays=None):
-    """Essaie les charges candidates et renvoie (nom, charge, lignes) pour la
-    premiere qui ramene des lignes. (None, None, []) si aucune."""
-    for nom, charge in charges_candidates(0, 25, id_pays):
-        statut, texte = interroger(session, charge)
-        lignes = extraire_attributions(texte) if statut and statut < 400 else []
+    """Essaie les charges candidates et renvoie (nom, url, charge, encodage,
+    lignes) pour la premiere qui ramene des lignes. Imprime SYSTEMATIQUEMENT
+    le corps des reponses courtes : c'est l'information la plus utile, et son
+    absence a fait perdre deux tours de diagnostic."""
+    corps_vus = set()
+    for nom, url, charge, encodage in charges_candidates(0, 25, id_pays):
+        statut, texte = interroger(session, url, charge, encodage)
+        lignes = lignes_depuis_reponse(texte) if statut and statut < 400 else []
         if DEBUG:
-            print("    {:22} -> HTTP {} ({} octets) : {} ligne(s)".format(
+            print("    {:32} -> HTTP {} ({} octets) : {} ligne(s)".format(
                 nom, statut, len(texte), len(lignes)))
+            apercu = " ".join((texte or "").split())[:300]
+            if apercu and apercu not in corps_vus:
+                corps_vus.add(apercu)
+                print("        corps : {}".format(apercu))
         if lignes:
-            return nom, charge, lignes
-    return None, None, []
+            return nom, url, charge, encodage, lignes
+    return None, None, None, None, []
 
 
 def collecte(session=None):
@@ -344,7 +420,8 @@ def collecte(session=None):
     if DEBUG:
         print("\n[A] Recherche de la charge utile acceptee "
               "(pays test : {}) :".format(cibles[0][0]))
-    nom_charge, modele_charge, _ = trouver_charge_qui_marche(session, cibles[0][1])
+    nom_charge, url_ok, modele_charge, encodage, _ = trouver_charge_qui_marche(
+        session, cibles[0][1])
     if not modele_charge:
         stats["arret"] = "aucune charge utile acceptee"
         return [], stats
@@ -359,13 +436,17 @@ def collecte(session=None):
         stats["pays"] += 1
         for page in range(PAGES_PAR_PAYS):
             charge = dict(modele_charge)
-            charge["PageIndex"] = page + (1 if "1-based" in (nom_charge or "") else 0)
-            charge["Countries"] = [ident]
-            statut, texte = interroger(session, charge)
+            charge["PageIndex"] = page
+            # Le champ de pays differe selon la convention retenue : on
+            # renseigne celui que la charge gagnante utilise reellement.
+            for cle in ("Countries", "selContractAwardCountry", "FirstCountry"):
+                if cle in charge:
+                    charge[cle] = [ident] if cle == "Countries" else ident
+            statut, texte = interroger(session, url_ok, charge, encodage)
             stats["requetes"] += 1
             if not statut or statut >= 400:
                 break
-            lot = extraire_attributions(texte)
+            lot = lignes_depuis_reponse(texte)
             neuves = []
             for l in lot:
                 cle = l["id"] or "|".join(l["cellules"])[:120]
