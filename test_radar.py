@@ -2004,5 +2004,129 @@ class TestCablageUNGMDashboard(unittest.TestCase):
         self.assertIn("<html", html.lower())
 
 
+try:
+    import ungm_attributions
+except Exception:
+    ungm_attributions = None
+
+
+@unittest.skipIf(ungm_attributions is None, "ungm_attributions indisponible")
+class TestAttributionsUNGM(unittest.TestCase):
+    """Attributions UNGM. Ecrit dans `attributions_radar`, l'onglet deja
+    partage par TED et la Banque Mondiale : aucun cablage dashboard requis.
+
+    ATTENTION : la structure REELLE des lignes d'attribution UNGM n'a pas
+    encore ete observee (l'endpoint repondait vide lors des sondes). Ces tests
+    verrouillent la logique sur des structures PLAUSIBLES ; le mode decouverte
+    du collecteur imprimera la structure reelle pour ajustement."""
+
+    def _html(self, cellules, ident="88214"):
+        return ('<div role="row" data-contractawardid="{}" class="tableRow dataRow">'
+                .format(ident) +
+                "".join('<div role="cell">{}</div>'.format(c) for c in cellules) +
+                "</div>")
+
+    # -- Distinction titulaire / objet de marche --------------------------
+    def test_raison_sociale_reconnue_malgre_un_titre_court(self):
+        """Bug attrape a l'ecriture : avec la regle "le plus court", un titre
+        comme "Convoy escort services" etait pris pour le titulaire."""
+        t, _ = ungm_attributions.montant_et_titulaire(
+            {"restes": ["Convoy escort services", "Bancroft Global Development"]})
+        self.assertEqual(t, "Bancroft Global Development")
+
+    def test_forme_juridique_decisive(self):
+        for objet, societe in (("Supply of water pumps", "SOGEA SATOM SARL"),
+                               ("Rehabilitation of health centres", "China Wuyi Co. Ltd"),
+                               ("Fourniture de vehicules", "Entreprise Colas Afrique")):
+            t, _ = ungm_attributions.montant_et_titulaire({"restes": [objet, societe]})
+            self.assertEqual(t, societe)
+
+    def test_objet_de_marche_jamais_retenu_seul(self):
+        """Prudence : plutot rien qu'un objet de marche dans la colonne gagnant."""
+        t, _ = ungm_attributions.montant_et_titulaire(
+            {"restes": ["Provision of catering services", "Supply of office furniture"]})
+        self.assertEqual(t, "")
+
+    def test_montant_reconnu_et_separe(self):
+        t, m = ungm_attributions.montant_et_titulaire(
+            {"restes": ["STECOL CORPORATION", "USD 4,250,000"]})
+        self.assertEqual(t, "STECOL CORPORATION")
+        self.assertIn("4,250,000", m)
+
+    # -- Normalisation et schema ------------------------------------------
+    def test_ligne_complete(self):
+        html = self._html(["Provision of armoured vehicle rental and convoy escort",
+                           "Bancroft Global Development", "WFP", "12-Jun-2026",
+                           "USD 4250000", "WFP/SOM/2026/117"])
+        a = ungm_attributions.normaliser(
+            ungm_attributions.extraire_attributions(html)[0], "SOM")
+        self.assertEqual(a["gagnant"], "Bancroft Global Development")
+        self.assertEqual(a["pays_execution"], "SOM")
+        self.assertEqual(a["acheteur"], "WFP")
+        self.assertEqual(a["date_publication"], "2026-06-12")
+        self.assertEqual(a["publication_number"], "UNGMA-88214")
+        self.assertEqual(a["a_demarcher"], "oui")
+
+    def test_pays_ecrit_en_iso3(self):
+        """Le dashboard resout les attributions en mode ISO : un nom de pays
+        donnerait "Non classé" (leçon des attributions BM)."""
+        html = self._html(["Escorte", "Bancroft Global Development", "WFP", "12-Jun-2026"])
+        a = ungm_attributions.normaliser(
+            ungm_attributions.extraire_attributions(html)[0], "SOM")
+        self.assertEqual(a["pays_execution"], "SOM")
+
+    def test_sans_titulaire_rien_n_est_ecrit(self):
+        html = self._html(["Provision of catering services", "WFP", "12-Jun-2026"])
+        self.assertIsNone(ungm_attributions.normaliser(
+            ungm_attributions.extraire_attributions(html)[0], "SOM"))
+
+    def test_pays_hors_perimetre_rejete(self):
+        html = self._html(["Escorte", "Bancroft Global Development", "WFP", "12-Jun-2026"])
+        ligne = ungm_attributions.extraire_attributions(html)[0]
+        self.assertIsNone(ungm_attributions.normaliser(ligne, "DNK"))
+
+    def test_schema_identique_aux_autres_attributions(self):
+        """Garde-fou d'integration : meme onglet et memes colonnes que TED,
+        sinon la lentille Titulaires et la fiche 360 cassent."""
+        try:
+            import ted_complet_attributions as ta
+        except Exception:
+            self.skipTest("ted_complet_attributions indisponible")
+        self.assertEqual(ungm_attributions.COLONNES, ta.COLONNES)
+        self.assertEqual(ungm_attributions.NOM_ONGLET, ta.NOM_ONGLET)
+
+    def test_integration_dashboard_automatique(self):
+        """Bout en bout : la ligne produite doit devenir un lead ATTRIB classe."""
+        try:
+            import radar_dashboard as dash
+        except Exception:
+            self.skipTest("radar_dashboard indisponible")
+        html = self._html(["Convoy escort services", "Bancroft Global Development",
+                           "WFP", "12-Jun-2026", "USD 4250000"])
+        a = ungm_attributions.normaliser(
+            ungm_attributions.extraire_attributions(html)[0], "SOM")
+        lead = dash.attribution_vers_lead(a)
+        self.assertEqual(lead["src"], "ATTRIB")
+        self.assertEqual(lead["entreprise"], "Bancroft Global Development")
+        self.assertEqual(lead["pays"], "Somalie")
+        self.assertNotEqual(lead["zone"], "Non classé")
+
+    def test_deduplication(self):
+        html = self._html(["Escorte", "Bancroft Global Development", "WFP", "12-Jun-2026"])
+        l1 = ungm_attributions.extraire_attributions(html)[0]
+        l2 = dict(l1, id="99999")          # identifiant different, meme marche
+        for l in (l1, l2):
+            l["pays_iso3"] = "SOM"
+        sorties, _ = ungm_attributions.construire([l1, l2])
+        self.assertEqual(len(sorties), 1)
+
+    def test_charges_candidates_incluent_le_filtre_pays(self):
+        """L'hypothese testee : l'endpoint repondait vide faute de filtre."""
+        noms = [n for n, _ in ungm_attributions.charges_candidates(0, 25, "2500")]
+        self.assertIn("awards+pays", noms)
+        charge = dict(ungm_attributions.charges_candidates(0, 25, "2500"))["awards+pays"]
+        self.assertEqual(charge["Countries"], ["2500"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
