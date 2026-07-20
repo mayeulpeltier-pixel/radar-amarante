@@ -490,18 +490,61 @@ def main():
 
 
 def _dump_page(session):
-    """Dernier recours en mode verification : montrer ce que rend la page
-    publique des attributions, pour arbitrer si la source est exploitable."""
+    """Dernier recours : au lieu de deviner la requete, on la CHERCHE dans le
+    JavaScript de la page publique.
+
+    Constat du 20/07/2026 : les 4 charges essayees renvoient toutes exactement
+    101 octets, donc une enveloppe vide constante. Or la documentation UNGM
+    indique que les attributions sont publiques et gratuites. La requete
+    existe donc, mais sa forme nous echappe. Ce diagnostic extrait du code de
+    la page les URL d'appel et les noms de champs reellement utilises, ce qui
+    remplace une inspection manuelle par F12 > Reseau."""
     try:
         rep = session.get(PAGE_AWARDS, headers=ENTETES, timeout=45)
         html = rep.text or ""
         print("\n[D] GET {} -> HTTP {} ({} octets)".format(
             PAGE_AWARDS, rep.status_code, len(rep.content)))
-        print("    marqueurs de ligne : {}".format(
-            html.count('role="row"') + html.count("dataRow")))
-        for attr in ("contractawardid", "awardid", "noticeid"):
-            print("    attribut {!r} present : {}".format(
-                attr, attr in html.lower()))
+
+        print("\n[E] URL d'appel citees dans le code de la page :")
+        urls = set()
+        for motif in (r'url\s*:\s*[\'"]([^\'"]{4,120})[\'"]',
+                      r'[\'"](/Public/[A-Za-z]*(?:Award|Search)[A-Za-z/]*)[\'"]',
+                      r'action\s*=\s*[\'"]([^\'"]{4,120})[\'"]',
+                      r'data-url\s*=\s*[\'"]([^\'"]{4,120})[\'"]'):
+            for u in re.findall(motif, html, re.I):
+                if re.search(r"(?i)award|search", u):
+                    urls.add(u.strip())
+        for u in sorted(urls)[:20]:
+            print("    {}".format(u))
+        if not urls:
+            print("    (aucune)")
+
+        print("\n[F] Noms de champs du formulaire (candidats pour la charge utile) :")
+        champs = set()
+        for motif in (r'name\s*=\s*[\'"]([A-Za-z][A-Za-z0-9_.]{2,40})[\'"]',
+                      r'id\s*=\s*[\'"]([A-Za-z][A-Za-z0-9_.]{2,40})[\'"]'):
+            champs.update(re.findall(motif, html))
+        interessants = sorted(c for c in champs if re.search(
+            r"(?i)award|supplier|vendor|date|country|agenc|page|sort|search|"
+            r"descr|refer|unspsc", c))
+        for c in interessants[:35]:
+            print("    {}".format(c))
+        if not interessants:
+            print("    (aucun)")
+
+        print("\n[G] Fragments de code entourant 'ContractAward' :")
+        vus = 0
+        for m in re.finditer(r"(?i)contractaward", html):
+            deb, fin = max(0, m.start() - 110), min(len(html), m.end() + 110)
+            extrait = re.sub(r"\s+", " ", html[deb:fin]).strip()
+            if "<" in extrait and "url" not in extrait.lower():
+                continue                  # simple lien de navigation
+            print("    ...{}...".format(extrait[:210]))
+            vus += 1
+            if vus >= 6:
+                break
+        if not vus:
+            print("    (aucun fragment de code, la page ne contient que des liens)")
     except Exception as e:
         print("    echec du dump : {}".format(e))
 
