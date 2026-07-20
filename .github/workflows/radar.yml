@@ -98,8 +98,21 @@ jobs:
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          RADAR_UNGM_DEBUG: "0"
+          RADAR_UNGM_DEBUG: "1"
         run: python ungm_radar.py
+
+      # 3d) Attributions UNGM : titulaires nommes de marches ONU. Ecrit dans le
+      #     MEME onglet que les attributions TED et BM, donc aucun cablage
+      #     dashboard. PREMIER RUN : garder DEBUG a "1", le mode decouverte
+      #     cherche la charge utile acceptee par l'endpoint et imprime la
+      #     structure reelle des lignes (jamais observee a ce jour).
+      - name: Collecter les attributions UNGM
+        if: always()
+        env:
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          RADAR_UNGM_ATTRIB_DEBUG: "1"
+        run: python ungm_attributions.py
 
       - name: Generer le tableau de bord
         if: always()
