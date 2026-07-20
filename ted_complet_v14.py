@@ -211,6 +211,58 @@ ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/messages"
 # Ne pas swapper a l'aveugle.
 MODELE = os.environ.get("RADAR_MODELE") or "claude-haiku-4-5-20251001"  # modele rapide/economique pour le volume
 MODELE_RAFFINEMENT = os.environ.get("RADAR_MODELE_RAFFINEMENT") or "claude-sonnet-4-6"  # escalade sur les cas au-dessus du
+
+# --- Sante des appels au modele --------------------------------------------
+# Un modele retire fait echouer TOUS les appels : chaque avis est ignore et le
+# run se termine "vert" avec zero analyse. Le radar semble tourner alors qu'il
+# ne produit plus rien. On compte donc les appels et les echecs pour pouvoir
+# marquer le run en ECHEC (radar_run sort alors en code 1, ce qui declenche
+# l'alerte e-mail de GitHub Actions).
+# Horizons de retrait au 18/07/2026, verifies sur la table officielle des
+# depreciations : haiku-4-5-20251001 pas avant le 15/10/2026, sonnet-4-6 pas
+# avant le 17/02/2027. Les deux se surchargent sans toucher au code, via
+# RADAR_MODELE et RADAR_MODELE_RAFFINEMENT.
+STATS_LLM = {"appels": 0, "echecs": 0, "modele_invalide": 0, "detail": ""}
+
+# Proportion d'echecs au-dela de laquelle on considere l'API cassee (et non
+# quelques avis malchanceux). Sous ce seuil, le pipeline degrade en silence
+# comme avant : un avis rate n'est pas un incident.
+SEUIL_ECHEC_LLM = float(os.environ.get("RADAR_SEUIL_ECHEC_LLM", "0.8"))
+MINI_APPELS_LLM = int(os.environ.get("RADAR_MINI_APPELS_LLM", "10"))
+
+
+def _marquer_echec_llm(detail):
+    """Enregistre un echec d'appel et repere les erreurs de MODELE (retrait,
+    nom invalide), qui exigent une action et non une simple patience."""
+    STATS_LLM["echecs"] += 1
+    bas = str(detail or "").lower()
+    if ("not_found_error" in bas or "model" in bas and
+            ("not found" in bas or "invalid" in bas or "does not exist" in bas)):
+        STATS_LLM["modele_invalide"] += 1
+        STATS_LLM["detail"] = str(detail)[:300]
+
+
+def sante_llm():
+    """(ok, message) sur l'etat des appels au modele pour ce run.
+
+    Renvoie ok=False si un modele est refuse par l'API, ou si la quasi-totalite
+    des appels a echoue. Dans les deux cas le run n'a rien produit d'utile et
+    doit etre signale bruyamment plutot que passer pour un succes."""
+    appels, echecs = STATS_LLM["appels"], STATS_LLM["echecs"]
+    if STATS_LLM["modele_invalide"]:
+        return False, (
+            "MODELE REFUSE PAR L'API ({} fois). Modeles configures : {} (volume) "
+            "et {} (raffinement). Verifie la table des depreciations et surcharge "
+            "RADAR_MODELE / RADAR_MODELE_RAFFINEMENT. Detail : {}".format(
+                STATS_LLM["modele_invalide"], MODELE, MODELE_RAFFINEMENT,
+                STATS_LLM["detail"] or "n.c."))
+    if appels >= MINI_APPELS_LLM and echecs >= appels * SEUIL_ECHEC_LLM:
+        return False, (
+            "APPELS AU MODELE MASSIVEMENT EN ECHEC : {}/{}. Cle API, quota ou "
+            "disponibilite du service a verifier.".format(echecs, appels))
+    if echecs:
+        return True, "{} echec(s) d'appel sur {} (tolerable).".format(echecs, appels)
+    return True, "{} appel(s) au modele, aucun echec.".format(appels)
     # seuil de surveillance (deja prevu au cadrage initial section 7.3,
     # jamais cable jusqu'ici : "n'escalader que sur les cas limites").
 SEUIL_ALERTE = 6     # "fort", a contacter
@@ -823,6 +875,7 @@ def appeler_modele(prompt, modele=None):
         "temperature": 0,
         "messages": [{"role": "user", "content": prompt}],
     }
+    STATS_LLM["appels"] += 1
     try:
         reponse = session_robuste().post(ANTHROPIC_ENDPOINT, headers=headers, json=corps, timeout=30)
         reponse.raise_for_status()
@@ -833,6 +886,7 @@ def appeler_modele(prompt, modele=None):
         # d'API. session_robuste a deja retente avant d'en arriver la.
         print("  Timeout API Anthropic (>30s, apres reessais) -- avis ignore "
               "pour ce run, le pipeline continue.")
+        _marquer_echec_llm("timeout")
         return None
     except requests.exceptions.RequestException as e:
         # Le corps de la reponse contient l'explication reelle d'Anthropic
@@ -845,6 +899,7 @@ def appeler_modele(prompt, modele=None):
         print("  Erreur d'appel API : {}".format(e))
         if detail:
             print("  Detail renvoye par Anthropic : {}".format(detail))
+        _marquer_echec_llm(detail or str(e))
         return None
 
     texte = reponse.json()["content"][0]["text"].strip()
