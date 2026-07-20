@@ -1643,6 +1643,76 @@ class TestUNGM(unittest.TestCase):
         self.assertEqual(len(avis), 1)
         self.assertEqual(motifs["sans_pays"], 1)
 
+    # -- Corrections issues du premier run reel (20/07/2026) ---------------
+    # Structure REELLE observee : [bruit UNGM Pro][titre][echeance + heure +
+    # flottant][publication][agence][type][reference]. Aucune colonne pays.
+    REELLE = ["Unsave this procurement opportunity. Subscribe to UNGM Pro to be "
+              "able to save procurement opportunities.",
+              "WRDJI001/2026 Study, acquisition, and installation of a solar power "
+              "system for the WHO Djibouti Open in a new window",
+              "20-Aug-2026 04:00 (GMT 3.00) 30.6971513338947",
+              "20-Jul-2026", "WHO", "Request for proposal", "EM/ACO/DJI/P/0009332"]
+
+    def test_cellule_de_service_ecartee(self):
+        """La cellule "Unsave this procurement opportunity..." est presente sur
+        chaque ligne et n'a aucun contenu metier."""
+        self.assertEqual(ungm_radar.nettoyer_cellule(self.REELLE[0]), "")
+
+    def test_suffixe_accessibilite_retire(self):
+        self.assertEqual(
+            ungm_radar.nettoyer_cellule("Supply of drugs Open in a new window"),
+            "Supply of drugs")
+
+    def test_date_avec_heure_et_residu_technique(self):
+        """La cellule d'echeance porte heure, fuseau et un flottant parasite ;
+        elle etait rejetee par l'ancienne limite de longueur."""
+        ligne = ungm_radar.extraire_lignes(self._html(self.REELLE))[0]
+        champs = ungm_radar.interpreter_ligne(ligne["cellules"])
+        self.assertEqual(champs["date_publication"], "2026-07-20")
+        self.assertEqual(champs["deadline"], "2026-08-20")
+
+    def test_titre_commencant_comme_un_type_reste_un_titre(self):
+        """Bug reel : "ITB for Supply of veterinary drugs" etait pris pour le
+        type d'avis, et "Invitation to bid" devenait le titre."""
+        cellules = ["ITB for Supply of veterinary drugs Open in a new window",
+                    "30-Jul-2026 14:00 (GMT 2.00) 10.15", "20-Jul-2026",
+                    "FAO", "Invitation to bid", "2026/FNSDN/137675"]
+        champs = ungm_radar.interpreter_ligne(
+            ungm_radar.extraire_lignes(self._html(cellules))[0]["cellules"])
+        self.assertEqual(champs["titre"], "ITB for Supply of veterinary drugs")
+        self.assertEqual(champs["type_avis"], "Invitation to bid")
+        self.assertEqual(champs["agence"], "FAO")
+
+    def test_pays_detecte_dans_le_titre(self):
+        """UNGM n'a PAS de colonne pays : le titre est la premiere piste."""
+        ligne = ungm_radar.extraire_lignes(self._html(self.REELLE))[0]
+        champs = ungm_radar.interpreter_ligne(ligne["cellules"])
+        iso, voie = ungm_radar.detecter_pays(champs)
+        self.assertEqual(iso, "DJI")
+        self.assertEqual(voie, "titre")
+
+    def test_pays_detecte_dans_la_reference(self):
+        self.assertEqual(ungm_radar.pays_depuis_reference("EM/ACO/DJI/P/0009332"), "DJI")
+        self.assertEqual(ungm_radar.pays_depuis_reference("2026/FNSDN/FNSDN/137675"), "")
+        self.assertEqual(ungm_radar.pays_depuis_reference("rfx_8467_ROAS"), "")
+
+    def test_pays_le_plus_long_prioritaire(self):
+        """Piege : "South Sudan" contient "Sudan". Sans priorite au nom le plus
+        long, le lead atterrirait dans le mauvais pays."""
+        self.assertEqual(ungm_radar.pays_depuis_texte("Convoy escort in South Sudan"), "SSD")
+        self.assertEqual(ungm_radar.pays_depuis_texte("Convoy escort in Sudan"), "SDN")
+
+    def test_pas_de_faux_positif_sur_fragment(self):
+        """La recherche se fait par mot entier."""
+        self.assertEqual(ungm_radar.pays_depuis_texte("Malicious software audit"), "")
+
+    def test_avis_sans_pays_identifiable_est_ecarte(self):
+        """Mieux vaut ne rien remonter qu'un avis mal localise."""
+        cellules = ["Supply of veterinary drugs", "20-Jul-2026", "FAO",
+                    "Invitation to bid", "2026/FNSDN/137675"]
+        self.assertIsNone(
+            ungm_radar.normaliser(ungm_radar.extraire_lignes(self._html(cellules))[0]))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
