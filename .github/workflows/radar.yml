@@ -87,6 +87,20 @@ jobs:
           RADAR_BM_ATTRIB_DEBUG: "0"
         run: python bm_attributions.py
 
+      # 3c) UNGM : avis des agences ONU (HCR, PAM, UNICEF, PNUD, OIM, UNOPS...),
+      #     qui operent exactement dans les zones d'Amarante. Isole : un echec
+      #     ici n'empeche ni le dashboard ni la publication.
+      #     PREMIER RUN : laisser RADAR_UNGM_DEBUG a "1" pour verifier le
+      #     parsing (le journal imprime la structure brute), puis passer a "0".
+      - name: Collecter les avis UNGM
+        if: always()
+        env:
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          RADAR_UNGM_DEBUG: "1"
+        run: python ungm_radar.py
+
       - name: Generer le tableau de bord
         if: always()
         env:
