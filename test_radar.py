@@ -1787,6 +1787,63 @@ class TestUNGM(unittest.TestCase):
         self.assertTrue(ungm_radar._est_agence("UNDP"))
         self.assertTrue(ungm_radar._est_agence("UNHCR"))
 
+    # -- Priorisation de la file d'analyse ---------------------------------
+    # Un run reel ramene ~240 avis pour un budget de 60 appels. Sans tri,
+    # l'ordre etant alphabetique par pays, l'Afghanistan consommait tout et le
+    # Mali comme l'Ukraine n'avaient aucune analyse (constate le 20/07/2026).
+    def _avis(self, pays, titre):
+        return {"pays_execution": pays, "titre": titre, "description": ""}
+
+    def test_marche_de_terrain_avant_fourniture_de_bureau(self):
+        file_ = ungm_radar.prioriser([
+            self._avis("AFG", "Supply and Delivery of Office Supplies"),
+            self._avis("AFG", "Construction of water points and borehole drilling"),
+        ])
+        self.assertIn("Construction", file_[0]["titre"])
+
+    def test_escorte_de_convois_en_tete(self):
+        file_ = ungm_radar.prioriser([
+            self._avis("KHM", "Meeting venue, coffee break lunch"),
+            self._avis("UKR", "Convoy escort and static guarding services"),
+        ])
+        self.assertEqual(file_[0]["pays_execution"], "UKR")
+
+    def test_zone_rouge_avant_zone_calme_a_interet_egal(self):
+        file_ = ungm_radar.prioriser([
+            self._avis("KHM", "Construction of a warehouse"),
+            self._avis("MLI", "Construction of a warehouse"),
+        ])
+        self.assertEqual(file_[0]["pays_execution"], "MLI")
+
+    def test_interet_lexical_borne(self):
+        for titre in ("Construction works infrastructure road bridge camp",
+                      "Translation and catering and printing"):
+            v = ungm_radar.interet_lexical(self._avis("MLI", titre))
+            self.assertGreaterEqual(v, 0.2)
+            self.assertLessEqual(v, 3.0)
+
+    def test_priorisation_ne_jette_rien(self):
+        """Elle ORDONNE seulement : aucun avis ne doit disparaitre."""
+        avis = [self._avis("MLI", "Construction"), self._avis("KHM", "Catering"),
+                self._avis("UKR", "Escort")]
+        self.assertEqual(len(ungm_radar.prioriser(avis)), 3)
+
+    def test_budget_d_analyse_respecte(self):
+        """Le budget borne le nombre d'appels au modele."""
+        appels = {"n": 0}
+
+        def faux_llm(avis, modele=None):
+            appels["n"] += 1
+            return None
+
+        vrai = ungm_radar.ted.appeler_llm
+        try:
+            ungm_radar.ted.appeler_llm = faux_llm
+            ungm_radar.analyser([self._avis("MLI", "Construction")] * 20, budget=5)
+        finally:
+            ungm_radar.ted.appeler_llm = vrai
+        self.assertEqual(appels["n"], 5)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
