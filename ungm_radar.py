@@ -780,37 +780,48 @@ def ouvrir_feuille(sheet_id, fichier_cs):
         return f
 
 
+def cible_commerciale(avis):
+    """Qui demarcher. Une agence ONU ne se protege pas elle-meme via un marche
+    de travaux : c'est le titulaire qui deploiera des equipes sur le terrain.
+    C'est lui la cible, pas l'agence."""
+    return ("Titulaire (entreprise ou bureau d'etudes) qui executera ce marche "
+            "{} sur le terrain, pas l'agence elle-meme. Viser sa direction "
+            "operations / surete.".format(avis.get("acheteur", "ONU")))
+
+
 def ligne_depuis_resultat(r):
-    a, e = r["avis"], r["extraction"]
-    valeurs = {
+    avis, extraction = r["avis"], (r["extraction"] or {})
+    v = {
         "date_maj": date.today().isoformat(),
         "score_final": r["final"], "score_surete": r["surete"],
         "score_commercial": r["commercial"],
-        "action_recommandee": ted.action_recommandee(r["final"]),
-        "fenetre_action": ted.fenetre_action(a.get("deadline", "")),
-        "niveau_opportunite_amarante": e.get("niveau_opportunite_amarante", ""),
-        "titre": a.get("titre", ""), "acheteur": a.get("acheteur", ""),
-        "pays_execution": a.get("pays_execution", ""),
-        "pays_acheteur": a.get("pays_acheteur", ""),
-        "type_client": e.get("type_client", ""),
-        "type_mobilite": e.get("type_mobilite", ""),
-        "profil_personnes_exposees": e.get("profil_personnes_exposees", ""),
-        "duree_estimee": e.get("duree_estimee", ""),
-        "accessibilite_commerciale": e.get("accessibilite_commerciale", ""),
-        "securite_existante_detectee": e.get("securite_existante", ""),
-        "profils_acteurs_probables": ", ".join(e.get("profils_acteurs_probables", []) or []),
-        "cible_commerciale_reelle": e.get("cible_commerciale_reelle", ""),
-        "justification": e.get("justification", ""),
-        "confiance": e.get("confiance", ""),
+        "action_recommandee": ted.calculer_action_recommandee(
+            r["final"], extraction, surete=r["surete"]),
+        "fenetre_action": ted.calculer_fenetre_action(avis),
+        "niveau_opportunite_amarante": extraction.get("niveau_opportunite_amarante", ""),
+        "titre": avis.get("titre", ""), "acheteur": avis.get("acheteur", ""),
+        "pays_execution": avis.get("pays_execution", ""),
+        "pays_acheteur": avis.get("pays_acheteur", ""),
+        "type_client": extraction.get("type_client", ""),
+        "type_mobilite": extraction.get("type_mobilite", ""),
+        "profil_personnes_exposees": extraction.get("profil_personnes_exposees", ""),
+        "duree_estimee": extraction.get("duree_estimee", ""),
+        "accessibilite_commerciale": extraction.get("accessibilite_commerciale", ""),
+        "securite_existante_detectee": extraction.get("securite_existante_detectee", ""),
+        "profils_acteurs_probables": ", ".join(
+            extraction.get("profils_acteurs_probables") or []),
+        "cible_commerciale_reelle": cible_commerciale(avis),
+        "justification": extraction.get("justification", ""),
+        "confiance": extraction.get("confiance", ""),
         "modele": ted.MODELE, "raffine": r.get("raffine", False),
-        "divergence": "", "type_notice": a.get("type_notice", ""),
-        "phase": a.get("phase", ""),
-        "publication_number": a.get("publication_number", ""),
-        "lien_avis": a.get("lien_avis", ""),
-        "deadline": a.get("deadline", ""),
-        "date_publication": a.get("date_publication", ""),
+        "divergence": "", "type_notice": avis.get("type_notice", ""),
+        "phase": avis.get("phase", ""),
+        "publication_number": avis.get("publication_number", ""),
+        "lien_avis": avis.get("lien_avis", ""),
+        "deadline": avis.get("deadline", ""),
+        "date_publication": avis.get("date_publication", ""),
     }
-    return [str(valeurs.get(c, "")) for c in COLONNES_UNGM]
+    return [str(v.get(c, "")) for c in COLONNES_UNGM]
 
 
 def ecrire(feuille, resultats):
