@@ -1504,5 +1504,145 @@ console.log('OK');
             _sh.rmtree(dossier, ignore_errors=True)
 
 
+try:
+    import ungm_radar
+except Exception:
+    ungm_radar = None
+
+
+@unittest.skipIf(ungm_radar is None, "ungm_radar indisponible")
+class TestUNGM(unittest.TestCase):
+    """Collecteur UNGM. Le portail rend ses lignes en <div role="row"> et non
+    en <tr> (piege qui avait fait conclure a tort a un echec lors de la sonde
+    v1). Le parseur identifie chaque cellule PAR SON CONTENU, donc ces tests
+    verifient surtout qu'un changement d'ordre des colonnes ne casse rien."""
+
+    def _html(self, cellules, ident="307821"):
+        return ('<div role="row" tabindex="0" data-noticeid="{}" '
+                'class="tableRow dataRow notice-table">'.format(ident) +
+                "".join('<div role="cell" class="tableCell">{}</div>'.format(c)
+                        for c in cellules) + "</div>")
+
+    STANDARD = ["Request for Proposal",
+                "Provision of Security Guard Services for UNHCR Offices",
+                "UNHCR", "Mali", "RFP/MLI/2026/047", "10-Jul-2026", "15-Aug-2026"]
+
+    # -- Extraction des lignes -------------------------------------------
+    def test_lignes_en_div_role_row(self):
+        lignes = ungm_radar.extraire_lignes(self._html(self.STANDARD))
+        self.assertEqual(len(lignes), 1)
+        self.assertEqual(lignes[0]["id"], "307821")
+        self.assertEqual(len(lignes[0]["cellules"]), 7)
+
+    def test_lignes_sans_identifiant_ignorees(self):
+        """Les lignes d'en-tete n'ont pas de data-noticeid."""
+        html = '<div role="row"><div role="cell">Title</div></div>'
+        self.assertEqual(ungm_radar.extraire_lignes(html), [])
+
+    def test_html_vide(self):
+        self.assertEqual(ungm_radar.extraire_lignes(""), [])
+
+    # -- Interpretation par contenu ---------------------------------------
+    def test_ordre_standard(self):
+        a = ungm_radar.normaliser(ungm_radar.extraire_lignes(self._html(self.STANDARD))[0])
+        self.assertEqual(a["pays_execution"], "MLI")
+        self.assertEqual(a["acheteur"], "UNHCR")
+        self.assertEqual(a["type_notice"], "Request for Proposal")
+        self.assertIn("Security Guard", a["titre"])
+        self.assertEqual(a["date_publication"], "2026-07-10")
+        self.assertEqual(a["deadline"], "2026-08-15")
+
+    def test_ordre_des_colonnes_inverse(self):
+        """Le portail peut reordonner ses colonnes : le parseur doit tenir."""
+        inverse = list(reversed(self.STANDARD))
+        a = ungm_radar.normaliser(ungm_radar.extraire_lignes(self._html(inverse))[0])
+        self.assertEqual(a["pays_execution"], "MLI")
+        self.assertEqual(a["acheteur"], "UNHCR")
+        self.assertEqual(a["date_publication"], "2026-07-10")
+
+    def test_titre_mentionnant_une_agence_n_est_pas_l_agence(self):
+        """Piege reel : "…for UNHCR Offices" contient UNHCR sans etre l'emetteur."""
+        cellules = ["Provision of Security Guard Services for UNHCR Offices",
+                    "UNHCR", "Mali", "10-Jul-2026"]
+        a = ungm_radar.normaliser(ungm_radar.extraire_lignes(self._html(cellules))[0])
+        self.assertEqual(a["acheteur"], "UNHCR")
+        self.assertIn("Security Guard", a["titre"])
+
+    def test_pays_en_anglais_reconnus(self):
+        """UNGM publie en anglais : la table francaise seule ne suffisait pas."""
+        for nom, iso in (("Somalia", "SOM"), ("South Sudan", "SSD"),
+                         ("Iraq", "IRQ"), ("Afghanistan", "AFG")):
+            cellules = ["WFP", nom, "Convoy escort services", "05-Jul-2026"]
+            a = ungm_radar.normaliser(ungm_radar.extraire_lignes(self._html(cellules))[0])
+            self.assertIsNotNone(a, "{} non reconnu".format(nom))
+            self.assertEqual(a["pays_execution"], iso)
+
+    def test_pays_hors_perimetre_rejete(self):
+        cellules = ["UNICEF", "Denmark", "Fournitures de bureau", "06-Jul-2026"]
+        self.assertIsNone(
+            ungm_radar.normaliser(ungm_radar.extraire_lignes(self._html(cellules))[0]))
+
+    def test_agence_inconnue_repli_neutre(self):
+        cellules = ["Mali", "Fourniture de vehicules blindes", "12-Jul-2026"]
+        a = ungm_radar.normaliser(ungm_radar.extraire_lignes(self._html(cellules))[0])
+        self.assertEqual(a["acheteur"], "Nations Unies")
+
+    # -- Dates -------------------------------------------------------------
+    def test_formats_de_date(self):
+        self.assertEqual(ungm_radar.lire_date("15-Aug-2026"), "2026-08-15")
+        self.assertEqual(ungm_radar.lire_date("2026-08-15"), "2026-08-15")
+        self.assertEqual(ungm_radar.lire_date("15/08/2026"), "2026-08-15")
+        self.assertEqual(ungm_radar.lire_date("sans date"), "")
+
+    def test_une_seule_date_ne_cree_pas_de_fausse_echeance(self):
+        cellules = ["WFP", "Mali", "Escorte de convois", "10-Jul-2026"]
+        a = ungm_radar.normaliser(ungm_radar.extraire_lignes(self._html(cellules))[0])
+        self.assertEqual(a["date_publication"], "2026-07-10")
+        self.assertEqual(a["deadline"], "")
+
+    def test_fenetre_de_publication(self):
+        from datetime import date as _d, timedelta as _td
+        auj = _d(2026, 7, 18)
+        self.assertTrue(ungm_radar.dans_la_fenetre((auj - _td(days=10)).isoformat(), auj, 45))
+        self.assertFalse(ungm_radar.dans_la_fenetre((auj - _td(days=200)).isoformat(), auj, 45))
+        self.assertTrue(ungm_radar.dans_la_fenetre("", auj, 45))   # sans date, on garde
+
+    # -- Identifiants et schema -------------------------------------------
+    def test_identifiant_et_lien(self):
+        a = ungm_radar.normaliser(ungm_radar.extraire_lignes(self._html(self.STANDARD))[0])
+        self.assertEqual(a["publication_number"], "UNGM-307821")
+        self.assertIn("307821", a["lien_avis"])
+
+    def test_schema_identique_aux_autres_bailleurs(self):
+        """Colonnes identiques a AfDB : le dashboard pourra lire cet onglet
+        avec son helper generique, sans code specifique."""
+        try:
+            import afdb_radar
+        except Exception:
+            self.skipTest("afdb_radar indisponible")
+        self.assertEqual(ungm_radar.COLONNES_UNGM, afdb_radar.COLONNES_AFDB)
+        self.assertEqual(ungm_radar.TOUTES_COLONNES_UNGM, afdb_radar.TOUTES_COLONNES_AFDB)
+
+    def test_collecte_deduplique_les_pages(self):
+        """Un portail qui reboucle ne doit pas gonfler la collecte."""
+        page = self._html(self.STANDARD)
+        lignes, stats = ungm_radar.collecte(fetch=lambda p: page)
+        self.assertEqual(len(lignes), 1)
+        self.assertEqual(stats["arret"], "pagination bouclee")
+
+    def test_collecte_s_arrete_sur_page_vide(self):
+        lignes, stats = ungm_radar.collecte(fetch=lambda p: "")
+        self.assertEqual(lignes, [])
+        self.assertEqual(stats["arret"], "fin des donnees")
+
+    def test_construire_compte_les_rejets(self):
+        bons = ungm_radar.extraire_lignes(self._html(self.STANDARD))
+        hors = ungm_radar.extraire_lignes(
+            self._html(["UNICEF", "Denmark", "Fournitures", "06-Jul-2026"], ident="9"))
+        avis, motifs = ungm_radar.construire(bons + hors)
+        self.assertEqual(len(avis), 1)
+        self.assertEqual(motifs["sans_pays"], 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
