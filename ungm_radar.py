@@ -665,6 +665,63 @@ def collecte_par_pays(session=None, fetch=None, table_pays=None):
     return lignes, stats
 
 
+# --- Priorisation de la file d'analyse -------------------------------------
+# Un run reel ramene ~240 avis pour un budget de 60 appels au modele. Sans
+# tri, l'ordre de collecte etant alphabetique par pays, l'Afghanistan
+# consommait tout le budget et le Mali, l'Ukraine ou la Somalie n'avaient
+# AUCUNE analyse (constate le 20/07/2026). On classe donc la file.
+#
+# UNGM n'a pas de CPV : ce filtre lexical en tient lieu. Il ne SUPPRIME rien,
+# il ordonne seulement, pour que le budget aille d'abord aux avis susceptibles
+# d'impliquer une presence de terrain.
+MOTS_FORTS = (
+    "construction", "travaux", "works", "infrastructure", "rehabilitation",
+    "réhabilitation", "borehole", "forage", "drilling", "road", "route",
+    "bridge", "pont", "camp", "shelter", "abri", "warehouse", "entrepot",
+    "entrepôt", "logistics", "logistique", "transport", "convoy", "convoi",
+    "escort", "escorte", "fleet", "vehicle", "vehicule", "véhicule",
+    "security", "securite", "sécurité", "guard", "gardiennage", "safety",
+    "protection", "surveillance", "demining", "deminage", "déminage",
+    "evacuation", "field", "terrain", "deployment", "installation",
+    "maintenance", "generator", "solar", "electrical", "energy", "engineering",
+    "supervision", "building", "clinic", "hospital", "health facility",
+    "water", "sanitation", "pipeline", "drilling", "excavation", "mission",
+)
+MOTS_FAIBLES = (
+    "translation", "traduction", "interpretation", "interprétation",
+    "catering", "restauration", "coffee", "lunch", "meeting venue",
+    "workshop venue", "printing", "impression", "stationery",
+    "office supplies", "fourniture de bureau", "software", "logiciel",
+    "application development", "website", "site web", "graphic", "design of a",
+    "communication campaign", "air ticket", "billet", "webinar", "e-learning",
+)
+
+
+def interet_lexical(avis):
+    """Score d'interet grossier (0.2 a 3.0) d'un avis, sans appel au modele.
+    Sert UNIQUEMENT a ordonner la file : rien n'est jete."""
+    texte = "{} {}".format(avis.get("titre", ""), avis.get("description", "")).lower()
+    score = 1.0
+    for mot in MOTS_FORTS:
+        if mot in texte:
+            score += 0.5
+            if score >= 3.0:
+                break
+    for mot in MOTS_FAIBLES:
+        if mot in texte:
+            score -= 0.6
+    return max(0.2, min(3.0, score))
+
+
+def prioriser(avis_liste):
+    """Ordonne la file : risque du pays x interet lexical, du plus fort au
+    plus faible. Garantit que les zones rouges passent avant les autres."""
+    def cle(a):
+        risque = ted.MULTIPLICATEUR_ZONE.get(a.get("pays_execution", ""), 0.2)
+        return -(risque * interet_lexical(a))
+    return sorted(avis_liste, key=cle)
+
+
 def construire(lignes):
     """Lignes brutes -> avis normalises, avec le detail des rejets."""
     avis, motifs = [], {"sans_pays": 0, "sans_titre": 0, "hors_fenetre": 0}
@@ -817,8 +874,9 @@ def main():
 
     if DEBUG:
         print("\n--- MODE VERIFICATION (RADAR_UNGM_DEBUG=1) : AUCUNE ECRITURE ---")
-        print("\n[1] Avis interpretes :")
-        for a in avis[:20]:
+        print("\n[1] Tete de file APRES priorisation (ce que le budget "
+              "analyserait en premier) :")
+        for a in prioriser(avis)[:20]:
             print("  {} (via {}) | {} | {} | pub {} | fin {}".format(
                 a["pays_execution"], a.get("_origine_pays") or "?",
                 a["acheteur"][:20], a["titre"][:52],
@@ -841,8 +899,28 @@ def main():
     if not (sheet_id and fichier_cs):
         print("(info) TED_SHEET_ID / GOOGLE_SERVICE_ACCOUNT_FILE absents : pas d'ecriture.")
         return
-    resultats = analyser(avis)
-    print("  {} avis analyse(s) par le modele.".format(len(resultats)))
+    # DEDUPLICATION AVANT ANALYSE (comme le collecteur AfDB) : analyser un avis
+    # deja present dans le Sheet pour le jeter ensuite a l'ecriture gaspillerait
+    # tout le budget des le second run.
+    try:
+        deja_vus = ted.numeros_publication_existants(
+            sheet_id, fichier_cs, NOM_ONGLET, COLONNES_UNGM)
+    except Exception as e:
+        print("(ungm) memoire illisible ({}), on analyse tout.".format(e))
+        deja_vus = set()
+    nouveaux = [a for a in avis if a.get("publication_number") not in deja_vus]
+    print("  memoire : {} deja connu(s) ignore(s), {} nouveau(x).".format(
+        len(avis) - len(nouveaux), len(nouveaux)))
+    if not nouveaux:
+        print("  Rien de nouveau ce run.")
+        return
+
+    # Le budget d'appels est inferieur au volume collecte : on classe la file
+    # pour que les zones rouges et les marches de terrain passent en premier.
+    nouveaux = prioriser(nouveaux)
+    resultats = analyser(nouveaux)
+    print("  {} avis analyse(s) par le modele (budget {}).".format(
+        len(resultats), BUDGET_LLM))
     try:
         feuille = ouvrir_feuille(sheet_id, fichier_cs)
         ajoutes, deja = ecrire(feuille, resultats)
