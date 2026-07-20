@@ -882,6 +882,8 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .seg button[aria-pressed="true"]{background:var(--oxblood);color:var(--bone)}
   .clearz{font-family:var(--mono);font-size:0.66rem;letter-spacing:0.08em;color:var(--bone-dim);background:none;border:none;cursor:pointer;text-decoration:underline;text-underline-offset:3px;display:none}
   .clearz.on{display:inline}
+  .export{font-family:var(--mono);font-size:0.66rem;letter-spacing:0.08em;color:var(--bone-dim);background:none;border:1px solid var(--line);border-radius:3px;padding:4px 9px;cursor:pointer;margin-left:auto}
+  .export:hover{color:var(--bone);border-color:var(--bone-dim)}
   .count{font-family:var(--mono);font-size:0.7rem;color:var(--bone-dim);letter-spacing:0.06em;margin-bottom:14px}
   /* Onglets periode (mois) */
   .period{display:flex;gap:7px;flex-wrap:wrap;margin:22px 0 4px;align-items:center}
@@ -1144,6 +1146,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
       <button data-tri="date" aria-pressed="false">Récents</button>
     </div>
     <button class="clearz" id="clearz">Réinitialiser</button>
+    <button class="export" id="export" title="Exporter la sélection courante en CSV (ouvrable dans Excel)">Exporter</button>
   </div>
   <div class="count" id="count"></div>
   <div class="leads" id="leads"></div>
@@ -1607,6 +1610,70 @@ function updateMap(filtered){
     m.addTo(_layer);
   });
 }
+
+// --- EXPORT LISTE D'APPELS -------------------------------------------------
+// Exporte EXACTEMENT la selection affichee (lentille + filtres + tri courants),
+// pour prospecter hors ligne. Tout se fait dans le navigateur : aucune donnee
+// ne sort vers un service tiers.
+function csvChamp(v){
+  const t=(v===null||v===undefined)?'':String(v);
+  // Excel francais attend le point-virgule ; on protege les champs qui en
+  // contiennent, ainsi que les guillemets et les sauts de ligne.
+  return /[";\n\r]/.test(t) ? '"'+t.replace(/"/g,'""')+'"' : t;
+}
+function csvLignes(entetes,lignes){
+  const tout=[entetes].concat(lignes);
+  return tout.map(r=>r.map(csvChamp).join(';')).join('\r\n');
+}
+function nc(v){ return (v&&v!=='n.c.')?v:''; }
+
+function exportAvis(liste){
+  const LIB_WIN={immediate:'immédiate',court_terme:'court terme',indetermine:'indéterminée'};
+  const entetes=['Score','Sûreté','Commercial','Action','Fenêtre','Échéance',
+                 'Pays','Zone','Organisation','Intitulé','Contact','Email',
+                 'Téléphone','Statut','Source','Date détection','Lien'];
+  const lignes=liste.map(l=>[
+    l.final,l.surete,l.comm,l.action,LIB_WIN[l.win]||l.win||'',l.deadline||'',
+    l.pays||'',l.zone||'',l.agence||'',l.titre||'',
+    nc(l.nom),nc(l.email),nc(l.tel),l.statut||'nouveau',l.src||'',
+    l.date_det||'',l.lien||''
+  ]);
+  return csvLignes(entetes,lignes);
+}
+
+function exportFiches(liste){
+  const entetes=['Entreprise','Priorité','Score max','Nb signaux','Zones',
+                 'Secteurs','Contact','Email','SIREN','CA','Dernier signal',
+                 'Meilleur signal','Lien'];
+  const lignes=liste.map(f=>[
+    f.nom||'',f.prio||'',f.meilleur?f.meilleur.final:'',f.n||0,
+    (f.zones||[]).join(' / '),(f.secteurs||[]).join(' / '),
+    nc(f.enr&&f.enr.nom),nc(f.enr&&f.enr.email),
+    nc(f.enr&&f.enr.siren),nc(f.enr&&f.enr.ca),
+    f.dernier||'',f.meilleur?(f.meilleur.titre||''):'',
+    f.meilleur?(f.meilleur.lien||''):''
+  ]);
+  return csvLignes(entetes,lignes);
+}
+
+function exporterCSV(){
+  const fiches=vueFiches();
+  const liste=fiches?(FICHES||[]):(AFFICHES||[]);
+  if(!liste.length){ alert("Rien à exporter : aucun élément ne correspond au filtre courant."); return; }
+  const csv=fiches?exportFiches(liste):exportAvis(liste);
+  // Le BOM UTF-8 est indispensable pour qu'Excel affiche correctement les
+  // accents ; sans lui, "Sûreté" ressort illisible.
+  const blob=new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8;'});
+  const d=new Date().toISOString().slice(0,10);
+  const nom='radar-amarante-'+state.lens+'-'+d+'.csv';
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download=nom; document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+document.getElementById('export').addEventListener('click',exporterCSV);
+
 document.getElementById('clearz').addEventListener('click',()=>{
   state.zone=null; state.mois=null;
   document.getElementById('clearz').classList.remove('on');
