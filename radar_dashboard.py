@@ -213,7 +213,7 @@ def resoudre_pays(brut, source):
     brut = _txt(brut)
     if not brut:
         return ("Pays non précisé", "Non classé")
-    if source in ("TED", "AFDB", "ADB", "EBRD"):
+    if source in ("TED", "AFDB", "ADB", "EBRD", "UNGM"):
         # Sources ISO : pays_execution stocke en code ISO3 (scoring direct).
         code = brut.split(",")[0].strip().upper()
         if code in ZONE_PAR_ISO3:
@@ -298,7 +298,7 @@ def ligne_vers_lead(row, source):
         cible = _txt(row.get("cible_commerciale_reelle")) or \
             "Organisation qui recrute et déploie : viser direction sûreté / logistique / RH terrain."
         groupe = _txt(row.get("categorie")) or "humanitaire"
-    elif source in ("AFDB", "ADB", "EBRD"):
+    elif source in ("AFDB", "ADB", "EBRD", "UNGM"):
         # Bailleurs multilatéraux (Afrique / Asie / Ukraine-Caucase). Le
         # collecteur remplit déjà cible_commerciale_reelle (pour EBRD, le client
         # maître d'ouvrage). Groupe = type de notice (GPN, prequalif, tender...).
@@ -474,7 +474,8 @@ def _attacher_enrichissement(lead, enrichissement, cle_entreprise):
 
 def construire_leads(lignes_ted, lignes_bm, lignes_prive=None,
                      enrichissement=None, lignes_attrib=None, lignes_rw=None,
-                     lignes_afdb=None, lignes_adb=None, lignes_ebrd=None):
+                     lignes_afdb=None, lignes_adb=None, lignes_ebrd=None,
+                     lignes_ungm=None):
     """Fusionne les onglets (TED, Banque Mondiale, AfDB, ADB, EBRD, ReliefWeb,
     PRIVÉ/BITD), deduplique, trie. Pour les leads PRIVÉ, remonte le dirigeant
     (enrichissement) comme contact.
@@ -485,6 +486,7 @@ def construire_leads(lignes_ted, lignes_bm, lignes_prive=None,
     leads = [ligne_vers_lead(r, "TED") for r in lignes_ted]
     leads += [ligne_vers_lead(r, "BM") for r in lignes_bm]
     leads += [ligne_vers_lead(r, "AFDB") for r in (lignes_afdb or [])]
+    leads += [ligne_vers_lead(r, "UNGM") for r in (lignes_ungm or [])]
     leads += [ligne_vers_lead(r, "ADB") for r in (lignes_adb or [])]
     leads += [ligne_vers_lead(r, "EBRD") for r in (lignes_ebrd or [])]
     leads += [ligne_vers_lead(r, "RW") for r in (lignes_rw or [])]
@@ -652,6 +654,7 @@ def lire_onglets(sheet_id, fichier_cs):
         return _lignes_vers_dicts(valeurs(onglet), colonnes)
 
     lignes_afdb = _lire_bailleur("afdb_radar", "afdb_radar", "TOUTES_COLONNES_AFDB", "NOM_ONGLET")
+    lignes_ungm = _lire_bailleur("ungm_radar", "ungm_radar", "TOUTES_COLONNES_UNGM", "NOM_ONGLET")
     lignes_adb = _lire_bailleur("adb_radar", "adb_radar", "TOUTES_COLONNES_ADB", "NOM_ONGLET")
     lignes_ebrd = _lire_bailleur("ebrd_radar", "ebrd_radar", "TOUTES_COLONNES_EBRD", "NOM_ONGLET")
 
@@ -707,7 +710,8 @@ def lire_onglets(sheet_id, fichier_cs):
             enrichissement.setdefault(nom, {})["email_pro"] = email
 
     return (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
-            lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist)
+            lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
+            lignes_ungm)
 
 
 def generer_html(leads, watchlist=None):
@@ -784,13 +788,15 @@ def main():
 
     print("Lecture des onglets du Sheet...")
     (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
-     lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist) = lire_onglets(sheet_id, fichier_cs)
+     lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
+     lignes_ungm) = lire_onglets(sheet_id, fichier_cs)
     leads = construire_leads(lignes_ted, lignes_bm, lignes_prive, enrichissement,
-                             lignes_attrib, lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd)
-    print("  TED : {} | BM : {} | AfDB : {} | ADB : {} | EBRD : {} | ReliefWeb : {} | "
-          "total exploitable : {}".format(
+                             lignes_attrib, lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd,
+                             lignes_ungm)
+    print("  TED : {} | BM : {} | AfDB : {} | ADB : {} | EBRD : {} | UNGM : {} | "
+          "ReliefWeb : {} | total exploitable : {}".format(
               len(lignes_ted), len(lignes_bm), len(lignes_afdb), len(lignes_adb),
-              len(lignes_ebrd), len(lignes_rw), len(leads)))
+              len(lignes_ebrd), len(lignes_ungm), len(lignes_rw), len(leads)))
 
     html = generer_html(leads, lignes_watchlist)
     dossier = os.path.dirname(sortie)
@@ -917,6 +923,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .src.attrib{border-color:rgba(120,190,150,0.45);color:#7fae8f}
   .src.rw{border-color:rgba(90,150,210,0.45);color:#8fb8de}
   .src.afdb{border-color:rgba(210,150,70,0.45);color:#d9b483}
+  .src.ungm{border-color:rgba(90,150,210,0.45);color:#8fb8dd}
   .src.adb{border-color:rgba(120,170,120,0.45);color:#9ec49e}
   .src.ebrd{border-color:rgba(150,120,200,0.45);color:#b39ad6}
   .src.privé,.src.prive{border-color:rgba(150,150,200,0.4);color:#a9a9d9}
@@ -1136,6 +1143,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
       <button data-src="BM" aria-pressed="false">Banque Mondiale</button>
       <button data-src="TED" aria-pressed="false">TED</button>
       <button data-src="AFDB" aria-pressed="false">AfDB</button>
+      <button data-src="UNGM" aria-pressed="false">UNGM</button>
       <button data-src="ADB" aria-pressed="false">ADB</button>
       <button data-src="EBRD" aria-pressed="false">EBRD</button>
       <button data-src="RW" aria-pressed="false">ReliefWeb</button>
@@ -1179,7 +1187,7 @@ function marquerContacte(idx,btn){
 }
 const ORDRE_ZONES = ["Afrique de l'Ouest","Sahel","Afrique centrale","Afrique de l'Est","Afrique australe","Afrique du Nord","Proche-Orient","Péninsule arabique","Asie centrale","Asie du Sud","Asie du Sud-Est","Caucase","Balkans","Europe de l'Est","Caraïbes","Amérique latine","Europe de l'Ouest","Outre-mer","Non classé"];
 const winLabel={immediate:'Fenêtre immédiate',court_terme:'Court terme',indetermine:'Fenêtre indéterminée'};
-const SRC_LABEL={BM:'Banque Mondiale',TED:'TED',AFDB:'AfDB',ADB:'ADB',EBRD:'EBRD',RW:'ReliefWeb','PRIVÉ':'Privé · BITD',ATTRIB:'Titulaire'};
+const SRC_LABEL={BM:'Banque Mondiale',TED:'TED',AFDB:'AfDB',ADB:'ADB',EBRD:'EBRD',UNGM:'UNGM · ONU',RW:'ReliefWeb','PRIVÉ':'Privé · BITD',ATTRIB:'Titulaire'};
 // Etiquette d'echelle de score. Les scores marche (TED/BM, barème
 // additif) et les scores signal (privé, barème multiplicatif) NE sont PAS sur
 // la même échelle : un 6 marché ne vaut pas un 6 signal. On l'affiche pour
@@ -1430,7 +1438,7 @@ function buildPeriod(){
   }));
 }
 
-const SRC_NOMS_META={TED:'TED',BM:'Banque Mondiale',AFDB:'AfDB',ADB:'ADB',EBRD:'EBRD',RW:'ReliefWeb','PRIVÉ':'Privé (BITD)',ATTRIB:'Titulaires'};
+const SRC_NOMS_META={TED:'TED',BM:'Banque Mondiale',AFDB:'AfDB',ADB:'ADB',EBRD:'EBRD',UNGM:'UNGM (agences ONU)',RW:'ReliefWeb','PRIVÉ':'Privé (BITD)',ATTRIB:'Titulaires'};
 const SRC_PRESENTES=[...new Set(LEADS.map(l=>l.src))].map(s=>SRC_NOMS_META[s]||s);
 document.getElementById('runmeta').innerHTML =
   'Run du <b>'+META.date+'</b><br>'+META.total+' avis analysés<br>Sources : '+(SRC_PRESENTES.join(', ')||'aucune');
@@ -1470,7 +1478,7 @@ function buildStats(){
       {k:'all',cls:'',n:fiches.length,l:'Tous les titulaires'}
     ];
   }else{
-    const av=LEADS.filter(l=>l.src==='TED'||l.src==='BM'||l.src==='AFDB'||l.src==='ADB'||l.src==='EBRD'||l.src==='RW');
+    const av=LEADS.filter(l=>l.src==='TED'||l.src==='BM'||l.src==='AFDB'||l.src==='ADB'||l.src==='EBRD'||l.src==='UNGM'||l.src==='RW');
     const c=a=>av.filter(l=>l.action===a).length;
     defs=[
       {k:'contacter',cls:'act',n:c('contacter'),l:'À contacter'},
