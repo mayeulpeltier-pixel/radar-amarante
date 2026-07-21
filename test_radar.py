@@ -2274,6 +2274,82 @@ class TestAttributionsUNGM(unittest.TestCase):
             t_fourn, "")
         self.assertGreater(s_travaux, s_fourn)
 
+    # -- Enrichissement par la fiche detaillee ------------------------------
+    # La liste UNGM ne donne ni montant ni pays d'origine du titulaire. La
+    # fiche (GET ContractAward/Popup/{id}, appel releve dans le bundle JS)
+    # devrait les fournir. Sa mise en forme reelle n'ayant pas ete observee,
+    # on couvre les trois formes plausibles.
+    def test_fiche_etiquette_deux_points(self):
+        html = ("<div><span>Supplier country:</span> Afghanistan</div>"
+                "<div><span>Contract value:</span> USD 1,250,000.00</div>")
+        pays, montant, _ = ungm_attributions.extraire_fiche(html)
+        self.assertEqual(pays, "Afghanistan")
+        self.assertIn("USD", montant)
+
+    def test_fiche_liste_de_definition(self):
+        html = ("<dl><dt>Supplier country</dt><dd>Denmark</dd>"
+                "<dt>Contract value</dt><dd>EUR 4800000</dd></dl>")
+        pays, montant, _ = ungm_attributions.extraire_fiche(html)
+        self.assertEqual(pays, "Denmark")
+        self.assertTrue(montant)
+
+    def test_fiche_valeur_a_la_ligne_suivante(self):
+        html = ("<div>Supplier country:</div><div>China</div>"
+                "<div>Contract value:</div><div>USD 900000</div>")
+        pays, montant, _ = ungm_attributions.extraire_fiche(html)
+        self.assertEqual(pays, "China")
+        self.assertTrue(montant)
+
+    def test_fiche_illisible_ne_casse_rien(self):
+        pays, montant, paires = ungm_attributions.extraire_fiche("<html/>")
+        self.assertEqual((pays, montant), ("", ""))
+        self.assertEqual(paires, {})
+
+    def test_montant_converti_en_usd(self):
+        """Meme traitement que les attributions BM : devise locale convertie,
+        sinon le poids de valeur du mini-score est fausse."""
+        html = "<div>Contract value: XOF 4806034530</div>"
+        _pays, montant, _ = ungm_attributions.extraire_fiche(html)
+        self.assertIn("USD", montant)
+
+    def test_enrichissement_cible_les_natures_utiles(self):
+        """Une fiche coute une requete : on se limite aux marches ou quelqu'un
+        se deplace, ce qui divise le cout par trois ou quatre."""
+        attribs = [
+            {"secteur": "Marche ONU - travaux", "publication_number": "UNGMA-1",
+             "_pays_nom": "Afghanistan", "valeur_attribuee": ""},
+            {"secteur": "Marche ONU - fournitures", "publication_number": "UNGMA-2",
+             "_pays_nom": "Afghanistan", "valeur_attribuee": ""},
+        ]
+        stats = ungm_attributions.enrichir(
+            attribs,
+            fetch=lambda i: "<div>Supplier country: Denmark</div>"
+                            "<div>Contract value: USD 2500000</div>")
+        self.assertEqual(stats["tentees"], 1)
+        self.assertEqual(attribs[0]["_pays_titulaire"], "Denmark")
+        self.assertNotIn("_pays_titulaire", attribs[1])
+
+    def test_filtre_local_etranger_apres_enrichissement(self):
+        """Un entrepreneur afghan en Afghanistan n'est pas un prospect ; une
+        entreprise danoise sur le meme chantier, si."""
+        attribs = [{"secteur": "Marche ONU - travaux",
+                    "publication_number": "UNGMA-3",
+                    "_pays_nom": "Afghanistan", "valeur_attribuee": ""}]
+        ungm_attributions.enrichir(
+            attribs, fetch=lambda i: "<div>Supplier country: Afghanistan</div>")
+        self.assertFalse(attribs[0]["_etranger"])
+
+    def test_fiche_en_echec_laisse_l_attribution_intacte(self):
+        """Best-effort : une fiche illisible ne doit rien casser."""
+        def echoue(ident):
+            raise RuntimeError("reseau")
+        attribs = [{"secteur": "Marche ONU - travaux",
+                    "publication_number": "UNGMA-4",
+                    "_pays_nom": "Mali", "valeur_attribuee": ""}]
+        stats = ungm_attributions.enrichir(attribs, fetch=echoue)
+        self.assertEqual(stats["echecs"], 1)
+        self.assertEqual(attribs[0]["valeur_attribuee"], "")
+
     # -- Detection multi-format de la reponse ------------------------------
     # Erreur corrigee : on ne cherchait que des <div role="row">. Une reponse
     # JSON (ce que 101 octets constants suggerent) etait declaree en echec
