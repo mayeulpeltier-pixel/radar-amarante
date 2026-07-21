@@ -6,44 +6,55 @@ RADAR AMARANTE -- ATTRIBUTIONS IsDB (Banque islamique de developpement).
 CE QU'IL FAIT
 -------------
 Recupere les avis d'attribution ("Contract Award") du portail IsDB, en extrait
-le TITULAIRE, SON PAYS D'ORIGINE et LE PAYS D'EXECUTION, et ecrit dans
-l'onglet `attributions_radar` -- celui des attributions TED, BM et UNGM.
+le TITULAIRE et SON PAYS D'ORIGINE, et ecrit dans l'onglet
+`attributions_radar` -- celui des attributions TED, BM et UNGM.
 
 Consequence voulue : AUCUN cablage dashboard. Les lignes remontent seules dans
 la lentille "Titulaires - attributions" et dans la fiche entreprise 360.
 
-LECON DU RUN DU 21/07/2026 : LE FILTRE PAYS EST UN LEURRE
-----------------------------------------------------------
-Le formulaire expose un <select> dont le parametre reel est `locality`. Ce
-parametre est SILENCIEUSEMENT IGNORE par le portail : chaque requete renvoie
-la meme liste globale non filtree. Preuves relevees sur donnees reelles :
-  - les 40 pays interroges ont tous renvoye le meme jeu de 62 liens ;
-  - une fiche indonesienne (project code IDN1031) a ete servie sous la
-    requete Afghanistan, alors que l'Indonesie n'etait meme pas interrogee ;
-  - un projet kirghize (Issyk-Kul Ring Road) etait etiquete AFG.
-Resultat : 142 requetes, un seul jeu de resultats, et un pays d'execution
-FAUX sur 100% des lignes.
+POURQUOI CETTE SOURCE
+---------------------
+IsDB finance exactement dans la zone d'Amarante : Mali, Mauritanie, Niger,
+Somalie, Soudan, Libye, Yemen, Togo, Sierra Leone, Mozambique, Tadjikistan,
+Palestine, Ouganda, Senegal. Et surtout, sa fiche d'attribution donne le
+"Contract Award Company Country", ce que UNGM ne fournit pas : le filtre
+local/etranger redevient donc possible, comme pour la Banque Mondiale.
 
-CORRECTION : on n'interroge plus par pays. Un seul balayage global, et le
-pays d'execution est derive du PROJECT CODE de la fiche (IDN1031 -> IDN),
-qui est une donnee de la fiche elle-meme, pas une supposition de la requete.
+ACCESSIBILITE (verifiee par sonde depuis GitHub Actions, 21/07/2026)
+---------------------------------------------------------------------
+Contenu RENDU COTE SERVEUR : pas de piege JavaScript (contrairement a ADB et
+UNGM). Une attribution est un marche conclu : on interroge les deux statuts
+(active et closed).
 
-GARDE-FOU : un prefixe n'est accepte que s'il correspond a un ISO3 connu du
-radar. Les prefixes non resolus (codes internes IsDB, projets regionaux) sont
-comptes et affiches en mode verification, jamais devines.
+LE FILTRE PAYS DU PORTAIL NE FILTRE RIEN (constate au run du 21/07/2026)
+------------------------------------------------------------------------
+Le formulaire expose bien un parametre pays (locality=<ISO2>), mais le
+portail l'IGNORE : chaque requete renvoie la meme liste mondiale. Preuve au
+run de verification : les 6 attributions interpretees sortaient toutes en
+"AFG" (premier pays de la boucle) alors que l'une etait la rocade
+d'Issyk-Kul (Kirghizistan) et que la fiche exemple portait le code projet
+IDN1031 (Indonesie).
+
+Consequences retenues (option B validee le 21/07/2026) :
+  1. Le pays d'execution est derive du PREFIXE DU CODE PROJET de la fiche
+     ("MLI1031" -> MLI, "IDN1031" -> IDN), la seule source fiable observee.
+     Fiche sans code lisible = lead ecarte (meme prudence que "sans
+     identifiant, pas de gagnant" cote Banque Mondiale).
+  2. La boucle par pays est SUPPRIMEE : un seul passage sur le listing
+     mondial (~65 requetes au lieu de ~142 pour le meme resultat).
+`charger_pays_isdb` et `pays_a_interroger` sont conserves hors circuit :
+la detection du select par le contenu reste utile si IsDB repare son filtre.
 
 STRUCTURE
 ---------
-  - Liste  : chaque avis est un lien contenant /contract-award/.
+  - Liste  : chaque avis est un bloc `views-row` contenant un lien de detail.
   - Fiche  : "Contract Award Company Name", "Contract Award Company Country",
              "Project title", "Issue Date", "Project code".
 
-MODE VERIFICATION
------------------
-    RADAR_ISDB_DEBUG=1  -> n'ecrit rien. Imprime, pour CHAQUE fiche lue, le
-    project code, l'ISO3 derive, le motif de retenue ou de rejet, puis un
-    releve de tous les prefixes rencontres. C'est ce qui valide ou invalide
-    l'hypothese du prefixe sur donnees reelles.
+MODE VERIFICATION (a utiliser au premier run)
+---------------------------------------------
+    RADAR_ISDB_DEBUG=1  -> n'ecrit rien, imprime les titulaires interpretes et
+    la structure brute d'une fiche.
 
 Interrupteur : RADAR_ISDB=0 desactive la collecte.
 
@@ -65,8 +76,13 @@ BASE = "https://www.isdb.org"
 PAGE_TENDERS = BASE + "/project-procurement/tenders"
 
 JOURS_FENETRE = int(os.environ.get("RADAR_ISDB_JOURS", "365"))
-# Balayage GLOBAL : le filtre pays du portail ne filtre rien (voir en-tete).
-PAGES_MAX = int(os.environ.get("RADAR_ISDB_PAGES", "12"))
+# Listing MONDIAL (le filtre pays du portail est casse, cf. en-tete) : on
+# pagine plus profond qu'avant, l'arret naturel restant "plus aucun lien
+# nouveau" ou le plafond de fiches.
+PAGES_MAX = int(os.environ.get("RADAR_ISDB_PAGES", "8"))
+# Conserve pour `pays_a_interroger` (hors circuit tant que le filtre serveur
+# est casse).
+PAYS_MAX = int(os.environ.get("RADAR_ISDB_PAYS_MAX", "40"))
 # Une fiche = une requete. On borne, et on ne lit QUE les fiches inconnues.
 FICHES_MAX = int(os.environ.get("RADAR_ISDB_FICHES_MAX", "60"))
 MINUTES_MAX = float(os.environ.get("RADAR_ISDB_MINUTES", "12"))
@@ -88,14 +104,13 @@ ENTETES = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
+RE_SELECT = re.compile(r'<select([^>]*)>(.*?)</select>', re.I | re.S)
+RE_NOM_SELECT = re.compile(r'name\s*=\s*["\']([^"\']+)["\']', re.I)
+RE_OPTION = re.compile(
+    r'<option[^>]*\bvalue\s*=\s*["\']([A-Za-z]{2})["\'][^>]*>\s*([^<]{2,60}?)\s*</option>',
+    re.I)
 RE_LIEN_DETAIL = re.compile(
     r'href="(/project-procurement/tenders/[^"#?]{6,180})"', re.I)
-# "IDN1031", "MLI-0123", "SDN 0456" : trois lettres puis un chiffre.
-RE_CODE_PROJET = re.compile(r"^\s*([A-Za-z]{3})\s*[-/]?\s*\d")
-
-# Prefixes internes IsDB qui NE SONT PAS des ISO3. A remplir uniquement sur
-# preuve issue du mode verification, jamais par supposition.
-ALIAS_CODE_ISDB = {}
 
 # Etiquettes de la fiche, relevees sur donnees reelles le 21/07/2026.
 LABEL_SOCIETE = "contract award company name"
@@ -124,41 +139,44 @@ def _texte(html):
     return [_plat(l) for l in _h.unescape(t).split("\n") if _plat(l)]
 
 
-_CACHE_ISO3 = {}
+def charger_pays_isdb(html):
+    """({ISO3: ISO2}, nom_du_parametre) depuis le formulaire de filtrage.
+
+    HORS CIRCUIT depuis le 21/07/2026 : le portail ignore ce parametre (cf.
+    en-tete du module). Conserve avec ses tests, car la detection du select
+    par le contenu resservira telle quelle si IsDB repare son filtre.
+
+    DETECTION PAR LE CONTENU, pas par le nom de l'attribut : on retient le
+    <select> dont les options sont des codes a deux lettres correspondant a de
+    vrais pays. Supposer `name="country"` avait produit zero resultat au
+    premier run (21/07/2026) : le tag d'ouverture n'etait pas visible dans le
+    dump de la sonde, je l'avais devine.
+
+    Le nom reel du parametre est renvoye avec la table, pour construire les
+    requetes sans nouvelle supposition. Les ISO2 sont convertis en ISO3 via le
+    resolveur bilingue deja teste (Niger/Nigeria distingues)."""
+    meilleur, meilleur_nom = {}, ""
+    for attributs, contenu in RE_SELECT.findall(str(html or "")):
+        table = {}
+        for code, libelle in RE_OPTION.findall(contenu):
+            iso3 = bma.iso3_pays_libre(libelle)
+            if iso3 and iso3 not in table:
+                table[iso3] = code.upper()
+        # Un select de pays en compte des dizaines ; les autres, aucun ou un.
+        if len(table) > len(meilleur):
+            meilleur = table
+            m = RE_NOM_SELECT.search(attributs or "")
+            meilleur_nom = m.group(1) if m else ""
+    return meilleur, meilleur_nom
 
 
-def iso3_connus():
-    """Ensemble des ISO3 que le radar sait situer. Sert de garde-fou : un
-    prefixe de code projet n'est accepte que s'il est la-dedans."""
-    if _CACHE_ISO3.get("set") is None:
-        codes = set(ted.MULTIPLICATEUR_ZONE or {})
-        try:
-            import radar_dashboard as dash
-            codes |= set(dash.ZONE_PAR_ISO3 or {})
-        except Exception:
-            pass
-        _CACHE_ISO3["set"] = codes
-    return _CACHE_ISO3["set"]
-
-
-def prefixe_code_projet(code):
-    """'IDN1031' -> 'IDN'. '' si le code n'a pas la forme attendue.
-    Renvoie le prefixe BRUT, resolu ou non : le mode verification en a besoin
-    pour montrer ce qui n'est pas reconnu."""
-    m = RE_CODE_PROJET.match(str(code or ""))
-    return m.group(1).upper() if m else ""
-
-
-def iso3_depuis_code_projet(code):
-    """'IDN1031' -> 'IDN' si l'ISO3 est connu du radar, sinon ''.
-
-    C'est la SEULE source fiable du pays d'execution : le filtre pays du
-    portail ne filtre rien (voir en-tete du module)."""
-    prefixe = prefixe_code_projet(code)
-    if not prefixe:
-        return ""
-    prefixe = ALIAS_CODE_ISDB.get(prefixe, prefixe)
-    return prefixe if prefixe in iso3_connus() else ""
+def pays_a_interroger(table):
+    """Pays du formulaire qui sont dans l'univers de risque, les plus exposes
+    d'abord. Interroger la Turquie ou le Royaume-Uni serait du gaspillage."""
+    candidats = [(iso3, iso2) for iso3, iso2 in (table or {}).items()
+                 if iso3 in ted.MULTIPLICATEUR_ZONE]
+    candidats.sort(key=lambda c: (-ted.MULTIPLICATEUR_ZONE.get(c[0], 0), c[0]))
+    return candidats[:PAYS_MAX]
 
 
 def liens_attributions(html):
@@ -209,6 +227,22 @@ def paires_fiche(html):
     return paires
 
 
+# Format observe des codes projet : trois lettres ISO3 puis des chiffres
+# ("MLI1031", "IDN1031"). Le prefixe est le pays d'execution.
+RE_CODE_PROJET = re.compile(r"^\s*([A-Za-z]{3})\s*-?\s*\d")
+
+
+def pays_execution_depuis_code(code_projet):
+    """ISO3 du pays d'execution depuis le code projet de la fiche.
+
+    C'est la SEULE source fiable : le filtre pays du portail est casse (les 6
+    attributions du run du 21/07/2026 sortaient toutes en AFG, dont une route
+    kirghize et un projet indonesien). '' si le code est absent ou illisible :
+    l'appelant ecarte alors le lead plutot que d'inventer un pays."""
+    m = RE_CODE_PROJET.match(_plat(code_projet))
+    return m.group(1).upper() if m else ""
+
+
 def lire_date_isdb(txt):
     """'1 October 2024' ou '01/10/2024' -> ISO. '' si illisible."""
     s = _plat(txt)
@@ -241,6 +275,50 @@ def dans_la_fenetre(iso_date, aujourdhui=None, jours=None):
     return timedelta(0) <= (aujourdhui - d) <= timedelta(days=jours)
 
 
+def normaliser(chemin, html):
+    """Fiche d'attribution -> ligne de l'onglet `attributions_radar`.
+    None si le titulaire n'est pas nommable, l'avis hors fenetre, le code
+    projet illisible ou le pays hors univers de risque.
+
+    LE PAYS D'EXECUTION VIENT DE LA FICHE (prefixe du code projet), jamais de
+    la requete : le filtre pays du portail est casse (cf. en-tete du module).
+    Une fiche sans code projet lisible est ECARTEE : mieux vaut un lead en
+    moins qu'un pays invente."""
+    paires = paires_fiche(html)
+    societe = _plat(paires.get(LABEL_SOCIETE))
+    if not societe or len(societe) < 3:
+        return None
+    d_attrib = lire_date_isdb(paires.get(LABEL_DATE, ""))
+    if not dans_la_fenetre(d_attrib):
+        return None
+    iso3 = pays_execution_depuis_code(paires.get(LABEL_CODE, ""))
+    if not iso3 or iso3 not in ted.MULTIPLICATEUR_ZONE:
+        return None
+
+    pays_societe = _plat(paires.get(LABEL_PAYS_SOCIETE))
+    titre = _plat(paires.get(LABEL_PROJET)) or "Marche IsDB"
+    # Comme pour la Banque Mondiale : une entreprise etrangere expatrie du
+    # personnel, un entrepreneur local non.
+    etranger = bma.titulaire_etranger(pays_societe, _nom_pays(iso3))
+    return {
+        "date_maj": date.today().isoformat(),
+        "gagnant": societe[:160],
+        "secteur": "Marche IsDB",
+        "pays_execution": iso3,           # ISO3 : le dashboard resout en mode ISO
+        "valeur_attribuee": "",
+        "acheteur": "Banque islamique de developpement",
+        "titre": titre[:300],
+        "cpv": _plat(paires.get(LABEL_CODE))[:40],
+        "sous_traitance": "",
+        "date_publication": d_attrib,
+        "publication_number": identifiant_depuis_lien(chemin),
+        "lien": BASE + chemin,
+        "a_demarcher": "oui",
+        "_pays_titulaire": pays_societe,
+        "_etranger": etranger,
+    }
+
+
 def _nom_pays(iso3):
     """Nom du pays depuis son ISO3, pour comparer avec l'origine du titulaire."""
     try:
@@ -254,108 +332,35 @@ def _nom_pays(iso3):
 
 
 # ===========================================================================
-# INTERPRETATION D'UNE FICHE
-# ===========================================================================
-
-def examiner(chemin, html, iso3=None):
-    """(ligne ou None, diagnostic).
-
-    Le diagnostic porte le motif de rejet : c'est lui qui alimente le mode
-    verification, sans jamais assouplir le filtre de production."""
-    paires = paires_fiche(html)
-    code = _plat(paires.get(LABEL_CODE))
-    societe = _plat(paires.get(LABEL_SOCIETE))
-    pays_societe = _plat(paires.get(LABEL_PAYS_SOCIETE))
-    titre = _plat(paires.get(LABEL_PROJET)) or "Marche IsDB"
-    d_attrib = lire_date_isdb(paires.get(LABEL_DATE, ""))
-    derive = iso3 or iso3_depuis_code_projet(code)
-
-    diag = {
-        "code": code,
-        "prefixe": prefixe_code_projet(code),
-        "iso3": derive,
-        "societe": societe,
-        "pays_societe": pays_societe,
-        "titre": titre,
-        "date": d_attrib,
-        "motif": "",
-    }
-
-    if not societe or len(societe) < 3:
-        diag["motif"] = "sans titulaire"
-        return None, diag
-    if not dans_la_fenetre(d_attrib):
-        diag["motif"] = "hors fenetre"
-        return None, diag
-    if not derive:
-        diag["motif"] = "prefixe non resolu"
-        return None, diag
-    if derive not in ted.MULTIPLICATEUR_ZONE:
-        diag["motif"] = "hors univers de risque"
-        return None, diag
-
-    # Comme pour la Banque Mondiale : une entreprise etrangere expatrie du
-    # personnel, un entrepreneur local non.
-    etranger = bma.titulaire_etranger(pays_societe, _nom_pays(derive))
-    diag["motif"] = "retenu"
-    ligne = {
-        "date_maj": date.today().isoformat(),
-        "gagnant": societe[:160],
-        "secteur": "Marche IsDB",
-        "pays_execution": derive,         # ISO3 : le dashboard resout en mode ISO
-        "valeur_attribuee": "",
-        "acheteur": "Banque islamique de developpement",
-        "titre": titre[:300],
-        "cpv": code[:40],
-        "sous_traitance": "",
-        "date_publication": d_attrib,
-        "publication_number": identifiant_depuis_lien(chemin),
-        "lien": BASE + chemin,
-        "a_demarcher": "oui",
-        "_pays_titulaire": pays_societe,
-        "_etranger": etranger,
-        "_code_projet": code,
-    }
-    return ligne, diag
-
-
-def normaliser(chemin, html, iso3=None):
-    """Fiche d'attribution -> ligne de l'onglet `attributions_radar`.
-    None si le titulaire n'est pas nommable, l'avis hors fenetre, ou le pays
-    d'execution non derivable. `iso3` peut etre force (tests)."""
-    ligne, _diag = examiner(chemin, html, iso3=iso3)
-    return ligne
-
-
-# ===========================================================================
 # COLLECTE
 # ===========================================================================
 
 def collecte(session=None, fetch_liste=None, fetch_fiche=None, deja_vus=None):
-    """Balayage GLOBAL des attributions, sans filtre pays.
+    """Un seul passage sur le listing MONDIAL des attributions.
 
-    Le filtre pays du portail est un leurre (voir en-tete). Le pays
-    d'execution est derive de la fiche. Deduplique AVANT de lire les fiches :
-    une fiche coute une requete (lecon du collecteur UNGM)."""
+    Plus de boucle par pays : le filtre serveur ne filtrant rien, interroger
+    40 pays revenait a telecharger 40 fois la meme liste (~142 requetes au
+    run du 21/07/2026). Le pays d'execution est resolu fiche par fiche via le
+    code projet, dans `normaliser`.
+
+    Deduplique AVANT de lire les fiches : une fiche coute une requete, et
+    relire ce qui est deja dans le Sheet serait du gaspillage (lecon du
+    collecteur UNGM)."""
     import time as _time
     session = session or ted.session_robuste()
     deja_vus = deja_vus or set()
     stats = {"pages": 0, "liens": 0, "fiches": 0, "requetes": 0,
-             "deja_connus": 0, "arret": "termine", "exemple": "",
-             "journal": [], "prefixes": {}}
+             "deja_connus": 0, "arret": "termine", "exemple": ""}
 
     attributions, vus_liens = [], set()
     debut = _time.time()
-    plafond = False
-
     # Une attribution est un marche conclu : les deux statuts sont utiles.
     for statut in ("active", "closed"):
-        if plafond:
+        if stats["arret"] != "termine":
             break
         for page in range(PAGES_MAX):
             if (_time.time() - debut) / 60.0 >= MINUTES_MAX:
                 stats["arret"] = "garde-temps"
-                plafond = True
                 break
             params = {"tender_type": "contract-award", "status": statut}
             if page:
@@ -373,11 +378,9 @@ def collecte(session=None, fetch_liste=None, fetch_fiche=None, deja_vus=None):
             except Exception:
                 break
             stats["pages"] += 1
-
             liens = [l for l in liens_attributions(page_html) if l not in vus_liens]
             if not liens:
-                break                     # plus rien de neuf : page suivante inutile
-
+                break                       # plus rien de nouveau : page suivante inutile
             for chemin in liens:
                 vus_liens.add(chemin)
                 stats["liens"] += 1
@@ -387,8 +390,7 @@ def collecte(session=None, fetch_liste=None, fetch_fiche=None, deja_vus=None):
                     continue               # deja dans le Sheet : pas de requete
                 if stats["fiches"] >= FICHES_MAX:
                     stats["arret"] = "plafond de fiches"
-                    plafond = True
-                    break
+                    continue
                 try:
                     if fetch_fiche:
                         fiche = fetch_fiche(chemin)
@@ -401,19 +403,11 @@ def collecte(session=None, fetch_liste=None, fetch_fiche=None, deja_vus=None):
                 except Exception:
                     continue
                 stats["fiches"] += 1
-                if not stats["exemple"]:
+                if DEBUG and not stats["exemple"]:
                     stats["exemple"] = fiche
-
-                a, diag = examiner(chemin, fiche)
-                prefixe = diag["prefixe"] or "(aucun)"
-                casier = stats["prefixes"].setdefault(
-                    prefixe, {"n": 0, "resolu": bool(diag["iso3"])})
-                casier["n"] += 1
-                stats["journal"].append(diag)
+                a = normaliser(chemin, fiche)
                 if a:
                     attributions.append(a)
-            if plafond:
-                break
     return attributions, stats
 
 
@@ -464,49 +458,12 @@ def ecrire(feuille, attributions):
     return len(nouvelles), deja
 
 
-def _imprimer_verification(attributions, stats):
-    """Ce que le run de verification doit prouver : le prefixe du project code
-    donne-t-il un pays d'execution fiable ?"""
-    print("\n--- MODE VERIFICATION (RADAR_ISDB_DEBUG=1) : AUCUNE ECRITURE ---")
-
-    print("\n[A] Fiches lues (code | ISO3 | motif | titulaire <- pays | titre) :")
-    for d in stats["journal"][:80]:
-        print("  {:12} | {:5} | {:22} | {:28} <- {:14} | {}".format(
-            (d["code"] or "-")[:12], d["iso3"] or "-", d["motif"],
-            (d["societe"] or "-")[:28], (d["pays_societe"] or "-")[:14],
-            (d["titre"] or "-")[:40]))
-
-    print("\n[B] Prefixes rencontres (c'est ici que se joue la validation) :")
-    ordonnes = sorted(stats["prefixes"].items(),
-                      key=lambda kv: (-kv[1]["n"], kv[0]))
-    for prefixe, info in ordonnes:
-        print("  {:8} x{:<3} {}".format(
-            prefixe, info["n"],
-            "resolu en ISO3" if info["resolu"] else "NON RESOLU (a arbitrer)"))
-    non_resolus = sum(i["n"] for _p, i in ordonnes if not i["resolu"])
-    print("  -> {} fiche(s) sur {} avec un prefixe non resolu.".format(
-        non_resolus, len(stats["journal"])))
-
-    motifs = {}
-    for d in stats["journal"]:
-        motifs[d["motif"]] = motifs.get(d["motif"], 0) + 1
-    print("\n[C] Motifs :")
-    for motif, n in sorted(motifs.items(), key=lambda kv: -kv[1]):
-        print("  {:24} {}".format(motif, n))
-
-    if stats.get("exemple"):
-        print("\n[D] Etiquettes trouvees dans une fiche reelle :")
-        for cle, val in paires_fiche(stats["exemple"]).items():
-            print("      {:34} = {}".format(cle[:34], str(val)[:70]))
-
-
 def main():
     if not ACTIVER:
         print("(info) Collecteur IsDB desactive (RADAR_ISDB=0).")
         return
 
-    print("Collecte des attributions IsDB (balayage global, fenetre {} jours)...".format(
-        JOURS_FENETRE))
+    print("Collecte des attributions IsDB (fenetre {} jours)...".format(JOURS_FENETRE))
     sheet_id = os.environ.get("TED_SHEET_ID")
     fichier = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
 
@@ -520,7 +477,7 @@ def main():
             print("(isdb) memoire illisible ({}), on lira toutes les fiches.".format(e))
 
     attributions, stats = collecte(deja_vus=deja_vus)
-    print("  {} page(s) | {} lien(s) d'attribution | {} fiche(s) lue(s) | "
+    print("  {} page(s) de liste | {} lien(s) d'attribution | {} fiche(s) lue(s) | "
           "{} deja connu(s) | {} requetes (arret : {}).".format(
               stats["pages"], stats["liens"], stats["fiches"],
               stats["deja_connus"], stats["requetes"], stats["arret"]))
@@ -531,7 +488,17 @@ def main():
         len(attributions), len(etrangers)))
 
     if DEBUG:
-        _imprimer_verification(attributions, stats)
+        print("\n--- MODE VERIFICATION (RADAR_ISDB_DEBUG=1) : AUCUNE ECRITURE ---")
+        print("\n[A] Attributions interpretees :")
+        for a in attributions[:25]:
+            print("  [{}] {} | {:34} <- {:16}{} | {}".format(
+                a["date_publication"] or "n.c.", a["pays_execution"],
+                a["gagnant"][:34], (a.get("_pays_titulaire") or "n.c.")[:16],
+                "" if a.get("_etranger") else " (LOCAL)", a["titre"][:44]))
+        if stats.get("exemple"):
+            print("\n[B] Etiquettes trouvees dans une fiche reelle :")
+            for cle, val in paires_fiche(stats["exemple"]).items():
+                print("      {:34} = {}".format(cle[:34], str(val)[:70]))
         return
 
     if not (sheet_id and fichier):
