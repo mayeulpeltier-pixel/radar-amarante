@@ -101,6 +101,13 @@ def actif():
 def preparer_ligne(ligne):
     """Dict d'un collecteur -> (publication_number, JSON serialisable).
 
+    Deux formes de lignes coexistent dans le radar :
+      - attributions : dict PLAT, publication_number a la racine ;
+      - avis (TED, BM, AfDB, EBRD, ReliefWeb, UNGM) : resultat IMBRIQUE, le
+        publication_number vit sous r["avis"]. On le cherche aux deux
+        endroits ; le JSONB conserve la structure complete (avis + scores),
+        plus riche que la ligne aplatie du Sheet.
+
     Deux nettoyages, tous deux justifies par les donnees reelles :
       - les cles techniques prefixees '_' (_etranger, _origine...) sont des
         champs de travail des collecteurs, pas des donnees : on ne les
@@ -118,6 +125,10 @@ def preparer_ligne(ligne):
             val = str(val)
         propre[str(cle)] = val
     pub = str(propre.get("publication_number", "") or "")
+    if not pub:
+        avis = propre.get("avis")
+        if isinstance(avis, dict):
+            pub = str(avis.get("publication_number", "") or "")
     return pub, propre
 
 
