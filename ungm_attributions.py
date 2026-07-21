@@ -600,7 +600,16 @@ def construire(lignes):
 # La fiche detaillee est servie par GET Public/ContractAward/Popup/{id}
 # (appel releve dans le bundle JS, fonction onGotAwardDetail).
 
-ENRICHIR = os.environ.get("RADAR_UNGM_ATTRIB_ENRICHIR", "1") != "0"
+# ETEINT PAR DEFAUT apres verification sur donnees reelles (21/07/2026) :
+# la fiche detaillee ne contient QUE title, reference, award date et
+# description. Ni pays du fournisseur, ni montant. 21 fiches lues ont
+# donne 0 pays et 0 montant. On garde le code (regle ADB : on eteint, on
+# ne supprime pas) au cas ou UNGM enrichirait ses fiches, mais l'activer
+# aujourd'hui coute des requetes pour rien.
+# CONSEQUENCE ASSUMEE : contrairement aux attributions BM, on ne peut ni
+# filtrer les titulaires locaux, ni ponderer par le montant. Les noms
+# restent exploitables, l'analyste juge a l'oeil.
+ENRICHIR = os.environ.get("RADAR_UNGM_ATTRIB_ENRICHIR", "0") == "1"
 # Budget de requetes : une par fiche. On se limite par defaut aux marches ou
 # quelqu'un se deplace, ce qui divise le cout par trois ou quatre.
 ENRICH_MAX = int(os.environ.get("RADAR_UNGM_ATTRIB_ENRICH_MAX", "40"))
