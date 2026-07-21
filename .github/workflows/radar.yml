@@ -70,11 +70,7 @@ jobs:
           git commit -m "chore(radar): etat inter-runs [skip ci]"
           git pull --rebase origin "${GITHUB_REF_NAME}"
           git push origin "HEAD:${GITHUB_REF_NAME}"
-      # 4) Generer le tableau de bord depuis le Sheet (public/index.html).
-      #    if: always() => le dashboard se rafraichit meme si le radar a eu un
-      #    souci, en lisant le dernier etat du Sheet. L'echec radar reste visible
-      #    (le job est marque en echec, alerte mail) mais la page reste a jour.
-      # 3b) Attributions Banque Mondiale : titulaires nommes, en mobilisation.
+      # 4a) Attributions Banque Mondiale : titulaires nommes, en mobilisation.
       #     Ecrit dans le MEME onglet que les attributions TED, donc remonte
       #     automatiquement dans la lentille Titulaires et la fiche 360.
       #     Isole : un echec ici n'empeche ni le dashboard ni la publication.
@@ -87,11 +83,10 @@ jobs:
           RADAR_BM_ATTRIB_DEBUG: "0"
         run: python bm_attributions.py
 
-      # 3c) UNGM : avis des agences ONU (HCR, PAM, UNICEF, PNUD, OIM, UNOPS...),
+      # 4b) UNGM : avis des agences ONU (HCR, PAM, UNICEF, PNUD, OIM, UNOPS...),
       #     qui operent exactement dans les zones d'Amarante. Isole : un echec
       #     ici n'empeche ni le dashboard ni la publication.
-      #     PREMIER RUN : laisser RADAR_UNGM_DEBUG a "1" pour verifier le
-      #     parsing (le journal imprime la structure brute), puis passer a "0".
+      #     RADAR_UNGM_DEBUG=1 pour verifier le parsing sans rien ecrire.
       - name: Collecter les avis UNGM
         if: always()
         env:
@@ -101,12 +96,13 @@ jobs:
           RADAR_UNGM_DEBUG: "0"
         run: python ungm_radar.py
 
-      # 3d) Attributions UNGM : titulaires nommes de marches ONU. Ecrit dans le
+      # 4c) Attributions UNGM : titulaires nommes de marches ONU. Ecrit dans le
       #     MEME onglet que les attributions TED et BM, donc aucun cablage
       #     dashboard. L'endpoint reel (/PublicSearch) et la charge utile ont
       #     ete releves dans le JavaScript du portail le 20/07/2026.
-      #     PREMIER RUN : garder DEBUG a "1" pour verifier titulaires et
-      #     structure, puis passer a "0".
+      #     RADAR_UNGM_ATTRIB_DEBUG=1 pour verifier titulaires et structure
+      #     sans rien ecrire. Enrichissement par fiche detaillee ETEINT : la
+      #     fiche UNGM ne porte ni montant ni pays du fournisseur (verifie).
       - name: Collecter les attributions UNGM
         if: always()
         env:
@@ -115,6 +111,24 @@ jobs:
           RADAR_UNGM_ATTRIB_DEBUG: "0"
         run: python ungm_attributions.py
 
+      # 4d) Attributions IsDB : la Banque islamique finance dans la zone
+      #     d'Amarante (Mali, Mauritanie, Niger, Somalie, Soudan, Libye, Yemen,
+      #     Togo, Sierra Leone, Mozambique, Tadjikistan). Sa fiche donne le NOM
+      #     ET LE PAYS du titulaire, donc le filtre local/etranger fonctionne,
+      #     contrairement a UNGM. Meme onglet : aucun cablage dashboard.
+      #     RADAR_ISDB_DEBUG=1 pour verifier sans rien ecrire.
+      - name: Collecter les attributions IsDB
+        if: always()
+        env:
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          RADAR_ISDB_DEBUG: "1"
+        run: python isdb_radar.py
+
+      # 5) Generer le tableau de bord depuis le Sheet (public/index.html).
+      #    if: always() => le dashboard se rafraichit meme si un collecteur a eu
+      #    un souci, en lisant le dernier etat du Sheet. L'echec reste visible
+      #    (job en echec, alerte mail) mais la page reste a jour.
       - name: Generer le tableau de bord
         if: always()
         env:
@@ -126,7 +140,7 @@ jobs:
           SUIVI_WEBAPP_URL: ${{ secrets.SUIVI_WEBAPP_URL }}
           SUIVI_TOKEN: ${{ secrets.SUIVI_TOKEN }}
         run: python radar_dashboard.py
-      # 4b) Digest hebdo push : envoie par e-mail les NOUVELLES opportunites "a
+      # 6) Digest hebdo push : envoie par e-mail les NOUVELLES opportunites "a
       #     contacter" (via le meme webapp Apps Script que le bouton "Je
       #     contacte"). Best-effort et isole : sans SUIVI_* il ne fait rien, et
       #     un echec ici n'affecte ni le radar ni la publication du dashboard.
@@ -138,7 +152,7 @@ jobs:
           SUIVI_WEBAPP_URL: ${{ secrets.SUIVI_WEBAPP_URL }}
           SUIVI_TOKEN: ${{ secrets.SUIVI_TOKEN }}
         run: python radar_digest.py
-      # 5) Publier la page sur Cloudflare Pages (hebergement statique gratuit).
+      # 7) Publier la page sur Cloudflare Pages (hebergement statique gratuit).
       - name: Publier sur Cloudflare Pages
         if: always()
         uses: cloudflare/wrangler-action@v3
@@ -146,7 +160,7 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: pages deploy public --project-name=radar-amarante
-      # 6) Archiver le journal du run (90 jours), meme en cas d'echec.
+      # 8) Archiver le journal du run (90 jours), meme en cas d'echec.
       - name: Archiver le journal
         if: always()
         uses: actions/upload-artifact@v4
