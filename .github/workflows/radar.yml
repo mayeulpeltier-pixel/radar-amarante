@@ -122,7 +122,7 @@ jobs:
         env:
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
-          RADAR_ISDB_DEBUG: "1"
+          RADAR_ISDB_DEBUG: "0"
         run: python isdb_radar.py
 
       # 5) Generer le tableau de bord depuis le Sheet (public/index.html).
