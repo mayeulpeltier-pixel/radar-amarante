@@ -1,33 +1,29 @@
 # -*- coding: utf-8 -*-
 """
-RADAR AMARANTE -- SONDE v5 (jetable) : IsDB (Banque islamique de developpement).
-=================================================================================
+RADAR AMARANTE -- SONDE v6 (jetable) : IsDB, finir le diagnostic.
+==================================================================
 
-POURQUOI CETTE SOURCE
----------------------
-IsDB finance dans EXACTEMENT la zone d'Amarante : Mauritanie, Guinee, Togo,
-Benin, Centrafrique, Sierra Leone, Mozambique, Gambie, Tadjikistan, Azerbaidjan.
-Et son portail publie un type d'avis "Contract Award", donc potentiellement des
-TITULAIRES NOMMES, comme la Banque Mondiale.
+La v5 a etabli l'essentiel : le contenu est RENDU COTE SERVEUR (pas de piege
+JavaScript comme UNGM ou ADB), les cinq types d'avis et les pays de la zone
+Amarante sont dans le HTML. La source est donc grattable.
 
-CE QUE LA SONDE TRANCHE, AVANT D'ECRIRE LE MOINDRE COLLECTEUR
---------------------------------------------------------------
-  A. Le contenu est-il DANS le HTML (rendu serveur, donc lisible) ou charge en
-     JavaScript ? C'est la question qui a coute trois tours sur UNGM et qui a
-     tue le collecteur ADB.
-  B. Existe-t-il un flux structure (RSS, JSON:API Drupal) ? Ce serait bien
-     meilleur qu'un grattage de page.
-  C. Quelle est la structure d'une ligne : type d'avis, pays, date, titre ?
-  D. Les avis d'attribution nomment-ils le titulaire ?
+Trois points restaient flous, par insuffisance de MA sonde :
+  A. Structure des lignes. La v5 decoupait des CELLULES (150 blocs a un seul
+     champ) au lieu de lignes. On dumpe donc le HTML BRUT autour d'un avis
+     pour voir le balisage reel.
+  B. Fiche d'attribution. La v5 n'affichait que les 35 premieres lignes, toutes
+     occupees par le menu de navigation. On saute la navigation et on dumpe le
+     CORPS de la fiche : c'est la que se trouverait le titulaire.
+  C. Filtrage et pagination. Les URL vues (/tenders/2024/contract-award/...)
+     suggerent une taxonomie Drupal. Si on peut filtrer par type d'avis et
+     paginer, le collecteur ne rapatriera que l'utile.
 
-Les corps de reponse COURTS sont systematiquement imprimes : ne pas les avoir
-imprimes a fait perdre deux tours sur UNGM.
+Le HTML brut est imprime tel quel : ne pas l'avoir fait a coute deux tours
+sur UNGM.
 
 Aucune ecriture. Sortie toujours en code 0.
-LANCEMENT : workflow "Sonde sources" (declenchement manuel).
 """
 
-import json
 import re
 import sys
 
@@ -51,7 +47,7 @@ def _titre(t):
 
 def _verdict(nom, ok, detail):
     RESULTATS.append((nom, ok, detail))
-    print("  => {} : {}".format("EXPLOITABLE" if ok else "a creuser", detail))
+    print("  => {} : {}".format("OK" if ok else "a creuser", detail))
 
 
 def _plat(t, n=None):
@@ -60,176 +56,158 @@ def _plat(t, n=None):
 
 
 def _texte(html):
-    t = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", str(html or ""))
-    t = re.sub(r"(?i)</\s*(div|p|tr|td|li|h\d|span)\s*>", "\n", t)
+    t = re.sub(r"(?is)<(script|style|nav|header|footer)[^>]*>.*?</\1>", " ", str(html or ""))
+    t = re.sub(r"(?i)</\s*(div|p|tr|td|th|li|h\d|span|dt|dd)\s*>", "\n", t)
     t = re.sub(r"(?s)<[^>]+>", " ", t)
     import html as _h
     return _h.unescape(t)
 
 
 # ===========================================================================
-# A -- Le contenu est-il dans le HTML ?
+# A -- Balisage REEL d'une ligne d'avis
 # ===========================================================================
 
 def sonde_a(s):
-    _titre("A -- IsDB : le contenu est-il rendu cote serveur ?")
+    _titre("A -- IsDB : balisage brut autour d'un avis")
     try:
-        r = s.get(PAGE_TENDERS, timeout=TIMEOUT)
-        html = r.text or ""
+        html = s.get(PAGE_TENDERS, timeout=TIMEOUT).text or ""
     except Exception as e:
-        _verdict("A rendu", False, "page illisible : {}".format(e))
+        _verdict("A balisage", False, "page illisible : {}".format(e))
         return ""
-    print("GET {} -> HTTP {} ({} octets)".format(PAGE_TENDERS, r.status_code, len(r.content)))
+    print("Page : {} octets".format(len(html)))
 
-    # Marqueurs de contenu reel : types d'avis et pays doivent apparaitre.
-    types = ["Contract Award", "General Procurement Notice", "Expression of Interest",
-             "Specific Procurement Notice", "Pre-Qualification"]
-    presents = [t for t in types if t.lower() in html.lower()]
-    print("  types d'avis presents dans le HTML : {}".format(presents or "AUCUN"))
-    pays_test = ["Mauritania", "Guinea", "Benin", "Sierra Leone", "Mozambique",
-                 "Togo", "Gambia", "Tajikistan", "Central African Republic"]
-    pays_vus = [p for p in pays_test if p.lower() in html.lower()]
-    print("  pays reconnus dans le HTML : {}".format(pays_vus or "AUCUN"))
-    lignes_tab = html.count("<tr") + html.count('role="row"') + html.count("views-row")
-    print("  marqueurs de ligne (<tr>, role=row, views-row) : {}".format(lignes_tab))
+    # On se cale sur la premiere occurrence d'un type d'avis et on montre le
+    # balisage autour : c'est lui qui dira comment decouper les lignes.
+    m = re.search(r"(?i)contract award", html)
+    if not m:
+        m = re.search(r"(?i)general procurement notice", html)
+    if m:
+        deb, fin = max(0, m.start() - 1800), min(len(html), m.end() + 1200)
+        print("\n[A1] HTML BRUT autour du premier avis (3 000 caracteres) :")
+        print("-" * 72)
+        print(_plat(html[deb:fin], 3000))
+        print("-" * 72)
 
-    ok = bool(presents and pays_vus)
-    _verdict("A rendu", ok,
-             "contenu {} dans le HTML".format("PRESENT" if ok else "absent"))
+    # Classes de conteneur les plus frequentes : candidates au decoupage.
+    classes = re.findall(r'class="([^"]{3,90})"', html)
+    from collections import Counter
+    freq = Counter(c.strip() for c in classes)
+    print("\n[A2] Classes les plus repetees (candidates pour decouper les lignes) :")
+    for cls, n in freq.most_common(18):
+        if n >= 5:
+            print("    {:4}x  {}".format(n, cls[:80]))
+    _verdict("A balisage", bool(m), "balisage dumpe, lire [A1]/[A2].")
     return html
 
 
 # ===========================================================================
-# B -- Un flux structure existe-t-il ?
+# B -- Le CORPS d'une fiche d'attribution
 # ===========================================================================
 
 def sonde_b(s, html):
-    _titre("B -- IsDB : flux RSS ou API structuree ?")
-    candidats = [
-        BASE + "/project-procurement/tenders/rss.xml",
-        BASE + "/project-procurement/rss.xml",
-        BASE + "/rss.xml",
-        BASE + "/jsonapi",
-        BASE + "/jsonapi/node/tender",
-    ]
-    # Un lien de flux declare dans la page prime sur nos suppositions.
-    for m in re.findall(r'<link[^>]+type="application/(?:rss\+xml|atom\+xml)"[^>]+>',
-                        html or "", re.I):
-        u = re.search(r'href="([^"]+)"', m)
-        if u:
-            lien = u.group(1)
-            candidats.insert(0, lien if lien.startswith("http") else BASE + lien)
-
-    trouve = ""
-    for u in candidats:
-        try:
-            r = s.get(u, timeout=TIMEOUT)
-            corps = (r.text or "")[:400]
-            print("  {} -> HTTP {} ({} octets)".format(u, r.status_code, len(r.content)))
-            if r.status_code >= 400:
-                continue
-            print("      {}".format(_plat(corps, 240)))
-            if "<item" in corps.lower() or "<entry" in corps.lower():
-                trouve = u
-                print("      *** FLUX RSS/ATOM EXPLOITABLE ***")
-                break
-            if corps.strip().startswith("{"):
-                try:
-                    data = json.loads(r.text)
-                    if isinstance(data, dict) and data.get("data") is not None:
-                        trouve = u
-                        print("      *** API JSON EXPLOITABLE ***")
-                        break
-                except Exception:
-                    pass
-        except Exception as e:
-            print("  {} -> exception {}".format(u, _plat(e, 60)))
-    _verdict("B flux", bool(trouve), trouve or "aucun flux structure trouve.")
-
-
-# ===========================================================================
-# C -- Structure d'une ligne d'avis
-# ===========================================================================
-
-def sonde_c(s, html):
-    _titre("C -- IsDB : structure d'une ligne d'avis")
-    if not html:
-        _verdict("C structure", False, "pas de HTML a analyser.")
+    _titre("B -- IsDB : le corps d'une fiche d'ATTRIBUTION nomme-t-il le titulaire ?")
+    liens = sorted(set(re.findall(
+        r'href="(/project-procurement/tenders/[^"]{4,160})"', html or "", re.I)))
+    awards = [l for l in liens if "contract-award" in l.lower()]
+    if not awards:
+        _verdict("B fiche", False, "aucun lien d'attribution dans la page.")
         return
-    # Drupal rend generalement ses listes en .views-row ou en <tr>.
-    blocs = re.findall(r'<(?:div|tr)[^>]*class="[^"]*(?:views-row|tender)[^"]*"[^>]*>(.{80,1400}?)</(?:div|tr)>',
-                       html, re.I | re.S)
-    if not blocs:
-        blocs = re.findall(r"<tr[^>]*>(.{80,1400}?)</tr>", html, re.I | re.S)
-    print("  {} bloc(s) de ligne detecte(s).".format(len(blocs)))
-    for i, b in enumerate(blocs[:4], 1):
-        lignes = [l for l in (_plat(x) for x in _texte(b).split("\n")) if l]
-        print("  --- ligne {} : {} champ(s) ---".format(i, len(lignes)))
-        for j, l in enumerate(lignes[:10]):
-            print("      [{}] {}".format(j, l[:110]))
-    # Les liens de detail donnent la forme des URL a suivre.
-    liens = sorted(set(re.findall(r'href="(/project-procurement/tenders/[^"]{4,120})"',
-                                  html, re.I)))
-    print("\n  liens de detail (echantillon) :")
-    for l in liens[:8]:
-        print("      {}".format(l))
-    _verdict("C structure", bool(blocs), "{} ligne(s) lisible(s)".format(len(blocs)))
-
-
-# ===========================================================================
-# D -- Les attributions nomment-elles le titulaire ?
-# ===========================================================================
-
-def sonde_d(s, html):
-    _titre("D -- IsDB : un avis d'ATTRIBUTION nomme-t-il le titulaire ?")
-    liens = sorted(set(re.findall(r'href="(/project-procurement/tenders/[^"]{4,140})"',
-                                  html or "", re.I)))
-    # On privilegie une URL qui sent l'attribution.
-    cible = next((l for l in liens if re.search(r"(?i)award|attribution", l)), None)
-    if not cible and liens:
-        cible = liens[0]
-    if not cible:
-        _verdict("D titulaire", False, "aucun lien de detail a suivre.")
-        return
-    url = BASE + cible
+    url = BASE + awards[0]
     try:
         r = s.get(url, timeout=TIMEOUT)
+        page = r.text or ""
         print("GET {} -> HTTP {} ({} octets)".format(url, r.status_code, len(r.content)))
-        texte = _texte(r.text)
-        lignes = [l for l in (_plat(x) for x in texte.split("\n")) if l]
-        print("\n  Premieres lignes de la fiche :")
-        for l in lignes[:35]:
-            print("      {}".format(l[:120]))
-        marqueurs = [m for m in ("awarded", "contractor", "supplier", "winner",
-                                 "attributaire", "titulaire", "contract award",
-                                 "amount", "montant", "value")
-                     if m in texte.lower()]
-        print("\n  marqueurs de titulaire/montant : {}".format(marqueurs or "AUCUN"))
-        _verdict("D titulaire", bool(marqueurs),
-                 "marqueurs trouves : {}".format(marqueurs or "aucun"))
     except Exception as e:
-        _verdict("D titulaire", False, "fiche illisible : {}".format(e))
+        _verdict("B fiche", False, "fiche illisible : {}".format(e))
+        return
+
+    # On isole la region de contenu : la navigation occupait tout le dump v5.
+    region = page
+    for motif in (r'(?is)<main[^>]*>(.*?)</main>',
+                  r'(?is)<article[^>]*>(.*?)</article>',
+                  r'(?is)<div[^>]*class="[^"]*(?:node__content|field--name-body|'
+                  r'region-content|main-content)[^"]*"[^>]*>(.*?)</div>\s*</div>'):
+        mm = re.search(motif, page)
+        if mm and len(mm.group(1)) > 400:
+            region = mm.group(1)
+            print("  region de contenu isolee ({} octets).".format(len(region)))
+            break
+
+    lignes = [l for l in (_plat(x) for x in _texte(region).split("\n")) if l]
+    # On saute le chrome de navigation, repere par ses libelles recurrents.
+    chrome = {"home", "tenders", "documents", "search", "register", "log in",
+              "english", "français", "learning resources", "consultants portal",
+              "vendor registration", "skip to main content", "isdb",
+              "project procurement", "main navigation", "user account menu"}
+    utiles = [l for l in lignes if l.strip().lower() not in chrome and len(l) > 2]
+    print("\n[B1] Corps de la fiche ({} lignes utiles, 60 premieres) :".format(len(utiles)))
+    for l in utiles[:60]:
+        print("    {}".format(l[:130]))
+
+    bas = _texte(region).lower()
+    marqueurs = [m for m in ("awarded to", "contractor", "supplier", "winner",
+                             "successful bidder", "attributaire", "titulaire",
+                             "amount", "montant", "contract value", "price",
+                             "company", "firm")
+                 if m in bas]
+    print("\n[B2] Marqueurs de titulaire/montant dans le CORPS : {}".format(
+        marqueurs or "AUCUN"))
+    # Les fiches renvoient souvent vers un document : c'est peut-etre la que
+    # figure le nom du titulaire.
+    docs = sorted(set(re.findall(r'href="([^"]+\.(?:pdf|docx?|xlsx?))"', page, re.I)))
+    print("[B3] Documents joints : {}".format(docs[:6] or "aucun"))
+    _verdict("B fiche", bool(marqueurs),
+             "marqueurs : {}".format(marqueurs or "aucun"))
+
+
+# ===========================================================================
+# C -- Filtrage par type d'avis et pagination
+# ===========================================================================
+
+def sonde_c(s):
+    _titre("C -- IsDB : peut-on filtrer les attributions et paginer ?")
+    essais = [
+        ("page 2", PAGE_TENDERS + "?page=1"),
+        ("filtre type (texte)", PAGE_TENDERS + "?type=contract-award"),
+        ("filtre type (champ)", PAGE_TENDERS + "?field_tender_type=contract-award"),
+        ("filtre pays", PAGE_TENDERS + "?country=Mali"),
+        ("taxonomie award", BASE + "/project-procurement/taxonomy/term/207"),
+    ]
+    for nom, url in essais:
+        try:
+            r = s.get(url, timeout=TIMEOUT)
+            page = r.text or ""
+            n_award = len(re.findall(r"(?i)contract award", page))
+            n_gpn = len(re.findall(r"(?i)general procurement notice", page))
+            n_liens = len(set(re.findall(
+                r'href="/project-procurement/tenders/[^"]{4,160}"', page)))
+            print("  {:22} -> HTTP {} | {} liens | 'contract award' x{} | 'GPN' x{}"
+                  .format(nom, r.status_code, n_liens, n_award, n_gpn))
+        except Exception as e:
+            print("  {:22} -> exception {}".format(nom, _plat(e, 60)))
+    _verdict("C filtrage", True, "comparer les compteurs ci-dessus.")
 
 
 def main():
-    print("SONDE v5 -- IsDB (aucune ecriture)")
+    print("SONDE v6 -- IsDB : finir le diagnostic (aucune ecriture)")
     s = requests.Session()
     s.headers.update({"User-Agent": NAVIGATEUR, "Accept-Language": "en-US,en;q=0.9"})
     html = ""
     try:
         html = sonde_a(s) or ""
     except Exception as e:
-        _verdict("A rendu", False, "exception : {}".format(e))
-    for f in (sonde_b, sonde_c, sonde_d):
-        try:
-            f(s, html)
-        except Exception as e:
-            _verdict(f.__name__, False, "exception non rattrapee : {}".format(e))
-    _titre("VERDICT v5")
+        _verdict("A balisage", False, "exception : {}".format(e))
+    try:
+        sonde_b(s, html)
+    except Exception as e:
+        _verdict("B fiche", False, "exception : {}".format(e))
+    try:
+        sonde_c(s)
+    except Exception as e:
+        _verdict("C filtrage", False, "exception : {}".format(e))
+    _titre("VERDICT v6")
     for nom, ok, detail in RESULTATS:
         print("  [{}] {} -- {}".format("OUI" if ok else "NON", nom, detail))
-    print("\nSi A est PRESENT, la source est grattable sans piege JavaScript.")
-    print("Si B trouve un flux, c'est encore mieux : pas de grattage du tout.")
 
 
 if __name__ == "__main__":
