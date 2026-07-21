@@ -2228,6 +2228,17 @@ class TestAttributionsUNGM(unittest.TestCase):
                       "Procurement of vehicles"):
             self.assertEqual(ungm_attributions.nature_marche(titre), "fournitures")
 
+    def test_engins_de_construction_ne_sont_pas_des_travaux(self):
+        """PIEGE REEL du 20/07/2026 : Kjaer & Kjaer, MANITOU et Guangxi Liugong
+        etaient classes TRAVAUX parce que leurs marches portent sur du
+        "construction equipment". Il faut distinguer l'ACTIVITE (construire)
+        de l'OBJET (des engins de construction)."""
+        for titre in ("ITB for supply of construction equipment and machinery",
+                      "Supply of heavy construction machinery - Afghanistan",
+                      "Supply of construction materials"):
+            self.assertEqual(ungm_attributions.nature_marche(titre), "fournitures",
+                             "mal classe : {}".format(titre))
+
     def test_classement_services(self):
         self.assertEqual(
             ungm_attributions.nature_marche("Provision of security guard services"),
