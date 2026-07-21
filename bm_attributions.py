@@ -656,6 +656,15 @@ def ecrire(feuille, attributions):
         nouvelles.append(ligne_pour_sheet(a) + ["", date.today().isoformat()])
     if nouvelles:
         feuille.append_rows(nouvelles, value_input_option="RAW")
+    # Double ecriture (etape 2 du cap produit, 21/07/2026) : miroir Postgres
+    # best-effort. On passe TOUTES les attributions, pas seulement les
+    # nouvelles : le miroir a sa propre memoire (ON CONFLICT DO NOTHING) et se
+    # remplit ainsi retroactivement. Ne peut JAMAIS faire echouer le run.
+    try:
+        import radar_stockage
+        print("  (pg) " + radar_stockage.ecrire_miroir(NOM_ONGLET, attributions))
+    except Exception as e:                     # module absent : run intact
+        print("  (pg) miroir indisponible ({})".format(e))
     return len(nouvelles), ignorees
 
 
