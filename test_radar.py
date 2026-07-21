@@ -2213,6 +2213,56 @@ class TestAttributionsUNGM(unittest.TestCase):
         _sorties, motifs = ungm_attributions.construire(lignes)
         self.assertEqual(motifs["titulaire_masque"], 1)
 
+    # -- Nature du marche : qui se deplace, qui expedie ? -------------------
+    # Le run reel melangeait des fournisseurs d'engins (Kjaer & Kjaer, MANITOU,
+    # Guangxi Liugong) et des entreprises de travaux (Harirod Construction).
+    # Seules les secondes mobilisent des equipes sur site.
+    def test_classement_travaux(self):
+        for titre in ("ITB for Upgrading of Plum Concrete Surface Streets",
+                      "Construction of three water points",
+                      "Rehabilitation of health centres"):
+            self.assertEqual(ungm_attributions.nature_marche(titre), "travaux")
+
+    def test_classement_fournitures(self):
+        for titre in ("Supply of heavy equipment and spare parts",
+                      "Procurement of vehicles"):
+            self.assertEqual(ungm_attributions.nature_marche(titre), "fournitures")
+
+    def test_classement_services(self):
+        self.assertEqual(
+            ungm_attributions.nature_marche("Provision of security guard services"),
+            "services")
+
+    def test_installation_prime_sur_fourniture(self):
+        """"Supply AND installation" implique une intervention sur site."""
+        self.assertEqual(
+            ungm_attributions.nature_marche("Supply and installation of solar power system"),
+            "travaux")
+
+    def test_nature_visible_dans_le_secteur(self):
+        cellules = ["Construction of water points - Mali", "Sogea Satom SARL",
+                    "10-Jul-2026", "UNOPS", "ITB/2026/1", "Mali"]
+        a = ungm_attributions.normaliser(
+            ungm_attributions.extraire_attributions(self._html(cellules))[0], "MLI")
+        self.assertIn("travaux", a["secteur"])
+
+    def test_travaux_scorent_au_dessus_des_fournitures(self):
+        """Le classement doit faire remonter les entreprises qui mobilisent,
+        sans qu'aucune ligne ne soit supprimee."""
+        try:
+            import radar_dashboard as dash
+        except Exception:
+            self.skipTest("radar_dashboard indisponible")
+        t_travaux = "Construction of three water points"
+        t_fourn = "Supply of heavy equipment and spare parts"
+        s_travaux = dash.score_attribution(
+            "Sahel", "Marche ONU - " + ungm_attributions.nature_marche(t_travaux),
+            t_travaux, "")
+        s_fourn = dash.score_attribution(
+            "Sahel", "Marche ONU - " + ungm_attributions.nature_marche(t_fourn),
+            t_fourn, "")
+        self.assertGreater(s_travaux, s_fourn)
+
     # -- Detection multi-format de la reponse ------------------------------
     # Erreur corrigee : on ne cherchait que des <div role="row">. Une reponse
     # JSON (ce que 101 octets constants suggerent) etait declaree en echec
