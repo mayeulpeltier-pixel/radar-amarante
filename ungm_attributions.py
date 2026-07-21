@@ -262,7 +262,49 @@ def _plausible_entreprise(txt):
     return True
 
 
-# Marqueurs de raison sociale : formes juridiques et suffixes d'entreprise.
+# --- Nature du marche : qui se DEPLACE, qui se contente d'expedier ? -------
+# Constat du run reel : la liste melange des fournisseurs d'equipement (Kjaer
+# & Kjaer, MANITOU, Guangxi Liugong : ils livrent des engins, ils n'envoient
+# personne) et des entreprises de travaux (Harirod Construction, Rayan Saadat :
+# elles mobilisent des equipes sur site). C'est la meme distinction que
+# CS/CW contre GO a la Banque Mondiale.
+#
+# On CLASSE au lieu de filtrer : le libelle part dans la colonne `secteur`,
+# donc il est visible et filtrable dans la lentille Titulaires, et le mot
+# "travaux" declenche le bonus de secteur du mini-score du dashboard. C'est a
+# l'analyste de trancher, pas au collecteur de decider a sa place.
+MOTS_TRAVAUX = (
+    "construction", "works", "travaux", "upgrading", "rehabilitation",
+    "refurbish", "renovation", "building", "road", "route", "bridge", "pont",
+    "drilling", "borehole", "forage", "installation", "erection", "civil",
+    "infrastructure", "pipeline", "excavation", "paving", "concrete",
+)
+MOTS_SERVICES = (
+    "services", "service", "transport", "logistics", "logistique", "freight",
+    "security", "securite", "sécurité", "guard", "escort", "escorte",
+    "maintenance", "consultancy", "cleaning", "catering", "management",
+    "supervision", "training", "survey", "assessment", "monitoring",
+)
+MOTS_FOURNITURES = (
+    "supply", "supplies", "procurement of", "purchase", "provision of goods",
+    "equipment", "machinery", "vehicles", "vehicle", "spare parts", "furniture",
+    "fourniture", "acquisition", "delivery of", "goods",
+)
+
+
+def nature_marche(titre):
+    """'travaux', 'services' ou 'fournitures' selon l'objet du marche.
+
+    L'ordre compte : un intitule comme "Supply and installation of..." implique
+    une intervention sur site, donc travaux prime sur fournitures."""
+    t = " {} ".format(re.sub(r"\s+", " ", str(titre or "")).lower())
+    if any(m in t for m in MOTS_TRAVAUX):
+        return "travaux"
+    if any(m in t for m in MOTS_SERVICES):
+        return "services"
+    if any(m in t for m in MOTS_FOURNITURES):
+        return "fournitures"
+    return "indetermine"
 RE_FORME_JURIDIQUE = re.compile(
     r"(?i)\b(ltd|limited|llc|l\.l\.c|inc|incorporated|corp|corporation|co|company|"
     r"sarl|s\.a\.r\.l|sas|s\.a|spa|s\.p\.a|gmbh|ag|bv|n\.v|nv|plc|pvt|pte|"
@@ -353,12 +395,15 @@ def normaliser(ligne, iso3):
     restes = [r for r in champs["restes"] if r != titulaire]
     titre = max(restes, key=len) if restes else titulaire
     ident = ligne.get("id") or ""
+    nature = nature_marche(titre)
     pub = "UNGMA-{}".format(ident) if ident else "UNGMA-{}-{}-{}".format(
         iso3, (d_attrib or "nd"), abs(hash(titulaire)) % 999983)
     return {
         "date_maj": date.today().isoformat(),
         "gagnant": titulaire,
-        "secteur": "Marche ONU",
+        # La nature part dans `secteur` : visible et filtrable dans la lentille
+        # Titulaires, et "travaux" declenche le bonus de secteur du mini-score.
+        "secteur": "Marche ONU - {}".format(nature),
         # ISO3 obligatoire : le dashboard resout les attributions en mode ISO.
         "pays_execution": iso3,
         "valeur_attribuee": montant,
@@ -588,10 +633,10 @@ def main():
         print("\n--- MODE VERIFICATION : AUCUNE ECRITURE ---")
         print("\n[B] Attributions interpretees :")
         for a in attributions[:20]:
-            print("  [{}] {} | {} | {} | {}".format(
+            print("  [{}] {:34} | {} | {:10} | {}".format(
                 a["date_publication"] or "n.c.", a["gagnant"][:34],
-                a["pays_execution"], a["acheteur"][:18],
-                a["valeur_attribuee"] or "montant n.c."))
+                a["pays_execution"], a["secteur"].replace("Marche ONU - ", "")[:10],
+                a["acheteur"][:18]))
         print("\n[C] Structure BRUTE des 3 premieres lignes :")
         for ligne in lignes[:3]:
             print("  --- id {!r} : {} cellule(s) ---".format(
