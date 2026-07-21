@@ -426,6 +426,9 @@ def normaliser(ligne, iso3):
         "cpv": champs["reference"][:40],
         "sous_traitance": "",
         "date_publication": d_attrib,
+        # Nom du pays de livraison, conserve pour la comparaison avec le pays
+        # d'origine du titulaire (filtre local/etranger a l'enrichissement).
+        "_pays_nom": champs.get("pays_cellule") or "",
         "publication_number": pub,
         "lien": LIEN_AWARD.format(ident) if ident else PAGE_AWARDS,
         "a_demarcher": "oui",
@@ -585,6 +588,170 @@ def construire(lignes):
 
 
 # ===========================================================================
+# ENRICHISSEMENT PAR LA FICHE DETAILLEE
+# ===========================================================================
+# La liste UNGM ne donne ni le MONTANT ni le PAYS D'ORIGINE du titulaire. Or
+# ces deux informations sont decisives :
+#   - le montant alimente le poids de valeur du mini-score (sans lui, toutes
+#     les attributions scorent au minimum) ;
+#   - le pays d'origine permet le filtre local/etranger, celui-la meme qui a
+#     ecarte 490 entrepreneurs locaux cote Banque Mondiale. Un macon de Kaboul
+#     n'achete pas de protection internationale.
+# La fiche detaillee est servie par GET Public/ContractAward/Popup/{id}
+# (appel releve dans le bundle JS, fonction onGotAwardDetail).
+
+ENRICHIR = os.environ.get("RADAR_UNGM_ATTRIB_ENRICHIR", "1") != "0"
+# Budget de requetes : une par fiche. On se limite par defaut aux marches ou
+# quelqu'un se deplace, ce qui divise le cout par trois ou quatre.
+ENRICH_MAX = int(os.environ.get("RADAR_UNGM_ATTRIB_ENRICH_MAX", "40"))
+ENRICH_NATURES = tuple(
+    n.strip() for n in
+    os.environ.get("RADAR_UNGM_ATTRIB_ENRICH_NATURES", "travaux,services").split(",")
+    if n.strip())
+
+RE_ETIQUETTE = re.compile(r"^([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'’ /()-]{2,48})\s*:\s*(.*)$")
+# Etiquettes candidates, dans l'ordre de preference.
+LABELS_PAYS_FOURNISSEUR = (
+    "supplier country", "vendor country", "country of supplier",
+    "supplier's country", "supplier country/territory", "pays du fournisseur",
+)
+LABELS_MONTANT = (
+    "contract value", "award value", "contract amount", "awarded amount",
+    "total value", "value", "amount", "montant",
+)
+
+
+def url_popup(ident):
+    return LIEN_POPUP.format(ident)
+
+
+def _lignes_fiche(html_brut):
+    """HTML de fiche -> lignes de texte propres."""
+    t = str(html_brut or "")
+    t = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", t)
+    t = re.sub(r"(?i)<\s*br\s*/?\s*>", "\n", t)
+    t = re.sub(r"(?i)</\s*(div|p|tr|td|th|li|h\d|span|dt|dd)\s*>", "\n", t)
+    t = re.sub(r"(?s)<[^>]+>", " ", t)
+    import html as _h
+    t = _h.unescape(t)
+    return [re.sub(r"\s+", " ", l).strip() for l in t.split("\n")
+            if re.sub(r"\s+", " ", l).strip()]
+
+
+def paires_fiche(html_brut):
+    """{etiquette minuscule: valeur} depuis une fiche detaillee.
+
+    Trois mises en forme possibles, toutes rencontrees sur ce type de portail
+    et impossibles a departager sans avoir vu la vraie fiche :
+      1. "Etiquette : valeur" sur une meme ligne ;
+      2. "Etiquette :" puis la valeur a la ligne suivante ;
+      3. listes de definition (<dt>Etiquette</dt><dd>valeur</dd>), qui ne
+         produisent AUCUN deux-points apres retrait des balises."""
+    lignes = _lignes_fiche(html_brut)
+    paires = {}
+
+    # Passes 1 et 2 : etiquettes suivies d'un deux-points.
+    for i, ligne in enumerate(lignes):
+        m = RE_ETIQUETTE.match(ligne)
+        if not m:
+            continue
+        cle = m.group(1).strip().lower()
+        val = m.group(2).strip()
+        if not val and i + 1 < len(lignes):
+            suivante = lignes[i + 1]
+            if not RE_ETIQUETTE.match(suivante):
+                val = suivante
+        if val and cle not in paires:
+            paires[cle] = val[:160]
+
+    # Passe 3 : une ligne qui EST exactement une etiquette connue, la valeur
+    # se trouvant a la ligne suivante.
+    connues = set(LABELS_PAYS_FOURNISSEUR) | set(LABELS_MONTANT) | {
+        "supplier", "vendor", "agency", "country", "award date", "reference",
+        "description", "title", "fournisseur", "pays", "date"}
+    for i, ligne in enumerate(lignes[:-1]):
+        cle = ligne.strip().rstrip(":").lower()
+        if cle in connues and cle not in paires:
+            suivante = lignes[i + 1].strip()
+            if suivante and suivante.rstrip(":").lower() not in connues:
+                paires[cle] = suivante[:160]
+    return paires
+
+
+def _valeur_parmi(paires, labels):
+    """Premiere valeur dont l'etiquette correspond, en tolerant les variantes."""
+    for label in labels:
+        if label in paires:
+            return paires[label]
+    for label in labels:
+        for cle, val in paires.items():
+            if label in cle:
+                return val
+    return ""
+
+
+def extraire_fiche(html_brut):
+    """(pays_fournisseur, montant_usd, paires) depuis une fiche detaillee."""
+    paires = paires_fiche(html_brut)
+    pays = _valeur_parmi(paires, LABELS_PAYS_FOURNISSEUR)
+    montant_brut = _valeur_parmi(paires, LABELS_MONTANT)
+    montant = ""
+    if montant_brut:
+        # On reutilise le lecteur de montant des attributions BM : il gere la
+        # devise dupliquee et convertit en USD pour un scoring comparable.
+        montant = bma._lire_montant(montant_brut)
+    return pays.strip(), montant, paires
+
+
+def enrichir(attributions, session=None, fetch=None):
+    """Complete montant et pays d'origine du titulaire, dans la limite du
+    budget. Best-effort : une fiche en echec laisse l'attribution telle quelle.
+
+    Renvoie des statistiques pour le journal."""
+    stats = {"tentees": 0, "pays": 0, "montants": 0, "echecs": 0, "fiches": []}
+    if not ENRICHIR:
+        return stats
+    session = session or ted.session_robuste()
+    for a in attributions:
+        if stats["tentees"] >= ENRICH_MAX:
+            break
+        nature = a.get("secteur", "").replace("Marche ONU - ", "")
+        if ENRICH_NATURES and nature not in ENRICH_NATURES:
+            continue
+        ident = (a.get("publication_number") or "").replace("UNGMA-", "")
+        if not ident.isdigit():
+            continue
+        stats["tentees"] += 1
+        try:
+            if fetch is not None:
+                html = fetch(ident)
+            else:
+                r = session.get(url_popup(ident), headers=ENTETES, timeout=30)
+                if r.status_code >= 400:
+                    stats["echecs"] += 1
+                    continue
+                html = r.text
+        except Exception:
+            stats["echecs"] += 1
+            continue
+        pays, montant, paires = extraire_fiche(html)
+        if len(stats["fiches"]) < 2:
+            stats["fiches"].append((ident, paires))
+        if pays:
+            a["_pays_titulaire"] = pays
+            # Meme logique commerciale que les attributions BM : une entreprise
+            # etrangere expatrie du personnel, un local non.
+            a["_etranger"] = bma.titulaire_etranger(pays, a.get("_pays_nom", ""))
+            stats["pays"] += 1
+        if montant:
+            a["valeur_attribuee"] = montant
+            stats["montants"] += 1
+    return stats
+
+
+
+
+# ===========================================================================
 # ECRITURE ET MAIN
 # ===========================================================================
 
@@ -643,14 +810,34 @@ def main():
           "{hors_fenetre_ou_pays} | doublons : {doublon}".format(**motifs))
     print("  {} attribution(s) exploitable(s).".format(len(attributions)))
 
+    stats_enr = enrichir(attributions)
+    if stats_enr["tentees"]:
+        print("  enrichissement : {} fiche(s) lue(s) -> {} pays d'origine, "
+              "{} montant(s), {} echec(s).".format(
+                  stats_enr["tentees"], stats_enr["pays"],
+                  stats_enr["montants"], stats_enr["echecs"]))
+
     if DEBUG:
         print("\n--- MODE VERIFICATION : AUCUNE ECRITURE ---")
+        if stats_enr.get("fiches"):
+            print("\n[D] Etiquettes trouvees dans les fiches detaillees "
+                  "(pour reperer les bons noms de champs) :")
+            for ident, paires in stats_enr["fiches"]:
+                print("  --- fiche {} : {} etiquette(s) ---".format(ident, len(paires)))
+                for cle, val in list(paires.items())[:30]:
+                    print("      {:34} = {}".format(cle[:34], str(val)[:70]))
         print("\n[B] Attributions interpretees :")
         for a in attributions[:20]:
-            print("  [{}] {} | {:11} | {:32} | {}".format(
+            origine = a.get("_pays_titulaire") or ""
+            marque = ""
+            if origine:
+                marque = " <- {}{}".format(
+                    origine[:16], "" if a.get("_etranger") else " (LOCAL)")
+            print("  [{}] {} | {:11} | {:30}{} | {} | {}".format(
                 a["date_publication"] or "n.c.", a["pays_execution"],
                 a["secteur"].replace("Marche ONU - ", "")[:11],
-                a["gagnant"][:32], a["titre"][:70]))
+                a["gagnant"][:30], marque,
+                a["valeur_attribuee"] or "montant n.c.", a["titre"][:48]))
         print("\n[C] Structure BRUTE des 3 premieres lignes :")
         for ligne in lignes[:3]:
             print("  --- id {!r} : {} cellule(s) ---".format(
