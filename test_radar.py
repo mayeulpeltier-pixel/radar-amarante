@@ -2396,5 +2396,166 @@ class TestAttributionsUNGM(unittest.TestCase):
             self.assertEqual(ungm_attributions.lignes_depuis_reponse(txt), [])
 
 
+try:
+    import isdb_radar
+except Exception:
+    isdb_radar = None
+
+
+@unittest.skipIf(isdb_radar is None, "isdb_radar indisponible")
+class TestIsDB(unittest.TestCase):
+    """Collecteur d'attributions IsDB. Structures relevees sur donnees reelles
+    le 21/07/2026 : contenu rendu cote serveur (pas de piege JavaScript), et
+    surtout une fiche qui donne le NOM ET LE PAYS du titulaire, ce que UNGM ne
+    fournit pas. Ecrit dans l'onglet partage : aucun cablage dashboard."""
+
+    FORMULAIRE = ('<select name="country" class="form-control">'
+                  '<option value="">- Country -</option>'
+                  '<option value="ML">Mali</option>'
+                  '<option value="MR">Mauritania</option>'
+                  '<option value="NE">Niger</option>'
+                  '<option value="SO">Somalia</option>'
+                  '<option value="GB">United Kingdom</option></select>')
+
+    def _fiche(self, societe="Sogea Satom SARL", pays="France", jours=30):
+        from datetime import date as _d, timedelta as _td
+        quand = (_d.today() - _td(days=jours)).strftime("%d %B %Y")
+        return ("<main>"
+                "<div>Notice Type</div><div>International Competitive Bidding</div>"
+                "<div>Issue Date</div><div>{}</div>"
+                "<div>Project code</div><div>MLI1031</div>"
+                "<div>Project title</div>"
+                "<div>Rehabilitation of the Bamako-Segou road section</div>"
+                "<div>Contract Award Company Name</div><div>{}</div>"
+                "<div>Contract Award Company Country</div><div>{}</div>"
+                "<div>Contract Award Company Address</div><div>Nanterre</div>"
+                "</main>".format(quand, societe, pays))
+
+    # -- Formulaire de filtrage -------------------------------------------
+    def test_pays_extraits_en_iso3(self):
+        """Le formulaire donne des ISO2 ; le radar travaille en ISO3."""
+        table = isdb_radar.charger_pays_isdb(self.FORMULAIRE)
+        self.assertEqual(table.get("MLI"), "ML")
+        self.assertEqual(table.get("SOM"), "SO")
+
+    def test_pays_hors_univers_de_risque_ecartes(self):
+        table = isdb_radar.charger_pays_isdb(self.FORMULAIRE)
+        cibles = dict(isdb_radar.pays_a_interroger(table))
+        self.assertIn("MLI", cibles)
+        self.assertNotIn("GBR", cibles)
+
+    def test_formulaire_absent_ne_casse_rien(self):
+        self.assertEqual(isdb_radar.charger_pays_isdb("<html/>"), {})
+
+    # -- Liens d'attribution ------------------------------------------------
+    def test_seuls_les_liens_d_attribution_sont_retenus(self):
+        html = ('<a href="/project-procurement/tenders/2026/contract-award/route-x">a</a>'
+                '<a href="/project-procurement/tenders/2026/gpn/projet-y">b</a>'
+                '<a href="/project-procurement/tenders/2026/eoi/etude-z">c</a>')
+        liens = isdb_radar.liens_attributions(html)
+        self.assertEqual(len(liens), 1)
+        self.assertIn("contract-award", liens[0])
+
+    def test_identifiant_stable(self):
+        self.assertEqual(
+            isdb_radar.identifiant_depuis_lien(
+                "/project-procurement/tenders/2026/contract-award/bamako-segou-road"),
+            "ISDB-bamako-segou-road")
+
+    # -- Fiche d'attribution ------------------------------------------------
+    def test_etiquettes_sur_deux_lignes(self):
+        """Structure reelle : l'etiquette et sa valeur sont sur deux lignes
+        successives, sans deux-points."""
+        paires = isdb_radar.paires_fiche(self._fiche())
+        self.assertEqual(paires["contract award company name"], "Sogea Satom SARL")
+        self.assertEqual(paires["contract award company country"], "France")
+
+    def test_ligne_complete(self):
+        a = isdb_radar.normaliser("/x/contract-award/bamako", self._fiche(), "MLI")
+        self.assertEqual(a["gagnant"], "Sogea Satom SARL")
+        self.assertEqual(a["pays_execution"], "MLI")
+        self.assertIn("Bamako", a["titre"])
+        self.assertEqual(a["a_demarcher"], "oui")
+
+    def test_titulaire_etranger_detecte(self):
+        """C'est ce que UNGM ne permet PAS : le pays d'origine est donne."""
+        a = isdb_radar.normaliser("/x/contract-award/y",
+                                  self._fiche(pays="France"), "MLI")
+        self.assertTrue(a["_etranger"])
+
+    def test_titulaire_local_detecte(self):
+        a = isdb_radar.normaliser(
+            "/x/contract-award/y",
+            self._fiche(societe="Entreprise Malienne de Travaux", pays="Mali"), "MLI")
+        self.assertFalse(a["_etranger"])
+
+    def test_sans_societe_rien_n_est_ecrit(self):
+        fiche = "<main><div>Project title</div><div>Route</div></main>"
+        self.assertIsNone(isdb_radar.normaliser("/x/contract-award/y", fiche, "MLI"))
+
+    def test_attribution_trop_ancienne_ecartee(self):
+        vieille = self._fiche(jours=900)
+        self.assertIsNone(isdb_radar.normaliser("/x/contract-award/y", vieille, "MLI"))
+
+    def test_pays_hors_perimetre_rejete(self):
+        self.assertIsNone(isdb_radar.normaliser("/x/contract-award/y",
+                                                self._fiche(), "DNK"))
+
+    # -- Dates ---------------------------------------------------------------
+    def test_formats_de_date(self):
+        self.assertEqual(isdb_radar.lire_date_isdb("1 October 2024"), "2024-10-01")
+        self.assertEqual(isdb_radar.lire_date_isdb("15 March 2026"), "2026-03-15")
+        self.assertEqual(isdb_radar.lire_date_isdb("01/10/2024"), "2024-10-01")
+        self.assertEqual(isdb_radar.lire_date_isdb("pas une date"), "")
+
+    # -- Schema et integration ----------------------------------------------
+    def test_schema_identique_aux_autres_attributions(self):
+        try:
+            import ted_complet_attributions as ta
+        except Exception:
+            self.skipTest("ted_complet_attributions indisponible")
+        self.assertEqual(isdb_radar.COLONNES, ta.COLONNES)
+        self.assertEqual(isdb_radar.NOM_ONGLET, ta.NOM_ONGLET)
+
+    def test_integration_dashboard_automatique(self):
+        try:
+            import radar_dashboard as dash
+        except Exception:
+            self.skipTest("radar_dashboard indisponible")
+        a = isdb_radar.normaliser("/x/contract-award/bamako", self._fiche(), "MLI")
+        lead = dash.attribution_vers_lead(a)
+        self.assertEqual(lead["src"], "ATTRIB")
+        self.assertEqual(lead["entreprise"], "Sogea Satom SARL")
+        self.assertEqual(lead["pays"], "Mali")
+        self.assertNotEqual(lead["zone"], "Non classé")
+
+    def test_deduplication(self):
+        a = isdb_radar.normaliser("/x/contract-award/bamako", self._fiche(), "MLI")
+        b = dict(a, publication_number="ISDB-autre-slug")
+        self.assertEqual(len(isdb_radar.dedupliquer([a, b])), 1)
+
+    # -- Collecte : la memoire evite des requetes inutiles -------------------
+    def test_fiches_deja_connues_non_relues(self):
+        """Une fiche coute une requete : on ne relit pas ce qui est deja dans
+        le Sheet (lecon du collecteur UNGM)."""
+        lues = []
+
+        def liste(iso2, statut, page):
+            if page or statut == "closed":
+                return ""
+            return ('<a href="/project-procurement/tenders/2026/contract-award/'
+                    'bamako-segou-road">x</a>')
+
+        def fiche(chemin):
+            lues.append(chemin)
+            return self._fiche()
+
+        _a, stats = isdb_radar.collecte(
+            fetch_liste=lambda i, s, p: self.FORMULAIRE if i == "" else liste(i, s, p),
+            fetch_fiche=fiche, deja_vus={"ISDB-bamako-segou-road"})
+        self.assertEqual(lues, [])
+        self.assertGreater(stats["deja_connus"], 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
