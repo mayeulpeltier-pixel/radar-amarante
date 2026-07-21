@@ -96,6 +96,7 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           RADAR_UNGM_DEBUG: "0"
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python ungm_radar.py
 
       # 4c) Attributions UNGM : titulaires nommes de marches ONU. Ecrit dans le
