@@ -838,13 +838,15 @@ def ecrire(feuille, resultats):
     if nouvelles:
         feuille.append_rows(nouvelles, value_input_option="RAW")
     # Double ecriture (etape 2 du cap produit, 21/07/2026) : miroir Postgres
-    # best-effort. On passe TOUS les resultats (le miroir a sa propre memoire,
+    # best-effort, sous FORME PLATE (colonnes du Sheet) : la forme canonique
+    # que lit le dashboard. On passe TOUT (le miroir a sa propre memoire,
     # ON CONFLICT DO NOTHING : remplissage retroactif inclus). Ne peut JAMAIS
     # faire echouer le run. NB : en phase de double ecriture, le Sheet reste
     # la reference ; les mises a jour de scores ne touchent que le Sheet.
     try:
         import radar_stockage
-        print("  (pg) " + radar_stockage.ecrire_miroir(NOM_ONGLET, resultats))
+        plates = [dict(zip(COLONNES_UNGM, ligne_depuis_resultat(r))) for r in resultats]
+        print("  (pg) " + radar_stockage.ecrire_miroir(NOM_ONGLET, plates))
     except Exception as e:                     # module absent : run intact
         print("  (pg) miroir indisponible ({})".format(e))
     return len(nouvelles), deja
