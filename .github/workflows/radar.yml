@@ -103,9 +103,10 @@ jobs:
 
       # 3d) Attributions UNGM : titulaires nommes de marches ONU. Ecrit dans le
       #     MEME onglet que les attributions TED et BM, donc aucun cablage
-      #     dashboard. PREMIER RUN : garder DEBUG a "1", le mode decouverte
-      #     cherche la charge utile acceptee par l'endpoint et imprime la
-      #     structure reelle des lignes (jamais observee a ce jour).
+      #     dashboard. L'endpoint reel (/PublicSearch) et la charge utile ont
+      #     ete releves dans le JavaScript du portail le 20/07/2026.
+      #     PREMIER RUN : garder DEBUG a "1" pour verifier titulaires et
+      #     structure, puis passer a "0".
       - name: Collecter les attributions UNGM
         if: always()
         env:
