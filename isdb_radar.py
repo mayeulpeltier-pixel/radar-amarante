@@ -82,9 +82,11 @@ ENTETES = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-RE_OPTION_PAYS = re.compile(
-    r'<select[^>]+name="country".*?</select>', re.I | re.S)
-RE_OPTION = re.compile(r'<option[^>]+value="([A-Z]{2})"[^>]*>\s*([^<]{2,60}?)\s*</option>')
+RE_SELECT = re.compile(r'<select([^>]*)>(.*?)</select>', re.I | re.S)
+RE_NOM_SELECT = re.compile(r'name\s*=\s*["\']([^"\']+)["\']', re.I)
+RE_OPTION = re.compile(
+    r'<option[^>]*\bvalue\s*=\s*["\']([A-Za-z]{2})["\'][^>]*>\s*([^<]{2,60}?)\s*</option>',
+    re.I)
 RE_LIEN_DETAIL = re.compile(
     r'href="(/project-procurement/tenders/[^"#?]{6,180})"', re.I)
 
@@ -116,20 +118,30 @@ def _texte(html):
 
 
 def charger_pays_isdb(html):
-    """{ISO3: ISO2} depuis le formulaire de filtrage de la page.
+    """({ISO3: ISO2}, nom_du_parametre) depuis le formulaire de filtrage.
 
-    Le formulaire donne des codes ISO2 ; le radar travaille en ISO3. On passe
-    par le libelle et le resolveur bilingue deja teste (Niger/Nigeria
-    distingues, les deux Congo, accents perdus)."""
-    bloc = RE_OPTION_PAYS.search(str(html or ""))
-    if not bloc:
-        return {}
-    table = {}
-    for iso2, libelle in RE_OPTION.findall(bloc.group(0)):
-        iso3 = bma.iso3_pays_libre(libelle)
-        if iso3 and iso3 not in table:
-            table[iso3] = iso2
-    return table
+    DETECTION PAR LE CONTENU, pas par le nom de l'attribut : on retient le
+    <select> dont les options sont des codes a deux lettres correspondant a de
+    vrais pays. Supposer `name="country"` avait produit zero resultat au
+    premier run (21/07/2026) : le tag d'ouverture n'etait pas visible dans le
+    dump de la sonde, je l'avais devine.
+
+    Le nom reel du parametre est renvoye avec la table, pour construire les
+    requetes sans nouvelle supposition. Les ISO2 sont convertis en ISO3 via le
+    resolveur bilingue deja teste (Niger/Nigeria distingues)."""
+    meilleur, meilleur_nom = {}, ""
+    for attributs, contenu in RE_SELECT.findall(str(html or "")):
+        table = {}
+        for code, libelle in RE_OPTION.findall(contenu):
+            iso3 = bma.iso3_pays_libre(libelle)
+            if iso3 and iso3 not in table:
+                table[iso3] = code.upper()
+        # Un select de pays en compte des dizaines ; les autres, aucun ou un.
+        if len(table) > len(meilleur):
+            meilleur = table
+            m = RE_NOM_SELECT.search(attributs or "")
+            meilleur_nom = m.group(1) if m else ""
+    return meilleur, meilleur_nom
 
 
 def pays_a_interroger(table):
@@ -285,7 +297,8 @@ def collecte(session=None, fetch_liste=None, fetch_fiche=None, deja_vus=None):
     session = session or ted.session_robuste()
     deja_vus = deja_vus or set()
     stats = {"pays": 0, "liens": 0, "fiches": 0, "requetes": 0,
-             "deja_connus": 0, "arret": "termine", "exemple": ""}
+             "deja_connus": 0, "arret": "termine", "exemple": "",
+             "param_pays": "", "html_base": ""}
 
     # Table des pays, depuis le formulaire de la page.
     try:
@@ -294,8 +307,16 @@ def collecte(session=None, fetch_liste=None, fetch_fiche=None, deja_vus=None):
     except Exception as e:
         stats["arret"] = "page de base illisible ({})".format(e)
         return [], stats
-    table = charger_pays_isdb(html_base)
+    if DEBUG:
+        stats["html_base"] = html_base
+    table, param_pays = charger_pays_isdb(html_base)
+    param_pays = param_pays or "country"
+    stats["param_pays"] = param_pays
     cibles = pays_a_interroger(table)
+    if DEBUG:
+        print("  formulaire : parametre pays = {!r}, {} pays reconnus, "
+              "{} dans l'univers de risque.".format(
+                  param_pays, len(table), len(cibles)))
     if not cibles:
         stats["arret"] = "aucun pays exploitable"
         return [], stats
@@ -310,7 +331,7 @@ def collecte(session=None, fetch_liste=None, fetch_fiche=None, deja_vus=None):
         # Une attribution est un marche conclu : les deux statuts sont utiles.
         for statut in ("active", "closed"):
             for page in range(PAGES_PAR_PAYS):
-                params = {"country": iso2, "tender_type": "contract-award",
+                params = {param_pays: iso2, "tender_type": "contract-award",
                           "status": statut}
                 if page:
                     params["page"] = page
@@ -437,6 +458,17 @@ def main():
 
     if DEBUG:
         print("\n--- MODE VERIFICATION (RADAR_ISDB_DEBUG=1) : AUCUNE ECRITURE ---")
+        if stats.get("arret") == "aucun pays exploitable" and stats.get("html_base"):
+            print("\n[!] Aucun pays reconnu. Selects reellement presents "
+                  "dans la page (pour corriger la detection) :")
+            for attributs, contenu in RE_SELECT.findall(stats["html_base"]):
+                m = RE_NOM_SELECT.search(attributs or "")
+                options = RE_OPTION.findall(contenu)
+                echantillon = ", ".join(
+                    "{}={}".format(c, _plat(l)[:22]) for c, l in options[:6])
+                print("      name={!r} | {} option(s) a 2 lettres | {}".format(
+                    m.group(1) if m else "?", len(options), echantillon or "-"))
+            return
         print("\n[A] Attributions interpretees :")
         for a in attributions[:25]:
             print("  [{}] {} | {:34} <- {:16}{} | {}".format(
