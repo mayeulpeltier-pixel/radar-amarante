@@ -200,7 +200,7 @@ def interpreter(cellules):
     On ne fige aucun ordre de colonne : le portail peut le changer. L'agence
     ONU se reconnait a sa liste, les dates a leur motif, et le titulaire est
     la cellule textuelle restante la plus consequente."""
-    dates, agence, reference, restes = [], "", "", []
+    dates, agence, reference, pays_cellule, masque, restes = [], "", "", "", False, []
     for c in cellules:
         d = ungm.lire_date(c)
         if d and ungm.RE_DATE.match(ungm.RE_RESIDU_DATE.sub("", c).strip()):
@@ -212,11 +212,36 @@ def interpreter(cellules):
         if not reference and ungm.RE_REFERENCE.match(c) and any(x.isdigit() for x in c):
             reference = c
             continue
+        if not pays_cellule and _est_un_pays(c):
+            pays_cellule = c              # colonne pays de la ligne
+            continue
+        if RE_TITULAIRE_MASQUE.search(c):
+            masque = True                 # "Name withheld for security reasons"
+            continue
         restes.append(c)
     dates = sorted(set(dates))
     return {"dates": dates, "agence": agence or "Nations Unies",
             "reference": reference, "restes": restes,
+            "pays_cellule": pays_cellule, "titulaire_masque": masque,
             "date_attribution": dates[-1] if dates else ""}
+
+
+# Mentions signalant un titulaire VOLONTAIREMENT masque. L'UNOPS notamment
+# ecrit "Name withheld for security reasons" sur ses marches afghans : la
+# ligne n'a alors aucune valeur commerciale et doit etre ecartee, pas contournee.
+RE_TITULAIRE_MASQUE = re.compile(
+    r"(?i)(withheld|not disclosed|undisclosed|confidential|redacted|"
+    r"non (?:communique|divulgue)|masque|anonym)")
+
+
+def _est_un_pays(txt):
+    """Vrai si la cellule EST un nom de pays. La structure reelle expose une
+    colonne pays en fin de ligne ; sans ce filtre, "Afghanistan" etait retenu
+    comme titulaire (constate le 20/07/2026)."""
+    t = re.sub(r"\s+", " ", str(txt or "")).strip()
+    if not t or len(t) > 60:
+        return False
+    return bool(bma.iso3_pays_libre(t))
 
 
 def _plausible_entreprise(txt):
@@ -230,6 +255,10 @@ def _plausible_entreprise(txt):
         return False
     if re.match(r"(?i)^(n/?a|none|not (applicable|disclosed)|confidential)$", t):
         return False
+    if RE_TITULAIRE_MASQUE.search(t):
+        return False                      # titulaire masque par l'agence
+    if _est_un_pays(t):
+        return False                      # colonne pays, pas une societe
     return True
 
 
@@ -310,6 +339,8 @@ def normaliser(ligne, iso3):
     """Ligne d'attribution -> ligne de l'onglet `attributions_radar`.
     None si inexploitable. `iso3` vient de la requete : le pays est certain."""
     champs = interpreter(ligne.get("cellules") or [])
+    if champs.get("titulaire_masque"):
+        return None                       # l'agence a masque le nom : sans valeur
     titulaire, montant = montant_et_titulaire(champs)
     if not titulaire:
         return None
@@ -471,19 +502,23 @@ def collecte(session=None):
 
 
 def construire(lignes):
-    sorties, motifs = [], {"sans_titulaire": 0, "hors_fenetre_ou_pays": 0}
+    sorties, motifs = [], {"sans_titulaire": 0, "hors_fenetre_ou_pays": 0,
+                          "titulaire_masque": 0, "doublon": 0}
     vus = set()
     for ligne in lignes:
         a = normaliser(ligne, ligne.get("pays_iso3", ""))
         if a is None:
             champs = interpreter(ligne.get("cellules") or [])
-            if not montant_et_titulaire(champs)[0]:
+            if champs.get("titulaire_masque"):
+                motifs["titulaire_masque"] += 1
+            elif not montant_et_titulaire(champs)[0]:
                 motifs["sans_titulaire"] += 1
             else:
                 motifs["hors_fenetre_ou_pays"] += 1
             continue
         empreinte = (a["gagnant"].lower(), a["pays_execution"], a["date_publication"])
         if empreinte in vus:
+            motifs["doublon"] += 1
             continue
         vus.add(empreinte)
         sorties.append(a)
@@ -544,8 +579,9 @@ def main():
         return
 
     attributions, motifs = construire(lignes)
-    print("  ecartes -> sans titulaire lisible : {sans_titulaire} | "
-          "hors fenetre ou pays : {hors_fenetre_ou_pays}".format(**motifs))
+    print("  ecartes -> titulaire masque par l'agence : {titulaire_masque} | "
+          "sans titulaire lisible : {sans_titulaire} | hors fenetre ou pays : "
+          "{hors_fenetre_ou_pays} | doublons : {doublon}".format(**motifs))
     print("  {} attribution(s) exploitable(s).".format(len(attributions)))
 
     if DEBUG:
