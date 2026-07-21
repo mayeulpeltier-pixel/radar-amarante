@@ -273,11 +273,26 @@ def _plausible_entreprise(txt):
 # donc il est visible et filtrable dans la lentille Titulaires, et le mot
 # "travaux" declenche le bonus de secteur du mini-score du dashboard. C'est a
 # l'analyste de trancher, pas au collecteur de decider a sa place.
-MOTS_TRAVAUX = (
-    "construction", "works", "travaux", "upgrading", "rehabilitation",
-    "refurbish", "renovation", "building", "road", "route", "bridge", "pont",
-    "drilling", "borehole", "forage", "installation", "erection", "civil",
-    "infrastructure", "pipeline", "excavation", "paving", "concrete",
+#
+# PIEGE CORRIGE (run du 20/07/2026) : chercher le mot "construction" faisait
+# classer en TRAVAUX des vendeurs d'engins (Kjaer & Kjaer, MANITOU, Guangxi
+# Liugong), car leurs marches portent sur du "construction equipment". Il faut
+# distinguer l'ACTIVITE (construire, installer) de l'OBJET (des engins de
+# construction). On teste donc des LOCUTIONS, pas des mots isoles.
+MOTS_INTERVENTION = (
+    "construction of", "construction works", "civil works", "civil engineering",
+    "rehabilitation", "refurbishment", "renovation", "upgrading", "upgrade of",
+    "installation", "erection", "drilling", "borehole", "forage", "paving",
+    "excavation", "earthworks", "de-mining", "demining",
+    "travaux", "rehabilitation de", "amenagement", "aménagement",
+    "construction d", "realisation de", "réalisation de", "pose de",
+)
+# Un achat de biens : le titulaire expedie, il ne mobilise personne sur place.
+MOTS_ACHAT = (
+    "supply of", "supply and delivery", "supply, delivery", "procurement of",
+    "purchase of", "delivery of", "provision of goods", "spare parts",
+    "equipment", "machinery", "vehicles", "vehicle", "furniture", "hardware",
+    "fourniture de", "acquisition de", "livraison de",
 )
 MOTS_SERVICES = (
     "services", "service", "transport", "logistics", "logistique", "freight",
@@ -285,25 +300,24 @@ MOTS_SERVICES = (
     "maintenance", "consultancy", "cleaning", "catering", "management",
     "supervision", "training", "survey", "assessment", "monitoring",
 )
-MOTS_FOURNITURES = (
-    "supply", "supplies", "procurement of", "purchase", "provision of goods",
-    "equipment", "machinery", "vehicles", "vehicle", "spare parts", "furniture",
-    "fourniture", "acquisition", "delivery of", "goods",
-)
 
 
 def nature_marche(titre):
-    """'travaux', 'services' ou 'fournitures' selon l'objet du marche.
+    """'travaux', 'services', 'fournitures' ou 'indetermine' selon l'OBJET.
 
-    L'ordre compte : un intitule comme "Supply and installation of..." implique
-    une intervention sur site, donc travaux prime sur fournitures."""
+    Ordre de decision, du plus discriminant au moins :
+      1. une INTERVENTION sur site prime sur tout ("supply AND installation"
+         reste des travaux : quelqu'un vient poser le materiel) ;
+      2. sinon un ACHAT de biens ("supply of construction equipment" est une
+         fourniture, malgre le mot construction) ;
+      3. sinon une prestation de services."""
     t = " {} ".format(re.sub(r"\s+", " ", str(titre or "")).lower())
-    if any(m in t for m in MOTS_TRAVAUX):
+    if any(m in t for m in MOTS_INTERVENTION):
         return "travaux"
+    if any(m in t for m in MOTS_ACHAT):
+        return "fournitures"
     if any(m in t for m in MOTS_SERVICES):
         return "services"
-    if any(m in t for m in MOTS_FOURNITURES):
-        return "fournitures"
     return "indetermine"
 RE_FORME_JURIDIQUE = re.compile(
     r"(?i)\b(ltd|limited|llc|l\.l\.c|inc|incorporated|corp|corporation|co|company|"
@@ -633,10 +647,10 @@ def main():
         print("\n--- MODE VERIFICATION : AUCUNE ECRITURE ---")
         print("\n[B] Attributions interpretees :")
         for a in attributions[:20]:
-            print("  [{}] {:34} | {} | {:10} | {}".format(
-                a["date_publication"] or "n.c.", a["gagnant"][:34],
-                a["pays_execution"], a["secteur"].replace("Marche ONU - ", "")[:10],
-                a["acheteur"][:18]))
+            print("  [{}] {} | {:11} | {:32} | {}".format(
+                a["date_publication"] or "n.c.", a["pays_execution"],
+                a["secteur"].replace("Marche ONU - ", "")[:11],
+                a["gagnant"][:32], a["titre"][:70]))
         print("\n[C] Structure BRUTE des 3 premieres lignes :")
         for ligne in lignes[:3]:
             print("  --- id {!r} : {} cellule(s) ---".format(
