@@ -2432,20 +2432,45 @@ class TestIsDB(unittest.TestCase):
                 "</main>".format(quand, societe, pays))
 
     # -- Formulaire de filtrage -------------------------------------------
+    # Le premier run a renvoye "aucun pays exploitable" : j'avais SUPPOSE
+    # name="country" alors que le tag d'ouverture n'etait pas visible dans le
+    # dump de la sonde. La detection se fait desormais PAR LE CONTENU (un
+    # select dont les options sont des codes pays), et le nom reel du
+    # parametre est capture pour construire les requetes.
     def test_pays_extraits_en_iso3(self):
         """Le formulaire donne des ISO2 ; le radar travaille en ISO3."""
-        table = isdb_radar.charger_pays_isdb(self.FORMULAIRE)
+        table, _param = isdb_radar.charger_pays_isdb(self.FORMULAIRE)
         self.assertEqual(table.get("MLI"), "ML")
         self.assertEqual(table.get("SOM"), "SO")
 
+    def test_nom_du_parametre_decouvert_pas_suppose(self):
+        for attribut, attendu in (('name="country"', "country"),
+                                  ('name="country_code"', "country_code"),
+                                  ('name="field_country"', "field_country"),
+                                  ('class="c" name="pays"', "pays")):
+            html = self.FORMULAIRE.replace('name="country"', attribut)
+            _table, param = isdb_radar.charger_pays_isdb(html)
+            self.assertEqual(param, attendu)
+
+    def test_select_des_pays_distingue_des_autres(self):
+        """La page contient aussi un select de type d'avis et un de statut :
+        on retient celui qui contient de VRAIS pays."""
+        html = (self.FORMULAIRE +
+                '<select name="tender_type">'
+                '<option value="contract-award">Contract Award</option></select>'
+                '<select name="status"><option value="active">Active</option></select>')
+        table, param = isdb_radar.charger_pays_isdb(html)
+        self.assertEqual(param, "country")
+        self.assertGreaterEqual(len(table), 4)
+
     def test_pays_hors_univers_de_risque_ecartes(self):
-        table = isdb_radar.charger_pays_isdb(self.FORMULAIRE)
+        table, _param = isdb_radar.charger_pays_isdb(self.FORMULAIRE)
         cibles = dict(isdb_radar.pays_a_interroger(table))
         self.assertIn("MLI", cibles)
         self.assertNotIn("GBR", cibles)
 
     def test_formulaire_absent_ne_casse_rien(self):
-        self.assertEqual(isdb_radar.charger_pays_isdb("<html/>"), {})
+        self.assertEqual(isdb_radar.charger_pays_isdb("<html/>"), ({}, ""))
 
     # -- Liens d'attribution ------------------------------------------------
     def test_seuls_les_liens_d_attribution_sont_retenus(self):
