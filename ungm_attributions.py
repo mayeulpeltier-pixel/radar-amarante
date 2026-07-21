@@ -58,12 +58,22 @@ ACTIVER = os.environ.get("RADAR_UNGM_ATTRIB", "1") != "0"
 DEBUG = os.environ.get("RADAR_UNGM_ATTRIB_DEBUG", "0") == "1"
 
 PAGE_AWARDS = "https://www.ungm.org/Public/ContractAward"
-ENDPOINT_AWARDS = "https://www.ungm.org/Public/ContractAward/Search"
+# Endpoint REEL, releve dans le bundle ungmcommon (fonction
+# UNGM.ContractAwardSearch.search) le 20/07/2026. Ce n'est PAS /Search :
+# cette derniere existe mais renvoie un reliquat interne (nom de type .NET),
+# ce qui a fait echouer quatorze tentatives avant qu'on lise le JS.
+ENDPOINT_AWARDS = "https://www.ungm.org/Public/ContractAward/PublicSearch"
+# Variante servie quand le champ fournisseur est absent de la page.
+ENDPOINT_AWARDS_VENDOR = "https://www.ungm.org/Public/ContractAward/SearchByVendor"
+# Fiche detaillee d'une attribution (vue par onGotAwardDetail).
+LIEN_POPUP = "https://www.ungm.org/Public/ContractAward/Popup/{}"
 LIEN_AWARD = "https://www.ungm.org/Public/ContractAward/{}"
 
 JOURS_FENETRE = int(os.environ.get("RADAR_UNGM_ATTRIB_JOURS", "180"))
 PAYS_MAX = int(os.environ.get("RADAR_UNGM_ATTRIB_PAYS_MAX", "45"))
-PAGES_PAR_PAYS = int(os.environ.get("RADAR_UNGM_ATTRIB_PAGES", "2"))
+PAGES_PAR_PAYS = int(os.environ.get("RADAR_UNGM_ATTRIB_PAGES", "3"))
+# Le portail envoie PageSize=15 : on s'aligne pour ne pas sortir du cadre teste.
+TAILLE_PAGE = int(os.environ.get("RADAR_UNGM_ATTRIB_TAILLE", "15"))
 MINUTES_MAX = float(os.environ.get("RADAR_UNGM_ATTRIB_MINUTES", "10"))
 
 # Onglet PARTAGE avec les attributions TED et BM : integration dashboard
@@ -81,65 +91,58 @@ TOUTES_COLONNES = COLONNES + [COL_STATUT, COL_DETECTION]
 ENTETES = dict(ungm.ENTETES, **{"Referer": PAGE_AWARDS})
 
 # Identifiant de ligne : les attributions n'utilisent pas data-noticeid.
+# L'identifiant alimente Public/ContractAward/Popup/{id} (vu dans le JS).
 RE_ID_AWARD = re.compile(
-    r'data-(?:contractawardid|awardid|noticeid|id)="(\d+)"', re.I)
+    r'(?:data-(?:contractawardid|awardid|noticeid|id)|id)="(?:award_?)?(\d{3,})"', re.I)
 
 
 # ===========================================================================
 # CHARGES UTILES CANDIDATES
 # ===========================================================================
 
-def charges_candidates(page=0, taille=25, id_pays=None):
-    """Formes de requete a essayer, fondees sur les NOMS DE CHAMPS REELS
-    releves dans la page publique le 20/07/2026.
+def charge_officielle(page=0, taille=15, id_pays=None):
+    """Charge utile EXACTE, copiee sur UNGM.ContractAwardSearch.buildOptions()
+    du bundle ungmcommon (releve le 20/07/2026).
 
-    Trois familles, car la page melange deux conventions :
-      1. controles de formulaire ASP.NET (txtContractAwardFilterSupplier,
-         selContractAwardCountry, txtContractAwardFrom...) -> POST form-encode ;
-      2. proprietes de modele serveur (AgencyId, AwardDate, FirstCountry,
-         Reference, description) -> POST JSON ;
-      3. la convention des AVIS, qui fonctionne deja sur /Public/Notice/Search.
-    Chaque forme est renvoyee avec son encodage, car un formulaire ASP.NET
-    n'accepte generalement pas un corps JSON.
+    Deux noms de champs avaient ete mal devines auparavant : c'est AwardFrom /
+    AwardTo, et non AwardDateFrom / AwardDateTo. Le portail ignore
+    silencieusement les champs inconnus, d'ou des reponses vides sans erreur."""
+    return {
+        "PageIndex": page,
+        "PageSize": taille,
+        "Title": "",
+        "Description": "",
+        "Reference": "",
+        "Supplier": "",
+        "UngmNumber": "",
+        "AwardFrom": "",
+        "AwardTo": "",
+        "Countries": [id_pays] if id_pays else [],
+        "SupplierCountries": [],
+        "Agencies": [],
+        "UNSPSCs": [],
+        "SortField": "AwardDate",
+        "SortAscending": False,
+    }
+
+
+def charges_candidates(page=0, taille=15, id_pays=None):
+    """Formes a essayer. La premiere est la charge OFFICIELLE relevee dans le
+    JavaScript du portail ; les suivantes ne sont que des filets de securite
+    au cas ou UNGM ferait evoluer son appel.
 
     Renvoie [(nom, url, charge, encodage), ...]."""
-    debut = (date.today() - timedelta(days=JOURS_FENETRE)).strftime("%d-%b-%Y")
-    fin = date.today().strftime("%d-%b-%Y")
-    formes = []
-
-    # 1. Convention formulaire, sur les deux URL plausibles. [E] ne citait que
-    #    /Public/ContractAward : la recherche poste peut-etre sur la page meme.
-    form = {
-        "txtContractAwardFilterTitle": "", "txtContractAwardFilterDesc": "",
-        "txtContractAwardFilterRef": "", "txtContractAwardFilterSupplier": "",
-        "txtContractAwardFrom": debut, "txtContractAwardTo": fin,
-        "selContractAwardAgency": "", "selContractAwardSupplierCountry": "",
-        "selContractAwardCountry": id_pays or "",
-        "PageIndex": page, "PageSize": taille,
-    }
-    formes.append(("form -> /ContractAward", PAGE_AWARDS, form, "form"))
-    formes.append(("form -> /Search", ENDPOINT_AWARDS, form, "form"))
-
-    # 2. Convention modele serveur.
-    modele = {
-        "description": "", "Reference": "", "AgencyId": "",
-        "FirstCountry": id_pays or "", "AwardDate": "",
-        "PageIndex": page, "PageSize": taille,
-    }
-    formes.append(("modele JSON -> /Search", ENDPOINT_AWARDS, modele, "json"))
-    formes.append(("modele form -> /ContractAward", PAGE_AWARDS, modele, "form"))
-
-    # 3. Convention des avis (celle qui marche pour /Public/Notice/Search).
-    comme_avis = {
-        "PageIndex": page, "PageSize": taille,
-        "Title": "", "Description": "", "Reference": "", "Supplier": "",
-        "AwardDateFrom": debut, "AwardDateTo": fin,
-        "Agencies": [], "Countries": [id_pays] if id_pays else [],
-        "SupplierCountries": [], "UNSPSCs": [],
-        "SortField": "AwardDate", "SortAscending": False,
-    }
-    formes.append(("comme les avis -> /Search", ENDPOINT_AWARDS, comme_avis, "json"))
-    formes.append(("comme les avis -> /ContractAward", PAGE_AWARDS, comme_avis, "json"))
+    officielle = charge_officielle(page, taille, id_pays)
+    formes = [
+        ("officielle -> PublicSearch", ENDPOINT_AWARDS, officielle, "json"),
+        ("officielle -> SearchByVendor", ENDPOINT_AWARDS_VENDOR, officielle, "json"),
+    ]
+    # Filet : meme charge avec une fenetre de dates explicite.
+    avec_dates = dict(officielle)
+    avec_dates["AwardFrom"] = (date.today() - timedelta(days=JOURS_FENETRE)
+                               ).strftime("%d-%b-%Y")
+    avec_dates["AwardTo"] = date.today().strftime("%d-%b-%Y")
+    formes.append(("officielle + dates", ENDPOINT_AWARDS, avec_dates, "json"))
     return formes
 
 
@@ -163,11 +166,16 @@ def interroger(session, url, charge, encodage="json", timeout=45):
 def extraire_attributions(html_brut):
     """Lignes d'attribution -> [{'id':..., 'cellules':[...]}].
 
-    Meme rendu que les avis (<div role="row">), mais l'identifiant porte un
-    autre nom. On accepte donc plusieurs attributs, et a defaut une ligne sans
-    identifiant reste exploitable (on fabriquera une cle depuis son contenu)."""
+    Le JavaScript du portail traite la reponse par
+    `$(data).toArray()` puis `.filter(".dataRow")` : les lignes se reconnaissent
+    donc a leur CLASSE dataRow, pas seulement a role="row". On accepte les
+    deux, car les avis utilisent role="row" et rien ne garantit que les
+    attributions fassent pareil."""
     src = str(html_brut or "")
-    bornes = [m.start() for m in ungm.RE_LIGNE.finditer(src)]
+    bornes = sorted(set(
+        [m.start() for m in ungm.RE_LIGNE.finditer(src)] +
+        [m.start() for m in re.finditer(
+            r'<div[^>]*\bclass="[^"]*\bdataRow\b[^"]*"[^>]*>', src, re.I)]))
     lignes = []
     for i, deb in enumerate(bornes):
         fin = bornes[i + 1] if i + 1 < len(bornes) else len(src)
@@ -389,7 +397,7 @@ def trouver_charge_qui_marche(session, id_pays=None):
     le corps des reponses courtes : c'est l'information la plus utile, et son
     absence a fait perdre deux tours de diagnostic."""
     corps_vus = set()
-    for nom, url, charge, encodage in charges_candidates(0, 25, id_pays):
+    for nom, url, charge, encodage in charges_candidates(0, TAILLE_PAGE, id_pays):
         statut, texte = interroger(session, url, charge, encodage)
         lignes = lignes_depuis_reponse(texte) if statut and statut < 400 else []
         if DEBUG:
@@ -456,7 +464,7 @@ def collecte(session=None):
                 l["pays_iso3"] = iso
                 neuves.append(l)
             lignes.extend(neuves)
-            if not neuves or len(lot) < charge.get("PageSize", 25):
+            if not neuves or len(lot) < charge.get("PageSize", TAILLE_PAGE):
                 break
     stats["lignes"] = len(lignes)
     return lignes, stats
