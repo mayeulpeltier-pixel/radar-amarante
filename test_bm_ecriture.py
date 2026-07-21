@@ -21,6 +21,7 @@ enregistre ce qu'on lui demande. Decouverte automatique par la CI via
 `python -m unittest discover -p "test_*.py"` : aucun cablage a faire.
 """
 
+import os
 import unittest
 from datetime import date
 
@@ -76,6 +77,8 @@ def _attribution(pub="BM-001", gagnant="STECOL CORPORATION"):
         "publication_number": pub,
         "lien": "https://exemple.invalid/{}".format(pub),
         "a_demarcher": "oui",
+        # Exige par ligne() du collecteur TED (cle technique, non persistee).
+        "_nb_gagnants": 1,
     })
     return base
 
@@ -180,6 +183,93 @@ class TestAnglesMortsParseurBM(unittest.TestCase):
         """Garde anti-date : '2026/07/01' sous une etiquette de montant doit
         etre rejete, pas lu comme 2 milliards."""
         self.assertEqual(bm_attributions._lire_montant("2026/07/01", "USD"), "")
+
+
+@unittest.skipIf(bm_attributions is None, "bm_attributions indisponible")
+class TestMiroirPostgresAttributions(unittest.TestCase):
+    """Etape 2 du cap produit : chaque `ecrire` d'attributions alimente aussi
+    le miroir Postgres, en best-effort absolu. Quatre proprietes verrouillees,
+    pour LES QUATRE collecteurs de l'onglet partage (TED, BM, UNGM, IsDB)."""
+
+    MODULES = ("ted_complet_attributions", "bm_attributions",
+               "ungm_attributions", "isdb_radar")
+
+    def _appeler_ecrire(self, module):
+        """Appelle module.ecrire avec une feuille doublure et une attribution
+        minimale, en enregistrant ce qui part vers le miroir."""
+        import importlib
+        import radar_stockage
+        mod = importlib.import_module(module)
+        appels = []
+        original = radar_stockage.ecrire_miroir
+        radar_stockage.ecrire_miroir = (
+            lambda onglet, lignes: appels.append((onglet, list(lignes)))
+            or "miroir factice")
+        try:
+            mod.ecrire(FausseFeuille(), [_attribution(pub="PG-1")])
+        finally:
+            radar_stockage.ecrire_miroir = original
+        return appels
+
+    def test_les_quatre_collecteurs_alimentent_le_miroir(self):
+        for module in self.MODULES:
+            appels = self._appeler_ecrire(module)
+            self.assertEqual(len(appels), 1,
+                             "{} n'appelle pas le miroir".format(module))
+            onglet, lignes = appels[0]
+            self.assertEqual(onglet, "attributions_radar", module)
+            self.assertEqual(lignes[0]["publication_number"], "PG-1", module)
+
+    def test_le_miroir_recoit_tout_pas_seulement_le_nouveau(self):
+        """Le remplissage retroactif repose la-dessus : une attribution deja
+        dans le Sheet part quand meme vers le miroir (qui a sa propre
+        memoire, ON CONFLICT DO NOTHING)."""
+        import radar_stockage
+        feuille = FausseFeuille([{"publication_number": "PG-1",
+                                  "statut_prospection": "contacte"}])
+        appels = []
+        original = radar_stockage.ecrire_miroir
+        radar_stockage.ecrire_miroir = (
+            lambda onglet, lignes: appels.append(list(lignes)) or "ok")
+        try:
+            bm_attributions.ecrire(feuille, [_attribution(pub="PG-1")])
+        finally:
+            radar_stockage.ecrire_miroir = original
+        self.assertEqual(len(appels[0]), 1)     # transmis malgre "deja connu"
+        self.assertEqual(feuille.ajouts, [])    # et toujours rien au Sheet
+
+    def test_miroir_casse_run_intact(self):
+        """Un miroir qui leve (bug, module corrompu) ne doit couter aucun
+        lead : l'ecriture Sheet aboutit et le compte est juste."""
+        import radar_stockage
+
+        def bombe(_onglet, _lignes):
+            raise RuntimeError("panne simulee")
+
+        original = radar_stockage.ecrire_miroir
+        radar_stockage.ecrire_miroir = bombe
+        feuille = FausseFeuille()
+        try:
+            ajoutees, ignorees = bm_attributions.ecrire(
+                feuille, [_attribution(pub="PG-2")])
+        finally:
+            radar_stockage.ecrire_miroir = original
+        self.assertEqual((ajoutees, ignorees), (1, 0))
+        self.assertEqual(len(feuille.ajouts), 1)
+
+    def test_sans_configuration_message_inactif(self):
+        """Comportement reel d'aujourd'hui (DATABASE_URL absent en test) :
+        le vrai miroir repond 'inactif', sans exception."""
+        import radar_stockage
+        avant = os.environ.pop("DATABASE_URL", None)
+        try:
+            feuille = FausseFeuille()
+            ajoutees, _ = bm_attributions.ecrire(
+                feuille, [_attribution(pub="PG-3")])
+            self.assertEqual(ajoutees, 1)
+        finally:
+            if avant is not None:
+                os.environ["DATABASE_URL"] = avant
 
 
 if __name__ == "__main__":
