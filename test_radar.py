@@ -2300,6 +2300,12 @@ class TestAttributionsUNGM(unittest.TestCase):
         self.assertEqual(pays, "China")
         self.assertTrue(montant)
 
+    def test_enrichissement_eteint_par_defaut(self):
+        """Verification du 21/07/2026 : la fiche ne porte que title, reference,
+        award date et description. 21 fiches lues -> 0 pays, 0 montant."""
+        self.assertFalse(ungm_attributions.ENRICHIR,
+                         "l'enrichissement coute des requetes pour rien")
+
     def test_fiche_illisible_ne_casse_rien(self):
         pays, montant, paires = ungm_attributions.extraire_fiche("<html/>")
         self.assertEqual((pays, montant), ("", ""))
@@ -2312,7 +2318,16 @@ class TestAttributionsUNGM(unittest.TestCase):
         _pays, montant, _ = ungm_attributions.extraire_fiche(html)
         self.assertIn("USD", montant)
 
+    def _avec_enrichissement(self):
+        """L'enrichissement est ETEINT par defaut (la fiche UNGM ne porte ni
+        pays ni montant). Ces tests activent donc explicitement le mecanisme,
+        qui reste teste au cas ou UNGM enrichirait ses fiches un jour."""
+        ancien = ungm_attributions.ENRICHIR
+        ungm_attributions.ENRICHIR = True
+        self.addCleanup(setattr, ungm_attributions, "ENRICHIR", ancien)
+
     def test_enrichissement_cible_les_natures_utiles(self):
+        self._avec_enrichissement()
         """Une fiche coute une requete : on se limite aux marches ou quelqu'un
         se deplace, ce qui divise le cout par trois ou quatre."""
         attribs = [
@@ -2332,6 +2347,7 @@ class TestAttributionsUNGM(unittest.TestCase):
     def test_filtre_local_etranger_apres_enrichissement(self):
         """Un entrepreneur afghan en Afghanistan n'est pas un prospect ; une
         entreprise danoise sur le meme chantier, si."""
+        self._avec_enrichissement()
         attribs = [{"secteur": "Marche ONU - travaux",
                     "publication_number": "UNGMA-3",
                     "_pays_nom": "Afghanistan", "valeur_attribuee": ""}]
@@ -2341,6 +2357,8 @@ class TestAttributionsUNGM(unittest.TestCase):
 
     def test_fiche_en_echec_laisse_l_attribution_intacte(self):
         """Best-effort : une fiche illisible ne doit rien casser."""
+        self._avec_enrichissement()
+
         def echoue(ident):
             raise RuntimeError("reseau")
         attribs = [{"secteur": "Marche ONU - travaux",
