@@ -2120,28 +2120,46 @@ class TestAttributionsUNGM(unittest.TestCase):
         sorties, _ = ungm_attributions.construire([l1, l2])
         self.assertEqual(len(sorties), 1)
 
-    def test_charges_candidates_incluent_le_filtre_pays(self):
-        """L'hypothese testee : l'endpoint repondait vide faute de filtre."""
-        formes = ungm_attributions.charges_candidates(0, 25, "2500")
-        noms = [n for n, _u, _c, _e in formes]
-        self.assertTrue(any("form" in n for n in noms))
-        # Les noms de champs viennent de la page REELLE (releves le 20/07/2026).
-        charges = [c for _n, _u, c, _e in formes]
-        self.assertTrue(any("txtContractAwardFilterSupplier" in c for c in charges))
-        self.assertTrue(any("selContractAwardCountry" in c for c in charges))
+    # -- Requete reelle, relevee dans le JavaScript du portail --------------
+    # Le bundle ungmcommon contient UNGM.ContractAwardSearch.search(), qui
+    # designe l'endpoint et buildOptions(), qui donne la charge exacte. Quatorze
+    # tentatives avaient echoue avant cette lecture : /Search existe mais
+    # renvoie un reliquat interne, le bon chemin est /PublicSearch.
+    def test_endpoint_est_publicsearch(self):
+        self.assertTrue(ungm_attributions.ENDPOINT_AWARDS.endswith("/PublicSearch"))
 
-    def test_les_deux_url_sont_essayees(self):
-        """[E] ne citait que /Public/ContractAward : la recherche poste
-        peut-etre sur la page elle-meme, pas sur /Search."""
-        urls = {u for _n, u, _c, _e in ungm_attributions.charges_candidates(0, 25, "1")}
-        self.assertIn(ungm_attributions.PAGE_AWARDS, urls)
-        self.assertIn(ungm_attributions.ENDPOINT_AWARDS, urls)
+    def test_charge_officielle_conforme_a_buildoptions(self):
+        """Champs exacts de buildOptions(), dans le meme nommage."""
+        c = ungm_attributions.charge_officielle(0, 15, "2500")
+        for champ in ("PageIndex", "PageSize", "Title", "Description", "Reference",
+                      "Supplier", "UngmNumber", "AwardFrom", "AwardTo", "Countries",
+                      "SupplierCountries", "Agencies", "UNSPSCs", "SortField",
+                      "SortAscending"):
+            self.assertIn(champ, c, "champ manquant : {}".format(champ))
+        self.assertEqual(c["Countries"], ["2500"])
+        self.assertEqual(c["SortField"], "AwardDate")
+        self.assertFalse(c["SortAscending"])
 
-    def test_encodage_formulaire_et_json_essayes(self):
-        """Un formulaire ASP.NET n'accepte generalement pas un corps JSON."""
+    def test_noms_de_dates_corriges(self):
+        """Piege reel : c'est AwardFrom/AwardTo, pas AwardDateFrom/AwardDateTo.
+        Le portail ignore silencieusement les champs inconnus, d'ou des
+        reponses vides sans message d'erreur."""
+        c = ungm_attributions.charge_officielle()
+        self.assertIn("AwardFrom", c)
+        self.assertNotIn("AwardDateFrom", c)
+
+    def test_charge_envoyee_en_json(self):
+        """Le JS impose contentType 'application/json'."""
         encodages = {e for _n, _u, _c, e in
-                     ungm_attributions.charges_candidates(0, 25, "1")}
-        self.assertEqual(encodages, {"form", "json"})
+                     ungm_attributions.charges_candidates(0, 15, "1")}
+        self.assertEqual(encodages, {"json"})
+
+    def test_lignes_reconnues_par_la_classe_datarow(self):
+        """onGotData filtre sur .dataRow : on accepte cette classe meme sans
+        attribut role="row"."""
+        html = ('<div class="tableRow dataRow"><div role="cell">Escorte</div>'
+                '<div role="cell">Bancroft Global Development</div></div>')
+        self.assertEqual(len(ungm_attributions.extraire_attributions(html)), 1)
 
     # -- Detection multi-format de la reponse ------------------------------
     # Erreur corrigee : on ne cherchait que des <div role="row">. Une reponse
