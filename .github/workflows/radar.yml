@@ -30,7 +30,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Installer les dependances
-        run: pip install requests gspread google-auth python-dateutil pypdf
+        run: pip install requests gspread google-auth python-dateutil pypdf "psycopg[binary]"
       # 1) Barriere de securite : les tests d'abord. Si un test casse, on s'arrete.
       - name: Lancer les tests
         run: python -m unittest discover -p "test_*.py" -v
@@ -52,6 +52,7 @@ jobs:
           RADAR_PRIVES_DEBUG: "0"
           ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
           ADZUNA_APP_KEY: ${{ secrets.ADZUNA_APP_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python radar_run.py
       # 3b) Sauvegarder l'etat inter-runs (curseur + articles vus) dans le depot.
       #     C'est ce qui remplace le stockage dans le Sheet (fin du SPOF).
@@ -81,6 +82,7 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
           # Mettre a 1 pour verifier les noms extraits SANS rien ecrire.
           RADAR_BM_ATTRIB_DEBUG: "0"
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python bm_attributions.py
 
       # 4b) UNGM : avis des agences ONU (HCR, PAM, UNICEF, PNUD, OIM, UNOPS...),
@@ -109,6 +111,7 @@ jobs:
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
           RADAR_UNGM_ATTRIB_DEBUG: "0"
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python ungm_attributions.py
 
       # 4d) Attributions IsDB : la Banque islamique finance dans la zone
@@ -123,6 +126,7 @@ jobs:
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
           RADAR_ISDB_DEBUG: "0"
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python isdb_radar.py
 
       # 5) Generer le tableau de bord depuis le Sheet (public/index.html).
