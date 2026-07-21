@@ -2407,7 +2407,13 @@ class TestIsDB(unittest.TestCase):
     """Collecteur d'attributions IsDB. Structures relevees sur donnees reelles
     le 21/07/2026 : contenu rendu cote serveur (pas de piege JavaScript), et
     surtout une fiche qui donne le NOM ET LE PAYS du titulaire, ce que UNGM ne
-    fournit pas. Ecrit dans l'onglet partage : aucun cablage dashboard."""
+    fournit pas. Ecrit dans l'onglet partage : aucun cablage dashboard.
+
+    BUG VERROUILLE (run de verification du 21/07/2026) : le filtre pays du
+    portail ne filtre RIEN. Les 6 attributions sortaient toutes en AFG alors
+    que l'une etait kirghize et la fiche exemple indonesienne (IDN1031). Le
+    pays d'execution est desormais derive du PREFIXE DU CODE PROJET de la
+    fiche, jamais de la requete."""
 
     FORMULAIRE = ('<select name="country" class="form-control">'
                   '<option value="">- Country -</option>'
@@ -2417,19 +2423,20 @@ class TestIsDB(unittest.TestCase):
                   '<option value="SO">Somalia</option>'
                   '<option value="GB">United Kingdom</option></select>')
 
-    def _fiche(self, societe="Sogea Satom SARL", pays="France", jours=30):
+    def _fiche(self, societe="Sogea Satom SARL", pays="France", jours=30,
+               code="MLI1031"):
         from datetime import date as _d, timedelta as _td
         quand = (_d.today() - _td(days=jours)).strftime("%d %B %Y")
         return ("<main>"
                 "<div>Notice Type</div><div>International Competitive Bidding</div>"
                 "<div>Issue Date</div><div>{}</div>"
-                "<div>Project code</div><div>MLI1031</div>"
+                "<div>Project code</div><div>{}</div>"
                 "<div>Project title</div>"
                 "<div>Rehabilitation of the Bamako-Segou road section</div>"
                 "<div>Contract Award Company Name</div><div>{}</div>"
                 "<div>Contract Award Company Country</div><div>{}</div>"
                 "<div>Contract Award Company Address</div><div>Nanterre</div>"
-                "</main>".format(quand, societe, pays))
+                "</main>".format(quand, code, societe, pays))
 
     # -- Formulaire de filtrage -------------------------------------------
     # Le premier run a renvoye "aucun pays exploitable" : j'avais SUPPOSE
@@ -2496,7 +2503,7 @@ class TestIsDB(unittest.TestCase):
         self.assertEqual(paires["contract award company country"], "France")
 
     def test_ligne_complete(self):
-        a = isdb_radar.normaliser("/x/contract-award/bamako", self._fiche(), "MLI")
+        a = isdb_radar.normaliser("/x/contract-award/bamako", self._fiche())
         self.assertEqual(a["gagnant"], "Sogea Satom SARL")
         self.assertEqual(a["pays_execution"], "MLI")
         self.assertIn("Bamako", a["titre"])
@@ -2504,27 +2511,109 @@ class TestIsDB(unittest.TestCase):
 
     def test_titulaire_etranger_detecte(self):
         """C'est ce que UNGM ne permet PAS : le pays d'origine est donne."""
-        a = isdb_radar.normaliser("/x/contract-award/y",
-                                  self._fiche(pays="France"), "MLI")
+        a = isdb_radar.normaliser("/x/contract-award/y", self._fiche(pays="France"))
         self.assertTrue(a["_etranger"])
 
     def test_titulaire_local_detecte(self):
         a = isdb_radar.normaliser(
             "/x/contract-award/y",
-            self._fiche(societe="Entreprise Malienne de Travaux", pays="Mali"), "MLI")
+            self._fiche(societe="Entreprise Malienne de Travaux", pays="Mali"))
         self.assertFalse(a["_etranger"])
 
     def test_sans_societe_rien_n_est_ecrit(self):
         fiche = "<main><div>Project title</div><div>Route</div></main>"
-        self.assertIsNone(isdb_radar.normaliser("/x/contract-award/y", fiche, "MLI"))
+        self.assertIsNone(isdb_radar.normaliser("/x/contract-award/y", fiche))
 
     def test_attribution_trop_ancienne_ecartee(self):
         vieille = self._fiche(jours=900)
-        self.assertIsNone(isdb_radar.normaliser("/x/contract-award/y", vieille, "MLI"))
+        self.assertIsNone(isdb_radar.normaliser("/x/contract-award/y", vieille))
 
     def test_pays_hors_perimetre_rejete(self):
-        self.assertIsNone(isdb_radar.normaliser("/x/contract-award/y",
-                                                self._fiche(), "DNK"))
+        """Un projet danois (DNK1001) n'interesse pas Amarante."""
+        self.assertIsNone(isdb_radar.normaliser(
+            "/x/contract-award/y", self._fiche(code="DNK1001")))
+
+    # -- Le bug du 21/07/2026, verrouille --------------------------------
+    def test_prefixe_du_code_projet_donne_le_pays(self):
+        self.assertEqual(isdb_radar.pays_execution_depuis_code("MLI1031"), "MLI")
+        self.assertEqual(isdb_radar.pays_execution_depuis_code("IDN1031"), "IDN")
+        self.assertEqual(isdb_radar.pays_execution_depuis_code(" kgz2044 "), "KGZ")
+        self.assertEqual(isdb_radar.pays_execution_depuis_code("TJK-1007"), "TJK")
+
+    def test_code_illisible_donne_pays_vide(self):
+        for brut in ("", "1031", "P178566", "projet sans code", None):
+            self.assertEqual(isdb_radar.pays_execution_depuis_code(brut), "",
+                             "code {!r} aurait du etre illisible".format(brut))
+
+    def test_le_pays_vient_de_la_fiche_jamais_de_la_requete(self):
+        """NON-REGRESSION du run AFG : une fiche kirghize (KGZ2044) doit
+        sortir en KGZ quel que soit le pays sous lequel le lien est apparu.
+        Avant correction, tout sortait sous le premier pays de la boucle."""
+        a = isdb_radar.normaliser(
+            "/x/contract-award/issyk-kul-ring-road",
+            self._fiche(societe="Yema Group Co., Ltd", pays="China", code="KGZ2044"))
+        self.assertEqual(a["pays_execution"], "KGZ")
+        self.assertTrue(a["_etranger"])
+
+    def test_verdict_local_calcule_contre_le_vrai_pays(self):
+        """Sequelle du meme bug : une entreprise indonesienne sur un projet
+        indonesien (IDN1031) est LOCALE. Comparee a tort a l'Afghanistan,
+        elle passait pour etrangere."""
+        a = isdb_radar.normaliser(
+            "/x/contract-award/hospitals",
+            self._fiche(societe="PT. Lista Fariska Putra", pays="Indonesia",
+                        code="IDN1031"))
+        self.assertFalse(a["_etranger"])
+
+    def test_fiche_sans_code_projet_ecartee(self):
+        """Prudence assumee : sans code projet lisible, pas de pays invente,
+        donc pas de ligne (meme logique que 'sans identifiant, pas de
+        gagnant' cote Banque Mondiale)."""
+        self.assertIsNone(isdb_radar.normaliser(
+            "/x/contract-award/y", self._fiche(code="sans code")))
+
+    def test_collecte_mondiale_resout_le_pays_par_fiche(self):
+        """Bout en bout sans reseau : un seul passage de listing, deux fiches
+        de pays differents, chacune ressort avec SON pays."""
+        liste = ('<a href="/project-procurement/tenders/2026/contract-award/route-kg">a</a>'
+                 '<a href="/project-procurement/tenders/2026/contract-award/hopital-ml">b</a>')
+        fiches = {
+            "/project-procurement/tenders/2026/contract-award/route-kg":
+                self._fiche(societe="Yema Group Co., Ltd", pays="China",
+                            code="KGZ2044"),
+            "/project-procurement/tenders/2026/contract-award/hopital-ml":
+                self._fiche(code="MLI1031"),
+        }
+        appels = []
+
+        def fetch_liste(statut, page):
+            appels.append((statut, page))
+            return liste if page == 0 else ""
+
+        attributions, stats = isdb_radar.collecte(
+            fetch_liste=fetch_liste, fetch_fiche=fiches.__getitem__)
+        pays = sorted(a["pays_execution"] for a in attributions)
+        self.assertEqual(pays, ["KGZ", "MLI"])
+        self.assertEqual(stats["fiches"], 2)
+        # Les deux statuts sont bien interroges, sans boucle par pays.
+        self.assertIn(("active", 0), appels)
+        self.assertIn(("closed", 0), appels)
+
+    def test_fiche_deja_connue_pas_relue(self):
+        """Une fiche deja dans le Sheet ne coute aucune requete."""
+        liste = '<a href="/project-procurement/tenders/2026/contract-award/route-kg">a</a>'
+        lectures = []
+
+        def fetch_fiche(chemin):
+            lectures.append(chemin)
+            return self._fiche(code="KGZ2044")
+
+        _a, stats = isdb_radar.collecte(
+            fetch_liste=lambda s, p: liste if p == 0 else "",
+            fetch_fiche=fetch_fiche,
+            deja_vus={"ISDB-route-kg"})
+        self.assertEqual(lectures, [])
+        self.assertEqual(stats["deja_connus"], 1)
 
     # -- Dates ---------------------------------------------------------------
     def test_formats_de_date(self):
@@ -2547,7 +2636,7 @@ class TestIsDB(unittest.TestCase):
             import radar_dashboard as dash
         except Exception:
             self.skipTest("radar_dashboard indisponible")
-        a = isdb_radar.normaliser("/x/contract-award/bamako", self._fiche(), "MLI")
+        a = isdb_radar.normaliser("/x/contract-award/bamako", self._fiche())
         lead = dash.attribution_vers_lead(a)
         self.assertEqual(lead["src"], "ATTRIB")
         self.assertEqual(lead["entreprise"], "Sogea Satom SARL")
@@ -2555,31 +2644,9 @@ class TestIsDB(unittest.TestCase):
         self.assertNotEqual(lead["zone"], "Non classé")
 
     def test_deduplication(self):
-        a = isdb_radar.normaliser("/x/contract-award/bamako", self._fiche(), "MLI")
+        a = isdb_radar.normaliser("/x/contract-award/bamako", self._fiche())
         b = dict(a, publication_number="ISDB-autre-slug")
         self.assertEqual(len(isdb_radar.dedupliquer([a, b])), 1)
-
-    # -- Collecte : la memoire evite des requetes inutiles -------------------
-    def test_fiches_deja_connues_non_relues(self):
-        """Une fiche coute une requete : on ne relit pas ce qui est deja dans
-        le Sheet (lecon du collecteur UNGM)."""
-        lues = []
-
-        def liste(iso2, statut, page):
-            if page or statut == "closed":
-                return ""
-            return ('<a href="/project-procurement/tenders/2026/contract-award/'
-                    'bamako-segou-road">x</a>')
-
-        def fiche(chemin):
-            lues.append(chemin)
-            return self._fiche()
-
-        _a, stats = isdb_radar.collecte(
-            fetch_liste=lambda i, s, p: self.FORMULAIRE if i == "" else liste(i, s, p),
-            fetch_fiche=fiche, deja_vus={"ISDB-bamako-segou-road"})
-        self.assertEqual(lues, [])
-        self.assertGreater(stats["deja_connus"], 0)
 
 
 if __name__ == "__main__":
