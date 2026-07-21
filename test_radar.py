@@ -2161,6 +2161,58 @@ class TestAttributionsUNGM(unittest.TestCase):
                 '<div role="cell">Bancroft Global Development</div></div>')
         self.assertEqual(len(ungm_attributions.extraire_attributions(html)), 1)
 
+    # -- Corrections issues du run reel du 20/07/2026 ----------------------
+    # Structure REELLE : [titre][titulaire][date][agence][reference][pays].
+    REELLE_MASQUEE = [
+        "ITB for Upgrading of Plum Concrete Surface Streets in Districts 12 & 13 "
+        "of Kabul city (4 Lots) - Afghanistan",
+        "Name withheld for security reasons", "14-Jul-2026", "UNOPS",
+        "ITB/2026/62653", "Afghanistan"]
+
+    def test_titulaire_masque_ecarte(self):
+        """L'UNOPS masque le nom de ses prestataires afghans. Une ligne sans
+        titulaire nommable n'a aucune valeur commerciale : on l'ecarte au lieu
+        de retomber sur une autre cellule."""
+        ligne = ungm_attributions.extraire_attributions(
+            self._html(self.REELLE_MASQUEE))[0]
+        self.assertIsNone(ungm_attributions.normaliser(ligne, "AFG"))
+
+    def test_cellule_pays_n_est_pas_un_titulaire(self):
+        """Bug reel : "Afghanistan" (colonne pays) etait retenu comme
+        titulaire, car court, capitalise et sans preposition."""
+        self.assertFalse(ungm_attributions._plausible_entreprise("Afghanistan"))
+        self.assertFalse(ungm_attributions._plausible_entreprise("South Sudan"))
+        self.assertTrue(ungm_attributions._plausible_entreprise("Kjaer & Kjaer A/S"))
+
+    def test_titulaires_reels_conserves(self):
+        """Noms tires du run reel : ils doivent tous passer intacts."""
+        for nom in ("Kjaer & Kjaer A/S", "MANITOU BF",
+                    "Guangxi Liugong Machinery Co., Ltd",
+                    "Harirod Construction Company", "COM.INT SPA (Italy)",
+                    "AL-KASID COMMERCIAL AGENCIES LTD."):
+            cellules = ["Supply of heavy equipment - Afghanistan", nom,
+                        "10-Jul-2026", "UNOPS", "ITB/2026/1", "Afghanistan"]
+            a = ungm_attributions.normaliser(
+                ungm_attributions.extraire_attributions(self._html(cellules))[0],
+                "AFG")
+            self.assertIsNotNone(a, "{} rejete a tort".format(nom))
+            self.assertEqual(a["gagnant"], nom)
+
+    def test_pays_isole_de_l_interpretation(self):
+        champs = ungm_attributions.interpreter(self.REELLE_MASQUEE)
+        self.assertEqual(champs["pays_cellule"], "Afghanistan")
+        self.assertTrue(champs["titulaire_masque"])
+        self.assertNotIn("Afghanistan", champs["restes"])
+
+    def test_motifs_de_rejet_comptes(self):
+        """Le journal doit dire COMBIEN de titulaires l'agence a masques."""
+        lignes = ungm_attributions.extraire_attributions(
+            self._html(self.REELLE_MASQUEE))
+        for l in lignes:
+            l["pays_iso3"] = "AFG"
+        _sorties, motifs = ungm_attributions.construire(lignes)
+        self.assertEqual(motifs["titulaire_masque"], 1)
+
     # -- Detection multi-format de la reponse ------------------------------
     # Erreur corrigee : on ne cherchait que des <div role="row">. Une reponse
     # JSON (ce que 101 octets constants suggerent) etait declaree en echec
