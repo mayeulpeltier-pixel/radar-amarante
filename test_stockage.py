@@ -225,5 +225,112 @@ class TestIntegrationPostgres(unittest.TestCase):
                       st.publications_existantes(self.conn, "attributions_radar"))
 
 
+# ===========================================================================
+# RATTRAPAGE HISTORIQUE (radar_rattrapage.py)
+# ===========================================================================
+
+class TestRattrapagePur(unittest.TestCase):
+    """Cle de contenu et preparation : purs, toujours executes."""
+
+    def setUp(self):
+        import radar_rattrapage
+        self.rt = radar_rattrapage
+
+    def test_cle_stable(self):
+        a = {"entreprise": "Egis", "signal": "recrutement", "pays": "MLI"}
+        self.assertEqual(self.rt.cle_contenu(a), self.rt.cle_contenu(dict(a)))
+        self.assertEqual(len(self.rt.cle_contenu(a)), 40)     # sha1 hex
+
+    def test_statut_humain_ne_change_pas_la_cle(self):
+        """Changer un statut a la main dans le Sheet ne doit pas fabriquer de
+        doublon au rejeu suivant."""
+        a = {"entreprise": "Egis", "statut_suivi": "nouveau"}
+        b = {"entreprise": "Egis", "statut_suivi": "contacte le 20/07"}
+        c = {"entreprise": "Egis", "statut_prospection": "perdu"}
+        self.assertEqual(self.rt.cle_contenu(a), self.rt.cle_contenu(b))
+        self.assertEqual(self.rt.cle_contenu(a), self.rt.cle_contenu(c))
+
+    def test_contenu_different_cle_differente(self):
+        self.assertNotEqual(
+            self.rt.cle_contenu({"entreprise": "Egis", "pays": "MLI"}),
+            self.rt.cle_contenu({"entreprise": "Egis", "pays": "NER"}))
+
+    def test_preparation_forge_une_cle_seulement_si_besoin(self):
+        avec = self.rt.preparer_rattrapage({"publication_number": "TED-1",
+                                            "titre": "x"})
+        self.assertEqual(avec["publication_number"], "TED-1")
+        sans = self.rt.preparer_rattrapage({"entreprise": "Egis"})
+        self.assertTrue(sans["publication_number"].startswith("SHA1-"))
+
+
+class _FauxOnglet:
+    def __init__(self, titre, lignes, erreur=None):
+        self.title = titre
+        self._lignes = lignes
+        self._erreur = erreur
+
+    def get_all_records(self):
+        if self._erreur:
+            raise self._erreur
+        return list(self._lignes)
+
+
+class _FauxClasseur:
+    def __init__(self, onglets):
+        self._onglets = onglets
+
+    def worksheets(self):
+        return list(self._onglets)
+
+
+@unittest.skipUnless(PSYCOPG and URL_TEST,
+                     "pas de base de test (RADAR_TEST_DATABASE_URL absent)")
+class TestRattrapageIntegration(unittest.TestCase):
+    """Le rattrapage complet contre un vrai Postgres, classeur factice."""
+
+    def setUp(self):
+        import radar_rattrapage
+        self.rt = radar_rattrapage
+        self.conn = st.connexion(URL_TEST)
+        st.initialiser(self.conn)
+        with self.conn.cursor() as cur:
+            cur.execute("TRUNCATE radar_lignes")
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _classeur(self, statut="nouveau"):
+        return _FauxClasseur([
+            _FauxOnglet("ted_radar",
+                        [{"publication_number": "TED-1", "titre": "Escorte",
+                          "statut_suivi": statut},
+                         {"publication_number": "", "titre": ""}]),   # vide
+            _FauxOnglet("prive_radar",
+                        [{"entreprise": "Egis", "signal": "recrutement",
+                          "statut_suivi": statut}]),
+            _FauxOnglet("casse", [], erreur=RuntimeError("quota")),
+        ])
+
+    def test_rattrapage_puis_rejeu_idempotent(self):
+        bilan1 = self.rt.rattraper_classeur(self._classeur(), self.conn)
+        self.assertEqual(bilan1["ted_radar"], (1, 1, 0, ""))      # vide ecartee
+        self.assertEqual(bilan1["prive_radar"], (1, 1, 0, ""))
+        self.assertIn("illisible", bilan1["casse"][3])            # best-effort
+        # Rejeu avec un statut humain MODIFIE : zero doublon nulle part.
+        bilan2 = self.rt.rattraper_classeur(self._classeur("contacte"),
+                                            self.conn)
+        self.assertEqual(bilan2["ted_radar"], (1, 0, 1, ""))
+        self.assertEqual(bilan2["prive_radar"], (1, 0, 1, ""))
+        self.assertEqual(st.inventaire(self.conn),
+                         {"prive_radar": 1, "ted_radar": 1})
+
+    def test_onglet_exclu(self):
+        bilan = self.rt.rattraper_classeur(self._classeur(), self.conn,
+                                           exclus=("prive_radar",))
+        self.assertEqual(bilan["prive_radar"], (0, 0, 0, "exclu"))
+        self.assertNotIn("prive_radar", st.inventaire(self.conn))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
