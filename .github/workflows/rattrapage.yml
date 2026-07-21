@@ -1,0 +1,44 @@
+name: Rattrapage Postgres
+
+# Versement HISTORIQUE du Google Sheet vers le miroir Postgres.
+# DECLENCHEMENT MANUEL UNIQUEMENT (workflow_dispatch).
+#
+# POURQUOI : la double ecriture des collecteurs ne couvre que ce qui passe par
+# leurs fonctions d'ecriture ; les onglets historiques (famille TED, memoire
+# UNGM/IsDB, prive, referentiels) ne se rempliraient jamais d'eux-memes.
+#
+# GARANTIES : Sheet en lecture seule (portee readonly), Postgres en ajout
+# seul (ON CONFLICT DO NOTHING). REJOUABLE A VOLONTE : un rejeu n'ajoute que
+# ce qui manque, ne reecrit jamais rien.
+#
+# UTILISATION : onglet Actions > "Rattrapage Postgres" > Run workflow, puis
+# lire le bilan par onglet et l'inventaire final dans le journal.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  rattraper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installer les dependances
+        run: pip install gspread google-auth "psycopg[binary]"
+
+      - name: Reconstituer la cle de service Google
+        run: echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > service_account.json
+
+      - name: Rattraper l'historique
+        env:
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python radar_rattrapage.py
