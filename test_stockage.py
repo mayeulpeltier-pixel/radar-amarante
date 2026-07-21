@@ -96,6 +96,22 @@ class TestPreparationLignes(unittest.TestCase):
         pub, _d = st.preparer_ligne({"gagnant": "X"})
         self.assertEqual(pub, "")
 
+    def test_publication_imbriquee_des_avis(self):
+        """Les six collecteurs d'avis passent des resultats imbriques : le
+        publication_number vit sous r['avis']. Sans cette extraction, chaque
+        run dupliquerait tous les avis en base (pub='')."""
+        pub, donnees = st.preparer_ligne(
+            {"avis": {"publication_number": "TED-123", "titre": "Escorte"},
+             "scores": {"pertinence": 4}})
+        self.assertEqual(pub, "TED-123")
+        self.assertEqual(donnees["avis"]["titre"], "Escorte")
+
+    def test_publication_racine_prime_sur_l_imbriquee(self):
+        pub, _d = st.preparer_ligne(
+            {"publication_number": "RACINE",
+             "avis": {"publication_number": "IMBRIQUEE"}})
+        self.assertEqual(pub, "RACINE")
+
     def test_accents_conserves(self):
         """ensure_ascii=False cote ecriture : la ligne doit rester lisible
         en francais (Bozankaya Raylı, Müş...)."""
