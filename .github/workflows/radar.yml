@@ -49,7 +49,7 @@ jobs:
           RELIEFWEB_APPNAME: amarante-radar-veille-x7q234hyu
           RADAR_GDELT: "0"
           RADAR_ADB: "0"          # ADB desactive : portail rendu en JS, 0 resultat depuis l'infra CI (meme logique que GDELT). Retirer cette ligne pour reactiver.
-          RADAR_PRIVES_DEBUG: "1"
+          RADAR_PRIVES_DEBUG: "0"
           ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
           ADZUNA_APP_KEY: ${{ secrets.ADZUNA_APP_KEY }}
         run: python radar_run.py
@@ -98,7 +98,7 @@ jobs:
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          RADAR_UNGM_DEBUG: "1"
+          RADAR_UNGM_DEBUG: "0"
         run: python ungm_radar.py
 
       # 3d) Attributions UNGM : titulaires nommes de marches ONU. Ecrit dans le
@@ -112,7 +112,7 @@ jobs:
         env:
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
-          RADAR_UNGM_ATTRIB_DEBUG: "1"
+          RADAR_UNGM_ATTRIB_DEBUG: "0"
         run: python ungm_attributions.py
 
       - name: Generer le tableau de bord
