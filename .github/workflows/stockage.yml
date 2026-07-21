@@ -1,0 +1,43 @@
+name: Stockage Postgres
+
+# Verification ponctuelle, DECLENCHEMENT MANUEL UNIQUEMENT (workflow_dispatch).
+# Ne touche ni au Sheet, ni au dashboard, ni a l'etat du radar.
+#
+# ROLE : valider la chaine complete secret -> connexion -> schema -> inventaire
+# AVANT d'activer la double ecriture dans radar.yml. Meme philosophie que la
+# sonde des sources : on verifie l'infrastructure separement, on branche
+# ensuite.
+#
+# UTILISATION : onglet Actions > "Stockage Postgres" > Run workflow, puis lire
+# le journal de l'etape "Verifier le stockage".
+#   - "DATABASE_URL absent"  -> creer le secret (chaine de connexion Neon).
+#   - "schema OK" + inventaire -> pret pour la double ecriture (PR suivante).
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verifier:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installer les dependances
+        run: pip install "psycopg[binary]"
+
+      # Les tests purs de la couche d'abord (les tests d'integration se
+      # sautent d'eux-memes sans RADAR_TEST_DATABASE_URL : voulu).
+      - name: Tester la couche de stockage
+        run: python -m unittest test_stockage -v
+
+      - name: Verifier le stockage
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python radar_stockage.py
