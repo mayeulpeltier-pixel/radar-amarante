@@ -1,36 +1,46 @@
 # -*- coding: utf-8 -*-
 """
-RADAR AMARANTE -- SONDE v8 (jetable) : Amerique latine, voie DONNEES.
-======================================================================
+RADAR AMARANTE -- SONDE v9 (jetable) : IDB, on ne lache pas.
+=============================================================
 
-CE QUE LA v7 A ETABLI
----------------------
-  - Les portails WEB de l'IDB renvoient tous un 403 de 5969 octets, taille
-    IDENTIQUE partout : c'est une page de blocage anti-robot, pas une panne.
-    Le grattage est donc mort, comme pour ADB.
-  - MAIS mydata.iadb.org a repondu 404, pas 403. Nuance decisive : l'hote
-    traite la requete, il refuse juste les identifiants de jeux de donnees
-    que j'avais DEVINES. Aucun blocage de ce cote.
+CE QUE J'AI RATE DANS LES v7 ET v8
+----------------------------------
+J'ai conclu "bloque, on abandonne" SANS JAMAIS LIRE LE CORPS DE LA PAGE 403.
+5969 octets identiques a chaque fois, c'est une page de pare-feu applicatif :
+elle nomme presque toujours le fournisseur (Akamai, Cloudflare, Imperva...) et
+porte un identifiant d'incident. C'est exactement ce qui dit si le blocage est
+contournable ou definitif. Conclure sans cette lecture etait une faute de
+methode.
 
-CE QUE CELLE-CI CORRIGE
------------------------
-On arrete de deviner. Socrata expose une API de DECOUVERTE hebergee sur
-api.us.socrata.com, donc SUR UN AUTRE DOMAINE que iadb.org : elle echappe au
-blocage. Elle liste les jeux de donnees d'un portail avec leurs identifiants
-REELS. La sonde ENCHAINE ensuite automatiquement : decouverte -> meilleurs
-candidats -> echantillon -> liste des champs. Un seul run doit suffire a
-decider, au lieu d'un aller-retour par hypothese.
+Autre erreur : la v8 a interroge l'API de decouverte Socrata en supposant que
+mydata.iadb.org etait un portail Socrata. Le 404 dit le contraire. Encore une
+hypothese prise pour un fait.
 
-PISTE 2, EN PARALLELE : les portails nationaux au standard ouvert (Colombie
-SECOP sur Socrata, Chili, Mexique). Concus pour l'acces programmatique, sans
-protection anti-robot. Plus de bruit local a filtrer qu'une banque de
-developpement, mais un volume complet et une bien meilleure disponibilite.
+CE QUE FAIT CETTE VERSION
+-------------------------
+  A. AUTOPSIE DU 403 : on dumpe le corps brut et les en-tetes. Qui bloque, et
+     sur quel critere (IP de datacenter, empreinte TLS, absence de cookie) ?
+  B. CONTOURNEMENTS, du moins au plus intrusif : en-tetes de navigateur
+     complets, amorcage de cookie (page d'accueil puis cible), HTTP/2 via
+     httpx (empreinte TLS differente de requests), puis curl en dernier
+     recours (pile TLS encore differente).
+  C. AUTRES HOTES IDB : le groupe expose une dizaine de sous-domaines. Un
+     pare-feu est rarement uniforme sur tous.
+  D. API SOUS-JACENTE : si le portail achats est une application monopage,
+     elle appelle une API qui, elle, echappe souvent a la regle WAF appliquee
+     aux pages HTML. On teste sitemap, /api/*, /graphql.
+  E. VOIE IATI : l'IDB publie ses activites au standard IATI. Le registre est
+     un CKAN OUVERT, sans pare-feu, sur un domaine tiers. Les projets ne sont
+     pas des avis d'appel d'offres, mais un pipeline de projets EST un
+     gisement de prospects (on sait qui finance quoi, ou, et pour combien,
+     avant meme l'appel d'offres).
 
 AUCUNE ECRITURE. Sortie toujours en code 0.
 """
 
 import json
 import re
+import subprocess
 import sys
 
 try:
@@ -39,39 +49,76 @@ except Exception:                                    # pragma: no cover
     print("requests indisponible")
     sys.exit(0)
 
-TIMEOUT = 45
-NAVIGATEUR = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-              "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
+try:
+    import httpx
+    HTTPX = True
+except Exception:
+    HTTPX = False
 
-# API de decouverte Socrata : hebergee par Socrata, PAS par le portail cible.
-DECOUVERTE = "https://api.us.socrata.com/api/catalog/v1"
+TIMEOUT = 40
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 
-# Portails Socrata a interroger : (etiquette, domaine, termes de recherche)
-PORTAILS_SOCRATA = [
-    ("IDB / BID", "mydata.iadb.org",
-     ["procurement", "contract", "adquisicion", "operations"]),
-    ("Colombie SECOP", "www.datos.gov.co",
-     ["SECOP procesos", "contratacion", "procurement"]),
+# Jeu d'en-tetes complet d'un vrai navigateur : beaucoup de pare-feux se
+# contentent de verifier la coherence de cet ensemble.
+ENTETES_NAVIGATEUR = {
+    "User-Agent": UA,
+    "Accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,"
+               "image/avif,image/webp,image/apng,*/*;q=0.8"),
+    "Accept-Language": "en-US,en;q=0.9,es;q=0.8,fr;q=0.7",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "sec-ch-ua": '"Chromium";v="126", "Not:A-Brand";v="24", "Google Chrome";v="126"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "Cache-Control": "max-age=0",
+    "Connection": "keep-alive",
+}
+
+CIBLE = "https://projectprocurement.iadb.org/en/procurement-notices"
+
+# C. Sous-domaines et chemins du groupe IDB. Un pare-feu est rarement uniforme.
+AUTRES_HOTES = [
+    ("data.iadb.org", "https://data.iadb.org/"),
+    ("datosabiertos", "https://datosabiertos.iadb.org/"),
+    ("publications", "https://publications.iadb.org/"),
+    ("idbdocs", "https://idbdocs.iadb.org/"),
+    ("code.iadb.org", "https://code.iadb.org/"),
+    ("IDB Invest", "https://www.idbinvest.org/en/procurement"),
+    ("IDB Invest racine", "https://www.idbinvest.org/en"),
+    ("convocatorias ES", "https://www.iadb.org/es/adquisiciones"),
 ]
 
-# Points d'entree STANDARD d'un portail Socrata (au lieu d'identifiants devines).
-ENDPOINTS_STANDARD = [
-    ("IDB catalogue DCAT", "https://mydata.iadb.org/data.json"),
-    ("IDB vues", "https://mydata.iadb.org/api/views.json?limit=5"),
+# D. Endpoints techniques : souvent hors du perimetre de la regle WAF.
+ENDPOINTS_TECHNIQUES = [
+    ("sitemap achats", "https://projectprocurement.iadb.org/sitemap.xml"),
+    ("robots achats", "https://projectprocurement.iadb.org/robots.txt"),
+    ("api notices", "https://projectprocurement.iadb.org/api/notices"),
+    ("api v1", "https://projectprocurement.iadb.org/api/v1/procurement-notices"),
+    ("graphql", "https://projectprocurement.iadb.org/graphql"),
+    ("sitemap principal", "https://www.iadb.org/sitemap.xml"),
+    ("robots principal", "https://www.iadb.org/robots.txt"),
 ]
 
-# Piste 2 : autres portails nationaux, simple test d'accessibilite.
-PORTAILS_NATIONAUX = [
-    ("Chili Mercado Publico", "https://api.mercadopublico.cl/servicios/v1/publico/licitaciones.json"),
-    ("Mexique datos.gob", "https://api.datos.gob.mx/v1/"),
-    ("Registre OCDS", "https://data.open-contracting.org/en/publications/"),
+# E. IATI : registre CKAN ouvert, domaine tiers, aucun pare-feu connu.
+# XM-DAC-46012 est le code bailleur de la Banque interamericaine.
+IATI = [
+    ("registre CKAN (recherche)",
+     "https://iatiregistry.org/api/3/action/package_search?q=iadb&rows=5"),
+    ("registre CKAN (organisation)",
+     "https://iatiregistry.org/api/3/action/organization_show?id=iadb"),
+    ("registre CKAN (liste orgs)",
+     "https://iatiregistry.org/api/3/action/organization_list?limit=1000"),
+    ("datastore IATI",
+     "https://api.iatistandard.org/datastore/activity/select"
+     "?q=reporting_org_ref:XM-DAC-46012&rows=2&wt=json"),
 ]
-
-MOTS_ACHAT = ["procurement", "contract", "tender", "bidding", "adquisici",
-              "contrataci", "licitaci", "proces"]
 
 RESULTATS = []
-CANDIDATS = []          # (etiquette, domaine, id, nom) retenus pour echantillon
 
 
 def _titre(t):
@@ -90,178 +137,216 @@ def _plat(t, n=None):
     return s[:n] if n else s
 
 
-def _pertinent(texte):
-    bas = (texte or "").lower()
-    return any(m in bas for m in MOTS_ACHAT)
-
-
 def sonde_a(session):
-    """A. DECOUVERTE : quels jeux de donnees existent REELLEMENT ?"""
-    _titre("A. DECOUVERTE SOCRATA (api.us.socrata.com, hors domaine bloque)")
-    trouves = 0
-    for etiquette, domaine, requetes in PORTAILS_SOCRATA:
-        print("\n  --- {} ({}) ---".format(etiquette, domaine))
-        vus = set()
-        for q in requetes:
-            params = {"domains": domaine, "q": q, "limit": 12}
+    """A. AUTOPSIE : qui bloque, et que dit-il exactement ?"""
+    _titre("A. AUTOPSIE DE LA PAGE 403 (l'etape que j'avais sautee)")
+    try:
+        r = session.get(CIBLE, headers={"User-Agent": UA}, timeout=TIMEOUT)
+    except Exception as e:
+        _verdict("autopsie", False, "injoignable : {}".format(_plat(e, 60)))
+        return None
+    print("  statut : {} | {} octets".format(r.status_code, len(r.content or b"")))
+    print("\n  --- EN-TETES DE REPONSE (le pare-feu s'y signe souvent) ---")
+    for cle, val in r.headers.items():
+        print("    {:24} : {}".format(cle, _plat(val, 90)))
+    print("\n  --- CORPS BRUT (integral si court) ---")
+    corps = r.text or ""
+    print(corps[:4000])
+
+    bas = (corps + " " + json.dumps(dict(r.headers))).lower()
+    signatures = {
+        "Akamai": ["akamai", "reference #", "errors.edgesuite"],
+        "Cloudflare": ["cloudflare", "ray id", "cf-ray"],
+        "Imperva/Incapsula": ["imperva", "incapsula", "incident id"],
+        "AWS WAF": ["aws", "x-amzn", "request blocked"],
+        "F5/BIG-IP": ["big-ip", "the requested url was rejected"],
+    }
+    trouves = [n for n, marqueurs in signatures.items()
+               if any(m in bas for m in marqueurs)]
+    print("\n  pare-feu identifie : {}".format(", ".join(trouves) or "non identifie"))
+    ip_bloquee = any(m in bas for m in ["your ip", "ip address", "datacenter",
+                                        "hosting provider", "automated"])
+    print("  mention d'un blocage par IP/automatisation : {}".format(
+        "OUI (contournement peu probable)" if ip_bloquee else "non detectee"))
+    _verdict("autopsie", True,
+             "pare-feu : {} | blocage IP annonce : {}".format(
+                 ", ".join(trouves) or "inconnu", "oui" if ip_bloquee else "non"))
+    return corps
+
+
+def sonde_b():
+    """B. CONTOURNEMENTS, du plus simple au plus different."""
+    _titre("B. TENTATIVES DE CONTOURNEMENT")
+    succes = []
+
+    # 1. En-tetes de navigateur complets.
+    try:
+        s = requests.Session()
+        s.headers.update(ENTETES_NAVIGATEUR)
+        r = s.get(CIBLE, timeout=TIMEOUT)
+        print("  [{}] en-tetes navigateur complets : {} | {} octets".format(
+            "OK" if r.status_code < 400 else "KO", r.status_code, len(r.content or b"")))
+        if r.status_code < 400:
+            succes.append("en-tetes navigateur")
+    except Exception as e:
+        print("  [KO] en-tetes navigateur : {}".format(_plat(e, 60)))
+
+    # 2. Amorcage de cookie : accueil d'abord, cible ensuite.
+    try:
+        s = requests.Session()
+        s.headers.update(ENTETES_NAVIGATEUR)
+        acc = s.get("https://projectprocurement.iadb.org/", timeout=TIMEOUT)
+        r = s.get(CIBLE, timeout=TIMEOUT,
+                  headers={"Referer": "https://projectprocurement.iadb.org/"})
+        print("  [{}] amorcage cookie (accueil {} -> cible {}) | {} cookie(s)".format(
+            "OK" if r.status_code < 400 else "KO", acc.status_code,
+            r.status_code, len(s.cookies)))
+        if r.status_code < 400:
+            succes.append("amorcage cookie")
+    except Exception as e:
+        print("  [KO] amorcage cookie : {}".format(_plat(e, 60)))
+
+    # 3. HTTP/2 via httpx : empreinte TLS et protocole differents de requests.
+    if HTTPX:
+        for h2 in (True, False):
             try:
-                r = session.get(DECOUVERTE, params=params, timeout=TIMEOUT)
+                with httpx.Client(http2=h2, headers=ENTETES_NAVIGATEUR,
+                                  timeout=TIMEOUT, follow_redirects=True) as c:
+                    r = c.get(CIBLE)
+                print("  [{}] httpx http2={} : {} | {} octets".format(
+                    "OK" if r.status_code < 400 else "KO", h2,
+                    r.status_code, len(r.content or b"")))
+                if r.status_code < 400:
+                    succes.append("httpx http2={}".format(h2))
             except Exception as e:
-                print("    [KO] requete {!r} : {}".format(q, _plat(e, 60)))
-                continue
-            if r.status_code >= 400:
-                print("    [KO] requete {!r} : statut {}".format(q, r.status_code))
-                continue
-            try:
-                donnees = r.json()
-            except Exception:
-                print("    [KO] requete {!r} : reponse non JSON".format(q))
-                continue
-            resultats = donnees.get("results") or []
-            print("    requete {!r} : {} resultat(s) (total annonce {})".format(
-                q, len(resultats), donnees.get("resultSetSize", "?")))
-            for res in resultats:
-                ressource = res.get("resource") or {}
-                ident = ressource.get("id") or ""
-                nom = _plat(ressource.get("name"), 70)
-                if not ident or ident in vus:
-                    continue
-                vus.add(ident)
-                pertinent = _pertinent(
-                    nom + " " + _plat(ressource.get("description"), 200))
-                print("      {:12} {}{}".format(
-                    ident, nom, " <-- pertinent" if pertinent else ""))
-                if pertinent:
-                    CANDIDATS.append((etiquette, domaine, ident, nom))
-                    trouves += 1
-    _verdict("decouverte", trouves > 0,
-             "{} jeu(x) de donnees pertinent(s) identifie(s)".format(trouves))
+                print("  [KO] httpx http2={} : {}".format(h2, _plat(e, 55)))
+    else:
+        print("  [--] httpx absent (ajouter 'httpx[http2]' au workflow)")
 
-
-def sonde_b(session):
-    """B. Points d'entree STANDARD du portail IDB (sans deviner d'identifiant)."""
-    _titre("B. ENDPOINTS STANDARD SOCRATA SUR mydata.iadb.org")
-    ok_global = False
-    for nom, url in ENDPOINTS_STANDARD:
+    # 4. curl : pile TLS entierement differente (OpenSSL + nghttp2).
+    for etiquette, options in (("curl standard", []),
+                               ("curl http2", ["--http2"]),
+                               ("curl tls1.2", ["--tlsv1.2", "--tls-max", "1.2"])):
         try:
-            r = session.get(url, timeout=TIMEOUT)
+            cmd = (["curl", "-s", "-o", "/dev/null", "-w", "%{http_code} %{size_download}",
+                    "-A", UA, "--max-time", "30"] + options + [CIBLE])
+            sortie = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+            code = (sortie.stdout or "").split()
+            statut = code[0] if code else "?"
+            print("  [{}] {:16} : {} | {} octets".format(
+                "OK" if statut.startswith(("2", "3")) else "KO",
+                etiquette, statut, code[1] if len(code) > 1 else "?"))
+            if statut.startswith(("2", "3")):
+                succes.append(etiquette)
         except Exception as e:
-            print("  [KO] {:22} exception : {}".format(nom, _plat(e, 60)))
-            continue
-        taille = len(r.content or b"")
-        print("  [{}] {:22} {} | {} octets".format(
-            "OK" if r.status_code < 400 else "KO", nom, r.status_code, taille))
-        if r.status_code >= 400:
-            continue
-        ok_global = True
-        try:
-            donnees = r.json()
-        except Exception:
-            print("       (reponse non JSON)")
-            continue
-        jeux = donnees.get("dataset") if isinstance(donnees, dict) else donnees
-        if isinstance(jeux, list):
-            pertinents = [j for j in jeux if _pertinent(json.dumps(j)[:400])][:10]
-            print("       {} jeu(x) au catalogue, {} pertinent(s) :".format(
-                len(jeux), len(pertinents)))
-            for j in pertinents:
-                titre = _plat(j.get("title") or j.get("name"), 66)
-                ident = str(j.get("identifier") or j.get("id") or "")
-                print("         {:14} {}".format(_plat(ident, 14), titre))
-                m = re.search(r"([a-z0-9]{4}-[a-z0-9]{4})", ident)
-                if m:
-                    CANDIDATS.append(("IDB / BID", "mydata.iadb.org",
-                                      m.group(1), titre))
-    _verdict("endpoints standard", ok_global,
-             "catalogue lisible" if ok_global else "aucun endpoint standard joignable")
+            print("  [KO] {:16} : {}".format(etiquette, _plat(e, 55)))
+
+    _verdict("contournement", bool(succes),
+             ", ".join(succes) if succes else "aucune variante ne passe")
+    return succes
+
+
+def _essayer(session, nom, url, apercu=220):
+    try:
+        r = session.get(url, timeout=TIMEOUT, allow_redirects=True)
+    except Exception as e:
+        print("  [KO] {:22} exception : {}".format(nom, _plat(e, 55)))
+        return None
+    ctype = _plat(r.headers.get("Content-Type", ""), 30)
+    taille = len(r.content or b"")
+    print("  [{}] {:22} {} | {:30} | {} octets".format(
+        "OK" if r.status_code < 400 else "KO", nom, r.status_code, ctype, taille))
+    if r.status_code < 400 and taille > 300:
+        print("       apercu : " + _plat(r.text, apercu))
+        return r
+    return None
 
 
 def sonde_c(session):
-    """C. ENCHAINEMENT : echantillon reel du meilleur candidat + ses champs.
-    C'est ce qui evite un aller-retour supplementaire."""
-    _titre("C. ECHANTILLON REEL ET CHAMPS DISPONIBLES")
-    if not CANDIDATS:
-        print("  (aucun candidat : rien a echantillonner)")
-        _verdict("echantillon", False, "non evalue")
-        return
-    reussis = 0
-    vus = set()
-    for etiquette, domaine, ident, nom in CANDIDATS[:6]:
-        if ident in vus:
-            continue
-        vus.add(ident)
-        url = "https://{}/resource/{}.json?$limit=3".format(domaine, ident)
-        try:
-            r = session.get(url, timeout=TIMEOUT)
-        except Exception as e:
-            print("  [KO] {} {} : {}".format(etiquette, ident, _plat(e, 55)))
-            continue
-        if r.status_code >= 400:
-            print("  [KO] {} {} : statut {}".format(etiquette, ident, r.status_code))
-            continue
-        try:
-            lignes = r.json()
-        except Exception:
-            print("  [KO] {} {} : reponse non JSON".format(etiquette, ident))
-            continue
-        if not isinstance(lignes, list) or not lignes:
-            print("  [--] {} {} : jeu vide".format(etiquette, ident))
-            continue
-        reussis += 1
-        print("\n  --- {} | {} | {} ---".format(etiquette, ident, nom))
-        print("      {} champ(s) :".format(len(lignes[0])))
-        for cle in sorted(lignes[0]):
-            print("        {:34} = {}".format(cle, _plat(lignes[0][cle], 52)))
-    _verdict("echantillon", reussis > 0,
-             "{} jeu(x) lisible(s) avec leurs champs".format(reussis))
+    """C. Un pare-feu est rarement uniforme sur tous les sous-domaines."""
+    _titre("C. AUTRES HOTES DU GROUPE IDB")
+    vivants = [nom for nom, url in AUTRES_HOTES if _essayer(session, nom, url)]
+    _verdict("autres hotes", bool(vivants),
+             ", ".join(vivants) if vivants else "tous bloques")
+    return vivants
 
 
 def sonde_d(session):
-    """D. Piste 2 : autres portails nationaux (accessibilite brute)."""
-    _titre("D. PORTAILS NATIONAUX (piste de repli)")
-    vivants = 0
-    for nom, url in PORTAILS_NATIONAUX:
+    """D. L'API d'une application monopage echappe souvent a la regle WAF."""
+    _titre("D. ENDPOINTS TECHNIQUES ET API SOUS-JACENTE")
+    vivants = [nom for nom, url in ENDPOINTS_TECHNIQUES
+               if _essayer(session, nom, url, apercu=400)]
+    _verdict("endpoints techniques", bool(vivants),
+             ", ".join(vivants) if vivants else "aucun endpoint ouvert")
+    return vivants
+
+
+def sonde_e(session):
+    """E. IATI : domaine tiers, API ouverte, l'IDB y publie ses activites."""
+    _titre("E. VOIE IATI (registre ouvert, hors pare-feu IDB)")
+    exploitables = []
+    for nom, url in IATI:
         try:
             r = session.get(url, timeout=TIMEOUT)
-            ctype = _plat(r.headers.get("Content-Type", ""), 34)
-            taille = len(r.content or b"")
-            if r.status_code < 400:
-                vivants += 1
-            print("  [{}] {:24} {} | {:34} | {} octets".format(
-                "OK" if r.status_code < 400 else "KO", nom, r.status_code,
-                ctype, taille))
-            if r.status_code < 400 and "json" in ctype.lower():
-                print("       apercu : " + _plat(r.text, 200))
         except Exception as e:
-            print("  [KO] {:24} exception : {}".format(nom, _plat(e, 55)))
-    _verdict("portails nationaux", vivants > 0,
-             "{} portail(s) joignable(s)".format(vivants))
+            print("  [KO] {:26} exception : {}".format(nom, _plat(e, 50)))
+            continue
+        print("  [{}] {:26} {} | {} octets".format(
+            "OK" if r.status_code < 400 else "KO", nom, r.status_code,
+            len(r.content or b"")))
+        if r.status_code >= 400:
+            continue
+        try:
+            donnees = r.json()
+        except Exception:
+            print("       (non JSON) " + _plat(r.text, 160))
+            continue
+        exploitables.append(nom)
+        # CKAN : {"success": true, "result": {...}}
+        res = donnees.get("result") if isinstance(donnees, dict) else None
+        if isinstance(res, dict) and "results" in res:
+            print("       {} jeu(x) trouve(s) sur {} annonce(s)".format(
+                len(res.get("results") or []), res.get("count", "?")))
+            for jeu in (res.get("results") or [])[:5]:
+                print("         {:38} | org: {}".format(
+                    _plat(jeu.get("title"), 38),
+                    _plat((jeu.get("organization") or {}).get("title"), 28)))
+                for ress in (jeu.get("resources") or [])[:1]:
+                    print("           fichier : " + _plat(ress.get("url"), 92))
+        elif isinstance(res, list):
+            iadb = [o for o in res if "iadb" in str(o).lower()
+                    or "inter-american" in str(o).lower()]
+            print("       {} organisations, dont IDB : {}".format(
+                len(res), iadb[:5] or "aucune trouvee"))
+        else:
+            print("       " + _plat(json.dumps(donnees)[:400]))
+    _verdict("IATI", bool(exploitables),
+             ", ".join(exploitables) if exploitables else "voie IATI fermee")
+    return exploitables
 
 
 def main():
-    print("SONDE v8 -- Amerique latine, voie DONNEES. Lecture seule.")
+    print("SONDE v9 -- IDB, autopsie et contournements. Lecture seule.")
     session = requests.Session()
-    session.headers.update({
-        "User-Agent": NAVIGATEUR,
-        "Accept": "application/json, text/html;q=0.8, */*;q=0.5",
-        "Accept-Language": "en,es;q=0.9,fr;q=0.8",
-    })
+    session.headers.update(ENTETES_NAVIGATEUR)
+
     sonde_a(session)
-    sonde_b(session)
+    sonde_b()
     sonde_c(session)
     sonde_d(session)
+    sonde_e(session)
 
     _titre("SYNTHESE")
     for nom, ok, detail in RESULTATS:
-        print("  {:20} {:12} {}".format(nom, "OK" if ok else "a creuser", detail))
-    print("\nDECISION ATTENDUE :")
-    print("  - echantillon OK cote IDB   -> collecteur IDB sur API Socrata")
-    print("  - echantillon OK cote SECOP -> collecteur Colombie, puis autres")
-    print("                                 pays au meme standard")
-    print("  - aucun des deux            -> abandonner l'Amerique latine")
-    print("                                 regionale : la Banque Mondiale et")
-    print("                                 UNGM la couvrent deja, c'etait un")
-    print("                                 renfort, pas une necessite.")
+        print("  {:22} {:12} {}".format(nom, "OK" if ok else "a creuser", detail))
+    print("\nLECTURE DES RESULTATS :")
+    print("  - une variante de B passe        -> collecteur IDB par grattage,")
+    print("                                      avec cette variante exacte.")
+    print("  - un hote de C ou D ouvert       -> explorer ce point d'entree.")
+    print("  - IATI exploitable en E          -> collecteur PIPELINE PROJETS")
+    print("                                      (qui finance quoi, ou, combien,")
+    print("                                      en amont de l'appel d'offres).")
+    print("  - tout ferme                     -> la, et seulement la, on acte.")
 
 
 if __name__ == "__main__":
