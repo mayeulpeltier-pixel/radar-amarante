@@ -78,6 +78,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS radar_lignes_onglet_pub
     WHERE publication_number <> '';
 CREATE INDEX IF NOT EXISTS radar_lignes_onglet
     ON radar_lignes (onglet);
+CREATE TABLE IF NOT EXISTS radar_statuts (
+    onglet             TEXT        NOT NULL,
+    publication_number TEXT        NOT NULL,
+    statut             TEXT        NOT NULL,
+    maj                TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (onglet, publication_number)
+);
 """
 
 
@@ -191,6 +198,31 @@ def lire_onglet(conn, onglet):
             "SELECT donnees FROM radar_lignes WHERE onglet = %s"
             " ORDER BY id DESC", (onglet,))
         return [r[0] for r in cur.fetchall()]
+
+
+# ---------------------------------------------------------------------------
+# STATUTS (zone de saisie HUMAINE) -- la seule table ou la reecriture est
+# permise, car c'est sa raison d'etre : "contacte", "perdu", "gagne"...
+# evoluent au fil de la prospection. radar_lignes reste, elle, en ajout seul.
+# ---------------------------------------------------------------------------
+
+def definir_statut(conn, onglet, publication_number, statut):
+    """Upsert ASSUME du statut d'un lead. Cle : (onglet, publication_number)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO radar_statuts (onglet, publication_number, statut)"
+            " VALUES (%s, %s, %s)"
+            " ON CONFLICT (onglet, publication_number)"
+            " DO UPDATE SET statut = EXCLUDED.statut, maj = now()",
+            (onglet, str(publication_number or ""), str(statut or "")))
+
+
+def lire_statuts(conn):
+    """{(onglet, publication_number): statut}, pour superposer la zone humaine
+    aux lignes de collecte au moment de la lecture."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT onglet, publication_number, statut FROM radar_statuts")
+        return {(o, p): s for o, p, s in cur.fetchall()}
 
 
 def inventaire(conn):
