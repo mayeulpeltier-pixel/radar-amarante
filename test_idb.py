@@ -364,7 +364,87 @@ class TestDatastore(unittest.TestCase):
         filtrer avec l'un ou l'autre."""
         self.assertEqual(len(idb.PAYS_ISO2), len(idb.PAYS_NOMS))
         self.assertIn("CO", idb.PAYS_ISO2)
-        self.assertIn("Colombia", idb.PAYS_NOMS)
+        self.assertIn("COLOMBIA", idb.PAYS_NOMS)  # majuscules : forme du datastore
+
+
+class TestAttributions(unittest.TestCase):
+    """Alimentation de l'onglet PARTAGE `attributions_radar` (lentille
+    Titulaires). Le titulaire est le prospect : une entreprise qui a gagne un
+    marche IDB le mobilise sur le terrain."""
+
+    AUJOURD = date(2026, 7, 22)
+    BASE = {
+        "awarded_firm_name": "Constructora Conconcreto SA",
+        "operation_country_name": "COLOMBIA",
+        "awarded_firm_country_name": "COLOMBIA",
+        "contract_id": "CO-L1174-C01", "project_number": "CO-L1174",
+        "project_name": "Corredor vial Catatumbo", "contract_type": "Works",
+        "procurement_type": "ICB", "economic_sector_name": "TRANSPORT",
+        "total_amount": "12500000.0", "idb_amount": "9000000",
+        "executing_agency": "INVIAS",
+        "signature_date": "2026-05-14 09:00:00.000000000",
+    }
+
+    def _n(self, **kw):
+        return idb.normaliser_attribution(dict(self.BASE, **kw), self.AUJOURD)
+
+    def test_ligne_complete(self):
+        a = self._n()
+        self.assertEqual(a["pays_execution"], "COL")
+        self.assertEqual(a["gagnant"], "Constructora Conconcreto SA")
+        self.assertEqual(a["valeur_attribuee"], "USD 12 500 000")
+        self.assertEqual(a["publication_number"], "IDB-C-CO-L1174-C01")
+        self.assertEqual(a["a_demarcher"], "oui")
+
+    def test_titulaire_etranger_detecte(self):
+        """Le signal le plus fort : une entreprise etrangere qui mobilise."""
+        self.assertTrue(self._n(awarded_firm_name="Odebrecht SA",
+                                awarded_firm_country_name="BRAZIL")["_etranger"])
+        self.assertFalse(self._n()["_etranger"])
+
+    def test_titulaire_non_nomme_ecarte(self):
+        """'Not Available' est frequent : sans nom, pas de prospect."""
+        for brut in ("Not Available", "N/A", "", "  ", "null"):
+            self.assertIsNone(self._n(awarded_firm_name=brut))
+
+    def test_contrat_trop_ancien_ecarte(self):
+        self.assertIsNone(self._n(signature_date="2021-10-25 09:00:00"))
+
+    def test_pays_hors_perimetre_ecarte(self):
+        """L'Uruguay est finance par l'IDB mais hors perimetre commercial."""
+        self.assertIsNone(self._n(operation_country_name="URUGUAY"))
+
+    def test_pays_a_code_idb_non_iso(self):
+        """Le piege du 22/07/2026 : filtrer sur operation_country_code renvoyait
+        ZERO contrat pour le Mexique, le Honduras, le Guatemala et le Chili,
+        car l'IDB utilise ses propres codes (UR pour l'Uruguay, ISO2 = UY).
+        On passe par les NOMS, donc ces pays remontent."""
+        for nom, iso in (("MEXICO", "MEX"), ("HONDURAS", "HND"),
+                         ("GUATEMALA", "GTM"), ("CHILE", "CHL")):
+            a = self._n(operation_country_name=nom)
+            self.assertIsNotNone(a, "{} devrait remonter".format(nom))
+            self.assertEqual(a["pays_execution"], iso)
+
+    def test_montant_absent_ne_bloque_pas(self):
+        """Les contrats de consultants individuels sont souvent a 0."""
+        a = self._n(total_amount="0.0", idb_amount="0")
+        self.assertIsNotNone(a)
+        self.assertEqual(a["valeur_attribuee"], "")
+
+    def test_horodatage(self):
+        self.assertEqual(
+            idb._lire_horodatage("2021-10-25 09:00:00.000000000"), "2021-10-25")
+        for brut in ("", "Not Available", "pas une date", None):
+            self.assertEqual(idb._lire_horodatage(brut), "")
+
+    def test_schema_compatible_onglet_partage(self):
+        """L'onglet est partage avec TED, BM, UNGM et IsDB : chaque colonne
+        officielle doit etre presente, sinon la lentille lit de travers."""
+        import bm_attributions
+        a = self._n()
+        for colonne in bm_attributions.COLONNES:
+            self.assertIn(colonne, a,
+                          "colonne '{}' manquante".format(colonne))
 
 
 class TestSortieSheet(unittest.TestCase):
