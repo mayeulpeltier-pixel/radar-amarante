@@ -267,6 +267,30 @@ def pertinent_reliefweb(record):
 # PARTIE 5 -- NORMALISATION (vers la forme d'avis commune au coeur TED)
 # ===========================================================================
 
+def facteur_fraicheur(date_iso, aujourd_hui=None):
+    """1.0 pour une offre du jour, decroissance lineaire jusqu'a 0.4 a 30
+    jours (la largeur de la fenetre ReliefWeb). Une date absente ou illisible
+    vaut 0.6 : ni favorisee, ni condamnee."""
+    from datetime import date as _date
+    if not date_iso:
+        return 0.6
+    try:
+        an, mois, jour = (int(x) for x in str(date_iso)[:10].split("-"))
+        age = ((aujourd_hui or _date.today()) - _date(an, mois, jour)).days
+    except Exception:
+        return 0.6
+    if age <= 0:
+        return 1.0
+    return max(0.4, 1.0 - 0.6 * min(age, 30) / 30.0)
+
+
+def priorite_analyse(avis, aujourd_hui=None):
+    """Ordre de passage a l'analyse : le risque pays domine, la fraicheur
+    departage. Utilise pour decider QUI passe sous le plafond d'appels LLM."""
+    tier = ted.MULTIPLICATEUR_ZONE.get(avis.get("pays_iso3", ""), 0.2)
+    return tier * facteur_fraicheur(avis.get("date_publication", ""), aujourd_hui)
+
+
 def normaliser_reliefweb(record):
     """Construit l'avis normalise attendu par calculer_scores /
     calculer_fenetre_action + champs propres ReliefWeb pour le Sheet.
@@ -620,6 +644,17 @@ def main():
         return
 
     # Plafond applique aux offres NEUVES : le reliquat passera au run suivant.
+    #
+    # TRI COMBINE RISQUE + FRAICHEUR (22/07/2026). Le tri par risque seul avait
+    # un defaut invisible tant que la file d'attente etait courte : la fenetre
+    # ReliefWeb couvre 30 jours, et avec 278 offres en attente sur plusieurs
+    # runs, une offre somalienne de 28 jours passait AVANT une offre
+    # ukrainienne publiee hier. Commercialement, une opportunite detectee trois
+    # semaines trop tard ne vaut rien : le poste est pourvu.
+    # Le risque reste dominant (facteur 0.3 a 1.0), la fraicheur module
+    # (facteur 0.4 a 1.0) : une zone tres exposee garde la priorite sur une
+    # zone calme, mais a risque egal le plus recent passe devant.
+    avis_normalises.sort(key=priorite_analyse, reverse=True)
     if len(avis_normalises) > MAX_AVIS_LLM_RW:
         en_attente = len(avis_normalises) - MAX_AVIS_LLM_RW
         avis_normalises = avis_normalises[:MAX_AVIS_LLM_RW]
