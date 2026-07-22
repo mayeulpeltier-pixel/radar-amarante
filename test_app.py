@@ -30,6 +30,52 @@ def _client():
     return TestClient(radar_app.app)
 
 
+try:
+    import radar_dashboard as _dash
+    DASH = True
+except Exception:
+    DASH = False
+
+
+@unittest.skipUnless(DASH, "radar_dashboard indisponible")
+class TestBoutonJeContacte(unittest.TestCase):
+    """Le bouton « Je contacte » selon le contexte de service. Purs : aucune
+    base, aucun reseau, on inspecte le HTML produit."""
+
+    def _page(self, api_statut):
+        return _dash.generer_html([], [], api_statut=api_statut)
+
+    def test_page_statique_inchangee(self):
+        """Cloudflare : le gabarit JS est COMMUN aux deux pages, l'appel y
+        figure donc toujours. Ce qui compte est la GARDE : drapeau a false,
+        donc le fetch ne part jamais (l'endpoint n'existe pas en statique)."""
+        page = self._page(False)
+        self.assertIn("const API_STATUT = false;", page)
+        self.assertIn("if(API_STATUT&&l.pub&&ONGLET_SRC[l.src])", page)
+        # L'ecriture Apps Script reste, elle, conditionnee a son URL.
+        self.assertIn("if(SUIVI_URL){fetch(SUIVI_URL", page)
+
+    def test_page_application_cablee_sur_l_api(self):
+        page = self._page(True)
+        self.assertIn("const API_STATUT = true;", page)
+        self.assertIn("fetch('/api/statut'", page)
+        self.assertIn("statut:'contacte'", page)
+
+    def test_bouton_visible_sans_apps_script(self):
+        """Piege evite : SUIVI_ON ne dependait que d'Apps Script. Sur Render,
+        sans ce secret, le bouton aurait purement disparu."""
+        self.assertIn("const SUIVI_ON = !!SUIVI_URL || API_STATUT;",
+                      self._page(True))
+
+    def test_toutes_les_sources_ont_un_onglet(self):
+        """Chaque source affichable doit savoir dans quel onglet ecrire son
+        statut, sinon le bouton serait muet pour elle."""
+        page = self._page(True)
+        for src in ("TED", "BM", "AFDB", "EBRD", "UNGM", "RW", "ATTRIB"):
+            self.assertIn(src + ":'", page.split("ONGLET_SRC = {")[1][:400],
+                          "source {} sans onglet".format(src))
+
+
 @unittest.skipUnless(PRET, "fastapi/httpx indisponibles")
 class TestVerrouillage(unittest.TestCase):
     """La securite d'abord : rien ne sort sans configuration ni identifiants."""
@@ -122,6 +168,19 @@ class TestApplicationIntegration(unittest.TestCase):
         # Et la page reflete la zone humaine posee en base.
         page = c.get("/", auth=self.AUTH).text
         self.assertIn("gagne", page)
+
+    def test_aller_retour_bouton_contacte(self):
+        """Le scenario reel : je clique « Je contacte » (POST), je recharge
+        depuis un AUTRE navigateur (aucun localStorage) et le lead doit
+        apparaitre comme deja pris en charge."""
+        c = _client()
+        c.post("/api/statut", auth=self.AUTH, json={
+            "onglet": "ted_radar", "publication_number": "TED-APP-1",
+            "statut": "contacte"})
+        page = c.get("/", auth=self.AUTH).text
+        # Le statut serveur voyage dans les donnees de la page (et non plus
+        # seulement dans le localStorage du poste qui a clique).
+        self.assertIn('"statut": "contacte"', page.replace("'", '"'))
 
     def test_statut_sans_identifiant_refuse(self):
         r = _client().post("/api/statut", auth=self.AUTH, json={
