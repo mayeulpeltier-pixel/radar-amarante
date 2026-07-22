@@ -1412,6 +1412,18 @@ def numeros_publication_existants(sheet_id, fichier_compte_service, nom_onglet, 
             print("  memoire '{}' : ECART Sheet/Postgres -> {} absent(s) de la "
                   "base, {} en trop. Bascule prematuree.".format(
                       nom_onglet, len(manquants), len(en_trop)))
+            # Sans exemples, un ecart est indiagnosticable a distance : deux
+            # ensembles disjoints peuvent venir d'un decalage de colonne, d'un
+            # format different, d'un espace parasite... On montre.
+            def _apercu(ensemble):
+                return " | ".join(repr(x) for x in sorted(ensemble)[:3]) or "-"
+            print("      cote Sheet    ({:5d}) : {}".format(
+                len(sheet), _apercu(manquants)))
+            print("      cote Postgres ({:5d}) : {}".format(
+                len(pg), _apercu(en_trop)))
+            communs = sheet & pg
+            print("      en commun     ({:5d}) : {}".format(
+                len(communs), _apercu(communs)))
         else:
             print("  memoire '{}' : Sheet et Postgres identiques ({} connu(s)),"
                   " bascule sans risque.".format(nom_onglet, len(sheet)))
