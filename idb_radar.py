@@ -894,14 +894,13 @@ def main():
     print("  jeu : {} | paquet : {}".format(JEU, PAQUET))
     print("=" * 60)
 
-    # Jeu ATTRIBUTIONS : schema inconnu a ce jour. On INSPECTE avant de
-    # normaliser quoi que ce soit, jamais l'inverse.
+    # Jeu ATTRIBUTIONS. Schema VALIDE le 22/07/2026 par le mode verification :
+    # 34 champs releves, dont awarded_firm_name / awarded_firm_country_name /
+    # operation_country_name / total_amount, et 99 735 contrats dans le
+    # perimetre. Le garde-fou qui interdisait l'ecriture a donc ete leve, la
+    # normalisation etant desormais couverte par les tests.
     if JEU == "attributions":
-        if not DEBUG:
-            print("(info) Le jeu 'attributions' n'est disponible qu'en mode")
-            print("       verification (RADAR_IDB_DEBUG=1) tant que son schema")
-            print("       n'a pas ete valide. Rien n'est ecrit.")
-            return
+      if DEBUG:
         # La ressource des attributions n'expose aucune URL : on DIAGNOSTIQUE
         # avant toute tentative de lecture, au lieu de fabriquer une URL.
         print("\n[0] DIAGNOSTIC DES RESSOURCES CKAN")
@@ -1076,43 +1075,43 @@ def main():
         print("\n--- FIN DE L'INSPECTION (aucune ecriture) ---")
         return
 
-    # ---- MODE REEL : collecte, puis ecriture dans l'onglet partage ----
-    try:
-        attributions, st = collecter_attributions()
-    except Exception as e:
-        print("ERREUR : collecte des attributions impossible ({}).".format(
-            str(e)[:200]))
-        print("(info) Les autres collecteurs ne sont pas affectes.")
-        return
-    print("{} page(s) | {} contrat(s) lus | retenus : {} dont {} etranger(s)".format(
-        st["pages"], st["lus"], st["retenus"], st["etrangers"]))
-    print("  ecartes -> titulaire non nomme : {} | sous {:,.0f} USD : {} | "
-          "hors fenetre : {}".format(
-              st["sans_nom"], MONTANT_MIN, st["trop_petit"], st["hors_fenetre"]))
-    if not attributions:
-        print("Aucune attribution IDB exploitable ce run.")
-        return
+      # ---- MODE REEL : collecte, puis ecriture dans l'onglet partage ----
+      try:
+          attributions, st = collecter_attributions()
+      except Exception as e:
+          print("ERREUR : collecte des attributions impossible ({}).".format(
+              str(e)[:200]))
+          print("(info) Les autres collecteurs ne sont pas affectes.")
+          return
+      print("{} page(s) | {} contrat(s) lus | retenus : {} dont {} etranger(s)".format(
+          st["pages"], st["lus"], st["retenus"], st["etrangers"]))
+      print("  ecartes -> titulaire non nomme : {} | sous {:,.0f} USD : {} | "
+            "hors fenetre : {}".format(
+                st["sans_nom"], MONTANT_MIN, st["trop_petit"], st["hors_fenetre"]))
+      if not attributions:
+          print("Aucune attribution IDB exploitable ce run.")
+          return
 
-    sheet_id = os.environ.get("TED_SHEET_ID")
-    fichier = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
-    if not (sheet_id and fichier):
-        print("(info) Pas de Sheet configure : affichage seulement.")
-        for a in attributions[:20]:
-            print("  {:>14} | {} | {:34} <- {}".format(
-                a["valeur_attribuee"] or "n.c.", a["pays_execution"],
-                a["gagnant"][:34], a["_pays_titulaire"] or "?"))
-        return
-    feuille = ouvrir_feuille_attributions(sheet_id, fichier)
-    nb, ignorees = ecrire_attributions(feuille, attributions)
-    print("-> {} nouvelle(s) ligne(s) dans '{}' ({} deja connue(s)).".format(
-        nb, NOM_ONGLET_ATTRIB, ignorees))
-    print("\nLES PLUS GROS TITULAIRES DE CE RUN :")
-    for a in attributions[:12]:
-        print("  {:>14} | {} | {:32} <- {:14} | {}".format(
-            a["valeur_attribuee"] or "n.c.", a["pays_execution"],
-            a["gagnant"][:32], (a["_pays_titulaire"] or "?")[:14],
-            a.get("_type", "")))
-    return
+      sheet_id = os.environ.get("TED_SHEET_ID")
+      fichier = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
+      if not (sheet_id and fichier):
+          print("(info) Pas de Sheet configure : affichage seulement.")
+          for a in attributions[:20]:
+              print("  {:>14} | {} | {:34} <- {}".format(
+                  a["valeur_attribuee"] or "n.c.", a["pays_execution"],
+                  a["gagnant"][:34], a["_pays_titulaire"] or "?"))
+          return
+      feuille = ouvrir_feuille_attributions(sheet_id, fichier)
+      nb, ignorees = ecrire_attributions(feuille, attributions)
+      print("-> {} nouvelle(s) ligne(s) dans '{}' ({} deja connue(s)).".format(
+          nb, NOM_ONGLET_ATTRIB, ignorees))
+      print("\nLES PLUS GROS TITULAIRES DE CE RUN :")
+      for a in attributions[:12]:
+          print("  {:>14} | {} | {:32} <- {:14} | {}".format(
+              a["valeur_attribuee"] or "n.c.", a["pays_execution"],
+              a["gagnant"][:32], (a["_pays_titulaire"] or "?")[:14],
+              a.get("_type", "")))
+      return
 
     try:
         avis, stats = collecter_et_normaliser()
