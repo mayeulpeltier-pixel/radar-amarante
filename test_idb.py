@@ -179,9 +179,12 @@ class TestChaineComplete(unittest.TestCase):
         self.assertEqual(stats["retenus"], 2)
         self.assertEqual(sorted(a["pays_execution"] for a in avis),
                          ["COL", "ECU"])
-        self.assertEqual(stats["echeance_passee"], 1)
         self.assertEqual(stats["hors_fenetre"], 1)
-        self.assertEqual(stats["hors_perimetre"], 2)
+        # Motifs attribues dans l'ORDRE REEL des filtres (le compteur initial
+        # testait l'echeance avant le pays, ce qui faussait le diagnostic).
+        self.assertEqual(stats["motifs"].get("echeance_passee"), 1)   # PERU
+        # REGIONAL et BAHAMAS n'ont pas de correspondance ISO3 : meme motif.
+        self.assertEqual(stats["motifs"].get("pays_non_reconnu"), 2)
 
     def test_doublons_ecartes(self):
         contenu = _csv(_ligne(noticeid="7"), _ligne(noticeid="7"))
@@ -216,6 +219,37 @@ class TestEntetesReseau(unittest.TestCase):
         src = inspect.getsource(idb)
         self.assertNotIn("session.headers.update", src)
         self.assertNotIn("session_robuste().headers", src)
+
+
+
+class TestMotifsDeRejet(unittest.TestCase):
+    """Un compteur faux oriente le diagnostic dans la mauvaise direction :
+    la premiere version testait l'echeance AVANT le pays, et attribuait donc
+    a "echeance passee" des lignes qui etaient d'abord hors perimetre."""
+
+    def _motif(self, **kw):
+        ligne = list(idb.lignes_csv("x", fetch=lambda _u: _csv(_ligne(**kw))))[0]
+        return idb.motif_rejet(ligne)
+
+    def test_les_quatre_motifs(self):
+        hier = (date.today() - timedelta(days=1)).strftime("%m/%d/%Y")
+        self.assertEqual(self._motif(titre=""), "sans_titre")
+        # "REGIONAL" et "BAHAMAS" n'ont aucune correspondance ISO3.
+        self.assertEqual(self._motif(pays="REGIONAL"), "pays_non_reconnu")
+        self.assertEqual(self._motif(pays="BAHAMAS"), "pays_non_reconnu")
+        # "PHILIPPINES" se traduit (PHL) mais reste hors perimetre commercial.
+        self.assertEqual(self._motif(pays="PHILIPPINES"), "hors_perimetre")
+        self.assertEqual(self._motif(pays="PERU", deadline=hier), "echeance_passee")
+
+    def test_le_pays_prime_sur_l_echeance(self):
+        """Une ligne hors perimetre ET a echeance passee compte comme HORS
+        PERIMETRE : c'est ce filtre-la qui s'applique en premier."""
+        hier = (date.today() - timedelta(days=1)).strftime("%m/%d/%Y")
+        self.assertEqual(self._motif(pays="PHILIPPINES", deadline=hier),
+                         "hors_perimetre")
+
+    def test_ligne_valide_sans_motif(self):
+        self.assertEqual(self._motif(), "")
 
 
 class TestSortieSheet(unittest.TestCase):
