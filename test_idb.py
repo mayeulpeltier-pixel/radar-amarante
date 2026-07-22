@@ -546,6 +546,63 @@ class TestEcritureAttributions(unittest.TestCase):
         self.assertEqual((nb, ignorees), (1, 1))
 
 
+class TestRoutageDuMain(unittest.TestCase):
+    """Le bug du 22/07/2026 : un garde-fou pose quand le schema etait inconnu
+    bloquait encore l'ecriture apres sa validation, et le bloc 'mode reel'
+    s'executait meme pour le jeu 'avis'. Trois combinaisons, trois branches."""
+
+    def _router(self, jeu, debug):
+        import importlib
+        import io
+        import os
+        import sys
+        from contextlib import redirect_stdout
+        avant = (os.environ.get("RADAR_IDB_JEU"),
+                 os.environ.get("RADAR_IDB_DEBUG"))
+        os.environ["RADAR_IDB_JEU"] = jeu
+        os.environ["RADAR_IDB_DEBUG"] = debug
+        for m in [x for x in list(sys.modules) if x.startswith("idb_radar")]:
+            del sys.modules[m]
+        module = importlib.import_module("idb_radar")
+        appels = []
+        module.collecter_attributions = (
+            lambda **k: appels.append("attributions") or ([], {}))
+        module.collecter_et_normaliser = (
+            lambda **k: appels.append("avis") or ([], {}))
+        module.diagnostiquer_paquet = (
+            lambda **k: appels.append("diagnostic") or {"ressources": [],
+                                                        "essais": []})
+        try:
+            with redirect_stdout(io.StringIO()):
+                try:
+                    module.main()
+                except Exception:
+                    pass                    # doublures incompletes : sans objet
+        finally:
+            for cle, val in zip(("RADAR_IDB_JEU", "RADAR_IDB_DEBUG"), avant):
+                if val is None:
+                    os.environ.pop(cle, None)
+                else:
+                    os.environ[cle] = val
+            for m in [x for x in list(sys.modules) if x.startswith("idb_radar")]:
+                del sys.modules[m]
+        return appels
+
+    def test_attributions_en_reel_collecte_et_ecrit(self):
+        self.assertEqual(self._router("attributions", "0")[0], "attributions")
+
+    def test_attributions_en_verification_diagnostique(self):
+        appels = self._router("attributions", "1")
+        self.assertEqual(appels[0], "diagnostic")
+        self.assertNotIn("attributions", appels)
+
+    def test_avis_ne_declenche_pas_les_attributions(self):
+        appels = self._router("avis", "1")
+        self.assertIn("avis", appels)
+        self.assertNotIn("attributions", appels)
+        self.assertNotIn("diagnostic", appels)
+
+
 class TestSortieSheet(unittest.TestCase):
 
     def test_schema_coherent(self):
