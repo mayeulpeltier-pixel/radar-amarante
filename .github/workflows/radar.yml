@@ -43,6 +43,12 @@ jobs:
       # redevient la reference, sans autre changement. Si la base est
       # injoignable, le repli sur le Sheet est AUTOMATIQUE.
       RADAR_MEMOIRE: "pg"
+      # ABSORPTION PONCTUELLE (22/07/2026) : 278 offres ReliefWeb attendaient
+      # d'etre analysees, heritage de l'ordre plafond/memoire corrige ce jour.
+      # 300 places pour vider la file en un run (~70 min d'analyse, le timeout
+      # est a 150 min). A REMETTRE A 120 (ou a retirer) ensuite : le regime de
+      # croisiere n'a plus besoin d'un tel budget.
+      RELIEFWEB_BUDGET: "300"
     steps:
       - name: Recuperer le code
         uses: actions/checkout@v4
