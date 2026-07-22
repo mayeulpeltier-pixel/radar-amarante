@@ -86,6 +86,24 @@ COL_DESC = "process_desc"
 
 VIDES = {"", "null", "NULL", "None", "n/a", "N/A", "-"}
 
+# EN-TETES : data.iadb.org est derriere Cloudflare. Il accepte l'API mais
+# REFUSE (403) le telechargement de fichier a un client qui s'annonce
+# "python-requests/x.y" -- constate au premier run reel du 22/07/2026.
+#
+# PIEGE EVITE : ted.session_robuste() renvoie un SINGLETON GLOBAL, partage
+# avec le collecteur TED et les appels Anthropic. Modifier ses en-tetes
+# contaminerait tout le pipeline. On passe donc ces en-tetes REQUETE PAR
+# REQUETE : requests les fusionne par-dessus ceux de la session, sans la
+# muter. On conserve ainsi ses reessais automatiques sans effet de bord.
+ENTETES = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                   "AppleWebKit/537.36 (KHTML, like Gecko) "
+                   "Chrome/126.0.0.0 Safari/537.36"),
+    "Accept": "text/csv, application/json, text/html;q=0.8, */*;q=0.5",
+    "Accept-Language": "en-US,en;q=0.9,es;q=0.8",
+    "Referer": "https://data.iadb.org/",
+}
+
 
 def _val(ligne, cle):
     """Valeur nettoyee. Traite les CHAINES 'null'/'NULL' comme du vide : sans
@@ -107,7 +125,8 @@ def url_du_fichier(session=None, fetch=None):
     session = session or ted.session_robuste()
     try:
         r = session.get("{}/package_show".format(CKAN),
-                        params={"id": PAQUET_AVIS}, timeout=45)
+                        params={"id": PAQUET_AVIS}, headers=ENTETES,
+                        timeout=45)
         if r.status_code < 400:
             res = (r.json() or {}).get("result") or {}
             for ressource in res.get("resources") or []:
@@ -134,7 +153,7 @@ def lignes_csv(url, session=None, fetch=None):
         flux = io.StringIO(texte)
     else:
         session = session or ted.session_robuste()
-        r = session.get(url, timeout=180, stream=True)
+        r = session.get(url, headers=ENTETES, timeout=180, stream=True)
         r.raise_for_status()
         r.encoding = r.encoding or "utf-8"
         flux = io.StringIO("")
@@ -451,8 +470,13 @@ def main():
     try:
         avis, stats = collecter_et_normaliser()
     except Exception as e:
-        print("ERREUR : collecte IDB impossible ({}).".format(e))
-        raise
+        # Une source NEUVE ne doit pas faire echouer le run entier : les autres
+        # collecteurs et la publication du dashboard doivent aboutir. Meme
+        # philosophie que l'isolation des etapes du workflow. On signale
+        # clairement et on sort proprement.
+        print("ERREUR : collecte IDB impossible ({}).".format(str(e)[:200]))
+        print("(info) Les autres collecteurs et le dashboard ne sont pas affectes.")
+        return
     print("Fichier : {}".format(stats["url"]))
     print("CSV : {} ligne(s) | hors perimetre : {} | echeance passee : {} | "
           "hors fenetre ({} j) : {} | retenus : {}".format(
