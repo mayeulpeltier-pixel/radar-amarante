@@ -199,6 +199,14 @@ PAYS_NOM_VERS_ISO3 = {
     "peru": "PER", "bolivia": "BOL", "honduras": "HND", "guatemala": "GTM",
     "venezuela, rb": "VEN", "ecuador": "ECU", "tajikistan": "TJK",
     "kyrgyz republic": "KGZ", "kazakhstan": "KAZ",
+    # AJOUT DU 22/07/2026 : ces pays venaient d'entrer dans le perimetre
+    # commercial, mais SANS correspondance de nom ils restaient invisibles.
+    # code_iso3_pays renvoyait "" -> tier 0.2 -> ecartes par le filtre, malgre
+    # leur presence dans PAYS_COUVERTS_AMARANTE. Trou detecte en preparant le
+    # collecteur IDB. Variantes de nommage incluses (Banque Mondiale, IDB).
+    "argentina": "ARG", "brazil": "BRA", "brasil": "BRA", "chile": "CHL",
+    "venezuela": "VEN", "mongolia": "MNG",
+    "mexico, united states of": "MEX", "united mexican states": "MEX",
 }
 
 
