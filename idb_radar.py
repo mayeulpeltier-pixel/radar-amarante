@@ -254,6 +254,25 @@ def normaliser(ligne):
     }
 
 
+def motif_rejet(ligne):
+    """Pourquoi cette ligne est ecartee, dans l'ORDRE des filtres reels.
+
+    La premiere version testait l'echeance en premier, quel que soit le pays :
+    elle attribuait donc a "echeance passee" des lignes qui etaient d'abord
+    hors perimetre. Un compteur faux est pire qu'aucun compteur : il oriente
+    le diagnostic dans la mauvaise direction."""
+    if not _val(ligne, COL_TITRE):
+        return "sans_titre"
+    iso3 = bm.code_iso3_pays(_val(ligne, COL_PAYS))
+    if not iso3:
+        return "pays_non_reconnu"          # dont "REGIONAL"
+    if not ted.dans_le_perimetre(iso3):
+        return "hors_perimetre"
+    if echeance_depassee(lire_date(_val(ligne, COL_DEADLINE))):
+        return "echeance_passee"
+    return ""
+
+
 def dans_la_fenetre(avis, seuil):
     """Fraicheur sur la date de publication. Date absente = conservee."""
     d = avis.get("date_publication") or ""
@@ -429,8 +448,8 @@ def collecter_et_normaliser(session=None, fetch_url=None, fetch_csv=None):
     """Etapes deterministes, testables sans reseau ni LLM."""
     url = url_du_fichier(session=session, fetch=fetch_url)
     seuil = date.today() - timedelta(days=NB_JOURS_FENETRE)
-    stats = {"lignes": 0, "hors_perimetre": 0, "hors_fenetre": 0,
-             "echeance_passee": 0, "retenus": 0, "url": url,
+    stats = {"lignes": 0, "retenus": 0, "url": url, "hors_fenetre": 0,
+             "motifs": {}, "annees_perimetre": {}, "recents": [],
              "valeurs": {COL_TYPE: {}, COL_CATEGORIE: {}, COL_STATUT: {}}}
     avis, vus = [], set()
     for ligne in lignes_csv(url, session=session, fetch=fetch_csv):
@@ -439,14 +458,21 @@ def collecter_et_normaliser(session=None, fetch_url=None, fetch_csv=None):
             for col in (COL_TYPE, COL_CATEGORIE, COL_STATUT):
                 v = _val(ligne, col) or "(vide)"
                 stats["valeurs"][col][v] = stats["valeurs"][col].get(v, 0) + 1
-        a = normaliser(ligne)
-        if a is None:
-            # Distinguer les motifs de rejet aide a regler les filtres.
-            if echeance_depassee(lire_date(_val(ligne, COL_DEADLINE))):
-                stats["echeance_passee"] += 1
-            else:
-                stats["hors_perimetre"] += 1
+        motif = motif_rejet(ligne)
+        if motif:
+            stats["motifs"][motif] = stats["motifs"].get(motif, 0) + 1
             continue
+        a = normaliser(ligne)
+        if a is None:                      # ceinture et bretelles
+            stats["motifs"]["autre"] = stats["motifs"].get("autre", 0) + 1
+            continue
+        # DIAGNOSTIC : distribution des annees de publication des avis qui sont
+        # DANS le perimetre. C'est cette mesure qui dit si le fichier est
+        # historique ou si la fenetre est simplement trop etroite.
+        annee = (a.get("date_publication") or "")[:4] or "(sans date)"
+        stats["annees_perimetre"][annee] = stats["annees_perimetre"].get(annee, 0) + 1
+        stats["recents"].append((a.get("date_publication") or "",
+                                 a["pays_execution"], a["titre"][:52]))
         if not dans_la_fenetre(a, seuil):
             stats["hors_fenetre"] += 1
             continue
@@ -456,6 +482,8 @@ def collecter_et_normaliser(session=None, fetch_url=None, fetch_csv=None):
         vus.add(cle)
         avis.append(a)
     stats["retenus"] = len(avis)
+    stats["recents"].sort(reverse=True)
+    stats["recents"] = stats["recents"][:12]
     return avis, stats
 
 
@@ -478,26 +506,41 @@ def main():
         print("(info) Les autres collecteurs et le dashboard ne sont pas affectes.")
         return
     print("Fichier : {}".format(stats["url"]))
-    print("CSV : {} ligne(s) | hors perimetre : {} | echeance passee : {} | "
-          "hors fenetre ({} j) : {} | retenus : {}".format(
-              stats["lignes"], stats["hors_perimetre"], stats["echeance_passee"],
-              NB_JOURS_FENETRE, stats["hors_fenetre"], stats["retenus"]))
+    print("CSV : {} ligne(s) | retenus : {}".format(
+        stats["lignes"], stats["retenus"]))
+    print("  ecartes -> " + " | ".join(
+        "{} : {}".format(m, n) for m, n in sorted(
+            stats["motifs"].items(), key=lambda x: -x[1])) or "  aucun rejet")
+    print("  dans le perimetre mais hors fenetre ({} j) : {}".format(
+        NB_JOURS_FENETRE, stats["hors_fenetre"]))
 
     if DEBUG:
         print("\n--- MODE VERIFICATION (RADAR_IDB_DEBUG=1) : AUCUNE ECRITURE ---")
         print("\n[A] Valeurs distinctes des colonnes discriminantes")
-        print("    (pour separer un jour les AVIS des NOTIFICATIONS D'ATTRIBUTION)")
+        print("    (la colonne `type` separe les AVIS des ATTRIBUTIONS)")
         for col, compte in stats["valeurs"].items():
             print("\n  {} ({} valeur(s) distincte(s)) :".format(col, len(compte)))
             for v, n in sorted(compte.items(), key=lambda x: -x[1])[:12]:
                 print("      {:6}x  {}".format(n, v[:60]))
-        print("\n[B] Avis retenus (echantillon) :")
-        for a in sorted(avis, key=priorite_analyse, reverse=True)[:25]:
-            print("  [{}] {} | {} | echeance {} | {}".format(
+
+        print("\n[B] ANNEES DE PUBLICATION des avis DANS le perimetre")
+        print("    (dit si le fichier est historique ou la fenetre trop etroite)")
+        for an, n in sorted(stats["annees_perimetre"].items(), reverse=True):
+            print("      {:12} {:6} avis".format(an, n))
+
+        print("\n[C] Les 12 avis les PLUS RECENTS du perimetre :")
+        for d, pays, titre in stats["recents"]:
+            print("      {:12} {:4} {}".format(d or "(sans date)", pays, titre))
+
+        print("\n[D] Avis retenus dans la fenetre ({} j) :".format(NB_JOURS_FENETRE))
+        for a in sorted(avis, key=priorite_analyse, reverse=True)[:20]:
+            print("      [{}] {} | echeance {} | {}".format(
                 a["pays_execution"], a["date_publication"] or "?",
-                (a["type_notice"] or "-")[:22], a["deadline"] or "-",
-                a["titre"][:56]))
-        print("\n[C] Repartition par pays :")
+                a["deadline"] or "-", a["titre"][:52]))
+        if not avis:
+            print("      (aucun : voir [B] et [C] pour la raison)")
+
+        print("\n[E] Repartition par pays des avis retenus :")
         par_pays = {}
         for a in avis:
             par_pays[a["pays_execution"]] = par_pays.get(a["pays_execution"], 0) + 1
