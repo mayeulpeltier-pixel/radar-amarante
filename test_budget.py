@@ -22,6 +22,7 @@ au-dessus du filtre.
 """
 
 import inspect
+from datetime import date
 import re
 import unittest
 
@@ -98,6 +99,56 @@ class TestOrdreMemoirePlafond(unittest.TestCase):
             with self.subTest(module=module.__name__):
                 src = _source(module, "main")
                 self.assertIn("en_attente", src)
+
+
+class TestPrioriteRisqueFraicheur(unittest.TestCase):
+    """Avec une file d'attente de plusieurs runs, l'ordre de passage decide
+    quelles offres seront analysees TROP TARD. Le risque domine, la fraicheur
+    departage."""
+
+    AUJOURD_HUI = date(2026, 7, 22)
+
+    def _f(self, iso):
+        return (iso or "").strip()
+
+    def test_fraicheur_decroissante(self):
+        rw = ted_complet_reliefweb
+        f = lambda d: rw.facteur_fraicheur(d, self.AUJOURD_HUI)
+        self.assertEqual(f("2026-07-22"), 1.0)                 # aujourd'hui
+        self.assertGreater(f("2026-07-19"), f("2026-07-05"))   # 3 j > 17 j
+        self.assertAlmostEqual(f("2026-06-22"), 0.4, places=2)  # 30 j : plancher
+        self.assertAlmostEqual(f("2025-01-01"), 0.4, places=2)  # jamais sous 0.4
+
+    def test_date_absente_ou_illisible_ni_favorisee_ni_condamnee(self):
+        rw = ted_complet_reliefweb
+        for brut in ("", None, "pas une date", "2026-13-45"):
+            v = rw.facteur_fraicheur(brut, self.AUJOURD_HUI)
+            self.assertEqual(v, 0.6, "valeur inattendue pour {!r}".format(brut))
+
+    def test_le_risque_domine_la_fraicheur(self):
+        """Une offre somalienne de trois semaines doit rester prioritaire sur
+        une offre du jour dans un pays peu expose."""
+        rw = ted_complet_reliefweb
+        somalie_ancienne = {"pays_iso3": "SOM", "date_publication": "2026-07-01"}
+        senegal_du_jour = {"pays_iso3": "SEN", "date_publication": "2026-07-22"}
+        self.assertGreater(rw.priorite_analyse(somalie_ancienne, self.AUJOURD_HUI),
+                           rw.priorite_analyse(senegal_du_jour, self.AUJOURD_HUI))
+
+    def test_a_risque_egal_le_plus_recent_passe_devant(self):
+        """LE cas du 22/07/2026 : 278 offres en attente, une somalienne de 28
+        jours passait avant une ukrainienne d'hier. Meme tier de risque."""
+        rw = ted_complet_reliefweb
+        somalie_28j = {"pays_iso3": "SOM", "date_publication": "2026-06-24"}
+        ukraine_1j = {"pays_iso3": "UKR", "date_publication": "2026-07-21"}
+        self.assertGreater(rw.priorite_analyse(ukraine_1j, self.AUJOURD_HUI),
+                           rw.priorite_analyse(somalie_28j, self.AUJOURD_HUI))
+
+    def test_le_tri_precede_le_plafond(self):
+        """Trier apres avoir tronque ne servirait a rien."""
+        src = _source(ted_complet_reliefweb, "main")
+        tri = src.index("priorite_analyse")
+        plafond = src.index("MAX_AVIS_LLM_RW:")
+        self.assertLess(tri, plafond)
 
 
 if __name__ == "__main__":
