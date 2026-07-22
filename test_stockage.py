@@ -264,15 +264,21 @@ class TestRattrapagePur(unittest.TestCase):
 
 
 class _FauxOnglet:
-    def __init__(self, titre, lignes, erreur=None):
+    def __init__(self, titre, lignes, erreur=None, valeurs=None):
         self.title = titre
         self._lignes = lignes
         self._erreur = erreur
+        self._valeurs = valeurs
 
     def get_all_records(self):
         if self._erreur:
             raise self._erreur
         return list(self._lignes)
+
+    def get_all_values(self):
+        if self._erreur:
+            raise self._erreur
+        return [list(r) for r in (self._valeurs or [])]
 
 
 class _FauxClasseur:
@@ -283,10 +289,55 @@ class _FauxClasseur:
         return list(self._onglets)
 
 
+class TestLecturePositionnelle(unittest.TestCase):
+    """LE bug du 22/07/2026 : un en-tete desaligne d'UNE colonne avait fait
+    ranger les numeros de telephone sous 'publication_number'. La lecture
+    positionnelle doit y etre immunisee."""
+
+    def setUp(self):
+        import radar_rattrapage
+        self.rt = radar_rattrapage
+
+    COLONNES = ["titre", "acheteur", "contact_phone", "publication_number"]
+
+    def test_entete_desaligne_ignore(self):
+        """En-tete ampute d'une colonne (le cas bm_radar reel) : la lecture
+        par position rend quand meme les bonnes valeurs."""
+        valeurs = [
+            ["titre", "acheteur", "publication_number"],        # en-tete FAUX
+            ["Route RN6", "Banque Mondiale", "+211 920 117 553", "OP00264347"],
+        ]
+        lignes = self.rt.lignes_positionnelles(valeurs, self.COLONNES)
+        self.assertEqual(len(lignes), 1)
+        self.assertEqual(lignes[0]["publication_number"], "OP00264347")
+        self.assertEqual(lignes[0]["contact_phone"], "+211 920 117 553")
+
+    def test_sans_entete(self):
+        valeurs = [["Route RN6", "BM", "+33 1", "OP1"]]
+        lignes = self.rt.lignes_positionnelles(valeurs, self.COLONNES)
+        self.assertEqual(len(lignes), 1)
+        self.assertEqual(lignes[0]["publication_number"], "OP1")
+
+    def test_lignes_vides_et_courtes(self):
+        valeurs = [["Route", "BM"], ["", "", "", ""]]
+        lignes = self.rt.lignes_positionnelles(valeurs, self.COLONNES)
+        self.assertEqual(len(lignes), 1)                 # la vide est ecartee
+        self.assertEqual(lignes[0]["publication_number"], "")
+
+    def test_schemas_connus_couvrent_les_onglets_de_collecte(self):
+        s = self.rt.schemas_connus()
+        for onglet in ("ted_radar", "bm_radar", "attributions_radar"):
+            self.assertIn(onglet, s, "schema manquant pour " + onglet)
+            self.assertIn("publication_number", s[onglet])
+
+
 @unittest.skipUnless(PSYCOPG and URL_TEST,
                      "pas de base de test (RADAR_TEST_DATABASE_URL absent)")
 class TestRattrapageIntegration(unittest.TestCase):
     """Le rattrapage complet contre un vrai Postgres, classeur factice."""
+
+    COLONNES = ["titre", "acheteur", "contact_phone", "publication_number",
+                "statut_suivi"]
 
     def setUp(self):
         import radar_rattrapage
@@ -300,36 +351,68 @@ class TestRattrapageIntegration(unittest.TestCase):
     def tearDown(self):
         self.conn.close()
 
-    def _classeur(self, statut="nouveau"):
+    def _classeur(self, statut="nouveau", pub="OP1"):
         return _FauxClasseur([
-            _FauxOnglet("ted_radar",
-                        [{"publication_number": "TED-1", "titre": "Escorte",
-                          "statut_suivi": statut},
-                         {"publication_number": "", "titre": ""}]),   # vide
-            _FauxOnglet("prive_radar",
-                        [{"entreprise": "Egis", "signal": "recrutement",
-                          "statut_suivi": statut}]),
+            _FauxOnglet("ted_radar", [], valeurs=[
+                ["titre", "acheteur", "publication_number"],   # en-tete FAUX
+                ["Escorte", "UE", "+33 1 23", pub, statut],
+                ["", "", "", "", ""]]),                        # ligne vide
+            _FauxOnglet("libre", [{"entreprise": "Egis",
+                                   "statut_suivi": statut}]),
             _FauxOnglet("casse", [], erreur=RuntimeError("quota")),
         ])
 
-    def test_rattrapage_puis_rejeu_idempotent(self):
-        bilan1 = self.rt.rattraper_classeur(self._classeur(), self.conn)
-        self.assertEqual(bilan1["ted_radar"], (1, 1, 0, ""))      # vide ecartee
-        self.assertEqual(bilan1["prive_radar"], (1, 1, 0, ""))
-        self.assertIn("illisible", bilan1["casse"][3])            # best-effort
-        # Rejeu avec un statut humain MODIFIE : zero doublon nulle part.
-        bilan2 = self.rt.rattraper_classeur(self._classeur("contacte"),
-                                            self.conn)
-        self.assertEqual(bilan2["ted_radar"], (1, 0, 1, ""))
-        self.assertEqual(bilan2["prive_radar"], (1, 0, 1, ""))
-        self.assertEqual(st.inventaire(self.conn),
-                         {"prive_radar": 1, "ted_radar": 1})
+    def _schemas(self):
+        return {"ted_radar": self.COLONNES}
+
+    def test_positionnel_puis_rejeu_idempotent(self):
+        b1 = self.rt.rattraper_classeur(self._classeur(), self.conn,
+                                        schemas=self._schemas())
+        self.assertEqual(b1["ted_radar"][:3], (1, 1, 0))
+        self.assertEqual(b1["ted_radar"][3], "positionnel")
+        self.assertEqual(b1["libre"][3], "en-tete")
+        self.assertIn("illisible", b1["casse"][3])         # best-effort
+        # La bonne valeur a bien ete rangee sous le bon nom.
+        ligne = st.lire_onglet(self.conn, "ted_radar")[0]
+        self.assertEqual(ligne["publication_number"], "OP1")
+        self.assertEqual(ligne["contact_phone"], "+33 1 23")
+        # Rejeu avec un statut humain MODIFIE : zero doublon.
+        b2 = self.rt.rattraper_classeur(self._classeur("contacte"), self.conn,
+                                        schemas=self._schemas())
+        self.assertEqual(b2["ted_radar"][:3], (1, 0, 1))
+        self.assertEqual(b2["libre"][:3], (1, 0, 1))
+
+    def test_purge_remplace_les_lignes_corrompues(self):
+        """Scenario reel : la base contient des lignes fausses (telephone en
+        guise d'identifiant). La purge les remplace, sans toucher aux statuts."""
+        st.ajouter_lignes(self.conn, "ted_radar",
+                          [{"publication_number": "+211 920 117 553",
+                            "titre": "ligne corrompue"}])
+        st.definir_statut(self.conn, "ted_radar", "OP1", "contacte")
+        self.conn.commit()
+        self.rt.rattraper_classeur(self._classeur(), self.conn, purger=True,
+                                   schemas=self._schemas())
+        pubs = st.publications_existantes(self.conn, "ted_radar")
+        self.assertEqual(pubs, {"OP1"})                   # corrompue effacee
+        # La zone humaine vit dans une AUTRE table : intacte.
+        self.assertEqual(st.lire_statuts(self.conn)[("ted_radar", "OP1")],
+                         "contacte")
+
+    def test_sans_purge_les_anciennes_lignes_restent(self):
+        st.ajouter_lignes(self.conn, "ted_radar",
+                          [{"publication_number": "ANCIENNE"}])
+        self.conn.commit()
+        self.rt.rattraper_classeur(self._classeur(), self.conn,
+                                   schemas=self._schemas())
+        self.assertEqual(st.publications_existantes(self.conn, "ted_radar"),
+                         {"ANCIENNE", "OP1"})
 
     def test_onglet_exclu(self):
         bilan = self.rt.rattraper_classeur(self._classeur(), self.conn,
-                                           exclus=("prive_radar",))
-        self.assertEqual(bilan["prive_radar"], (0, 0, 0, "exclu"))
-        self.assertNotIn("prive_radar", st.inventaire(self.conn))
+                                           exclus=("libre",),
+                                           schemas=self._schemas())
+        self.assertEqual(bilan["libre"], (0, 0, 0, "exclu"))
+        self.assertNotIn("libre", st.inventaire(self.conn))
 
 
 if __name__ == "__main__":
