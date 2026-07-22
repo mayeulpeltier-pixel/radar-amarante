@@ -69,8 +69,11 @@ import radar_stockage as st
 # Des lors que l'application servira plusieurs clients, la cle de cache devra
 # inclure l'identite du client, sinon fuite de donnees entre comptes.
 CACHE_S = int(os.environ.get("RADAR_APP_CACHE_S", "600"))
+# Delai minimal entre deux verifications de fraicheur en base. Sans cela, on
+# interrogerait Postgres a chaque rafraichissement de page.
+VERIF_S = int(os.environ.get("RADAR_APP_VERIF_S", "30"))
 
-_cache = {"html": None, "t": 0.0}
+_cache = {"html": None, "t": 0.0, "verif": 0.0, "version": None}
 _verrou = threading.Lock()
 _schema_pret = False
 
@@ -79,6 +82,23 @@ def invalider_cache():
     """Force la regeneration a la prochaine demande (apres un statut pose)."""
     _cache["html"] = None
     _cache["t"] = 0.0
+    _cache["verif"] = 0.0
+    _cache["version"] = None
+
+
+def version_donnees(conn):
+    """Empreinte de fraicheur des donnees : date de la derniere ecriture et
+    nombre de lignes. Une requete tres bon marche.
+
+    POURQUOI : le cache ne reposait que sur un delai de 10 minutes. Quand le
+    radar tournait et ecrivait de nouveaux leads, l'application continuait donc
+    de servir l'ancienne page jusqu'a expiration, sans aucun moyen de le
+    savoir. Constate le 22/07/2026 : un run termine, rien de neuf a l'ecran.
+    Desormais la page se renouvelle des que la BASE change."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT max(maj), count(*) FROM radar_lignes")
+        ligne = cur.fetchone() or (None, 0)
+    return "{}|{}".format(ligne[0], ligne[1])
 
 
 def _initialiser_une_fois(conn):
@@ -90,18 +110,37 @@ def _initialiser_une_fois(conn):
 
 
 def page_en_cache(frais=False):
-    """(html, depuis_le_cache). Le verrou evite que dix rafraichissements
-    simultanes declenchent dix generations completes."""
-    if not frais and _cache["html"] and (time.time() - _cache["t"]) < CACHE_S:
+    """(html, depuis_le_cache). Trois niveaux, du moins cher au plus cher :
+      1. moins de VERIF_S depuis la derniere verification -> on sert direct ;
+      2. sinon, une requete de version : si la base n'a pas bouge, on sert
+         quand meme (et on repousse l'echeance) ;
+      3. sinon, regeneration complete.
+    Le verrou evite que dix rafraichissements simultanes declenchent dix
+    generations."""
+    maintenant = time.time()
+    if (not frais and _cache["html"]
+            and (maintenant - _cache["verif"]) < VERIF_S):
         return _cache["html"], True
     with _verrou:
-        # Un autre fil a pu regenerer pendant l'attente du verrou.
-        if not frais and _cache["html"] and (time.time() - _cache["t"]) < CACHE_S:
+        if (not frais and _cache["html"]
+                and (time.time() - _cache["verif"]) < VERIF_S):
             return _cache["html"], True
         with st.connexion() as conn:
             _initialiser_une_fois(conn)
+            try:
+                version = version_donnees(conn)
+            except Exception:
+                version = None
+            frais_requis = (frais or not _cache["html"]
+                            or version != _cache["version"]
+                            or (time.time() - _cache["t"]) >= CACHE_S)
+            if not frais_requis:
+                _cache["verif"] = time.time()
+                return _cache["html"], True
             html = generer_page(conn)
-        _cache["html"], _cache["t"] = html, time.time()
+        _cache["html"] = html
+        _cache["t"] = _cache["verif"] = time.time()
+        _cache["version"] = version
         return html, False
 
 
