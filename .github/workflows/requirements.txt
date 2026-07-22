@@ -1,0 +1,6 @@
+# Dependances de l'APPLICATION WEB (Render lit ce fichier au build).
+# Les collecteurs, eux, restent installes par radar.yml : deux mondes,
+# deux listes, pas de dependance croisee inutile.
+fastapi
+uvicorn
+psycopg[binary]
