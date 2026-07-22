@@ -126,7 +126,8 @@ def generer_page(conn):
     leads = dash.construire_leads(
         lignes_ted, lignes_bm, lignes_prive, enrichissement, lignes_attrib,
         lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_ungm)
-    return dash.generer_html(leads, lignes_watchlist)
+    # api_statut=True : sur l'application, le bouton ecrit aussi en base.
+    return dash.generer_html(leads, lignes_watchlist, api_statut=True)
 
 
 # ===========================================================================
