@@ -104,8 +104,19 @@ COL_DESC = "process_desc"
 # Perimetre commercial, sous les deux formes possibles : le datastore expose
 # `operation_country_code` (ISO2) et `operation_country_name`.
 PAYS_ISO2 = ["MX", "VE", "EC", "HN", "CO", "GT", "PE", "BO", "BR", "AR", "CL"]
-PAYS_NOMS = ["Mexico", "Venezuela", "Ecuador", "Honduras", "Colombia",
-             "Guatemala", "Peru", "Bolivia", "Brazil", "Argentina", "Chile"]
+# Les NOMS sont en MAJUSCULES dans le datastore ("URUGUAY").
+# On filtre sur eux, jamais sur operation_country_code : l'IDB utilise ses
+# PROPRES codes, pas la norme ISO. Preuve relevee le 22/07/2026 :
+# operation_country_code = "UR" pour l'Uruguay (ISO2 = UY). Le filtrage ISO2
+# renvoyait donc 0 contrat pour le Mexique (ME), le Honduras (HO), le
+# Guatemala (GU) et le Chili (CH), alors que l'IDB y finance massivement.
+PAYS_NOMS = ["MEXICO", "VENEZUELA", "ECUADOR", "HONDURAS", "COLOMBIA",
+             "GUATEMALA", "PERU", "BOLIVIA", "BRAZIL", "ARGENTINA", "CHILE"]
+NOM_VERS_ISO3 = {
+    "MEXICO": "MEX", "VENEZUELA": "VEN", "ECUADOR": "ECU", "HONDURAS": "HND",
+    "COLOMBIA": "COL", "GUATEMALA": "GTM", "PERU": "PER", "BOLIVIA": "BOL",
+    "BRAZIL": "BRA", "ARGENTINA": "ARG", "CHILE": "CHL",
+}
 
 VIDES = {"", "null", "NULL", "None", "n/a", "N/A", "-"}
 
@@ -333,7 +344,99 @@ def cible_commerciale(avis, extraction):
 
 
 # ===========================================================================
-# PARTIE 4 -- SORTIE GOOGLE SHEET
+# PARTIE 3bis -- ATTRIBUTIONS (onglet partage `attributions_radar`)
+# ===========================================================================
+# Ecrire dans l'onglet PARTAGE avec TED, BM, UNGM et IsDB : la lentille
+# Titulaires les lit toutes, aucun cablage dashboard n'est necessaire.
+
+NOM_ONGLET_ATTRIB = "attributions_radar"
+JOURS_ATTRIB = int(os.environ.get("IDB_ATTRIB_JOURS", "365"))
+INDISPONIBLES = {"not available", "n/a", "na", "no disponible", "", "null"}
+
+
+def _lire_horodatage(brut):
+    """'2021-10-25 09:00:00.000000000' -> date ISO. '' si illisible."""
+    t = (brut or "").strip()
+    if not t or t.lower() in INDISPONIBLES:
+        return ""
+    t = t.split(" ")[0].split("T")[0]
+    try:
+        datetime.strptime(t, "%Y-%m-%d")
+        return t
+    except ValueError:
+        return ""
+
+
+def _montant(rec):
+    """Montant lisible. Le datastore donne idb_amount et total_amount, souvent
+    a 0 sur les contrats de consultants individuels."""
+    for cle in ("total_amount", "idb_amount"):
+        brut = str(rec.get(cle) or "").strip()
+        try:
+            v = float(brut)
+        except (TypeError, ValueError):
+            continue
+        if v > 0:
+            return "USD {:,.0f}".format(v).replace(",", " ")
+    return ""
+
+
+def normaliser_attribution(rec, aujourd_hui=None):
+    """Enregistrement du datastore -> ligne d'attribution. None si inexploitable.
+
+    Trois rejets assumes :
+      - titulaire non nomme ("Not Available") : sans nom, pas de prospect ;
+      - pays d'execution hors perimetre ;
+      - contrat trop ancien (fenetre IDB_ATTRIB_JOURS, 365 j par defaut, comme
+        IsDB : un titulaire de l'an dernier execute encore aujourd'hui)."""
+    gagnant = (rec.get("awarded_firm_name") or "").strip()
+    if not gagnant or gagnant.lower() in INDISPONIBLES:
+        return None
+    pays_nom = (rec.get("operation_country_name") or "").strip().upper()
+    iso3 = NOM_VERS_ISO3.get(pays_nom) or bm.code_iso3_pays(pays_nom)
+    if not iso3 or not ted.dans_le_perimetre(iso3):
+        return None
+    signature = (_lire_horodatage(rec.get("signature_date"))
+                 or _lire_horodatage(rec.get("start_date")))
+    if signature:
+        try:
+            age = ((aujourd_hui or date.today())
+                   - datetime.strptime(signature, "%Y-%m-%d").date()).days
+            if age > JOURS_ATTRIB:
+                return None
+        except ValueError:
+            pass
+    pays_titulaire = (rec.get("awarded_firm_country_name") or "").strip().upper()
+    etranger = bool(pays_titulaire) and pays_titulaire != pays_nom
+    contrat = (rec.get("contract_id") or "").strip()
+    return {
+        "date_maj": date.today().isoformat(),
+        "gagnant": gagnant[:200],
+        "secteur": (rec.get("economic_sector_name") or "").strip()[:120],
+        "pays_execution": iso3,
+        "valeur_attribuee": _montant(rec),
+        "acheteur": (rec.get("executing_agency") or "").strip()[:160]
+                    or "Inter-American Development Bank",
+        "titre": " · ".join(x for x in (
+            (rec.get("project_name") or "").strip(),
+            (rec.get("contract_type") or "").strip(),
+            (rec.get("procurement_type") or "").strip()) if x)[:300],
+        "cpv": "",
+        "sous_traitance": "",
+        "date_publication": signature,
+        "publication_number": "IDB-C-{}".format(contrat) if contrat else "",
+        "lien": "https://www.iadb.org/en/project/{}".format(
+            (rec.get("project_number") or "").strip()),
+        "a_demarcher": "oui",
+        # Champs techniques (prefixe '_') : jamais persistes.
+        "_etranger": etranger,
+        "_pays_titulaire": pays_titulaire,
+        "_ville": (rec.get("awarded_firm_city") or "").strip(),
+    }
+
+
+# ===========================================================================
+# PARTIE 4 -- SORTIE GOOGLE SHEET (avis)
 # ===========================================================================
 
 COLONNES_IDB = [
@@ -704,7 +807,7 @@ def main():
         # Le nom exact de la colonne pays reste a confirmer : on essaie les
         # deux candidates reperees dans l'en-tete du dump.
         colonne_pays = None
-        for candidate in ("operation_country_code", "operation_country_name"):
+        for candidate in ("operation_country_name", "operation_country_code"):
             if candidate in champs:
                 colonne_pays = candidate
                 break
@@ -727,7 +830,43 @@ def main():
                 print("      {:14} {} contrat(s)".format(v, n if n is not None else "?"))
             print("      TOTAL perimetre : {}".format(trouves))
 
-        print("\n[D] FRAICHEUR : dernieres valeurs des colonnes de date")
+        print("\n[D] EXPLOITABILITE REELLE (fenetre {} j, tri par signature)".format(
+            JOURS_ATTRIB))
+        exploitables, etrangers, sans_nom, hors_fenetre = [], 0, 0, 0
+        if colonne_pays:
+            for nom_pays in PAYS_NOMS:
+                try:
+                    recs, _c, _n = lire_datastore(
+                        rid, filtres={colonne_pays: nom_pays}, limite=200)
+                except Exception:
+                    continue
+                for rec in recs:
+                    brut = (rec.get("awarded_firm_name") or "").strip()
+                    if not brut or brut.lower() in INDISPONIBLES:
+                        sans_nom += 1
+                        continue
+                    a = normaliser_attribution(rec)
+                    if a is None:
+                        hors_fenetre += 1
+                        continue
+                    exploitables.append(a)
+                    if a["_etranger"]:
+                        etrangers += 1
+        print("      sur un echantillon de 200 contrats par pays :")
+        print("      {} exploitable(s), dont {} titulaire(s) ETRANGER(s)".format(
+            len(exploitables), etrangers))
+        print("      ecartes -> titulaire non nomme : {} | hors fenetre ou "
+              "perimetre : {}".format(sans_nom, hors_fenetre))
+        print("\n      exemples (les plus recents) :")
+        for a in sorted(exploitables,
+                        key=lambda x: x["date_publication"], reverse=True)[:15]:
+            print("        [{}] {} | {:34} <- {:12} | {}".format(
+                a["date_publication"] or "?", a["pays_execution"],
+                a["gagnant"][:34],
+                (a["_pays_titulaire"] or "?")[:12],
+                (a["valeur_attribuee"] or "montant n.c.")[:18]))
+
+        print("\n[E] FRAICHEUR : dates de l'echantillon initial")
         colonnes_date = [c for c in champs
                          if any(m in str(c).lower() for m in ("date", "year"))]
         if not colonnes_date:
