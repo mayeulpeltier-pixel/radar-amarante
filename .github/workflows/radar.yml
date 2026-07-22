@@ -148,6 +148,21 @@ jobs:
       #     ET LE PAYS du titulaire, donc le filtre local/etranger fonctionne,
       #     contrairement a UNGM. Meme onglet : aucun cablage dashboard.
       #     RADAR_ISDB_DEBUG=1 pour verifier sans rien ecrire.
+      # Nouvelle source : premiere couverture REGIONALE de l'Amerique latine.
+      # Demarre en mode verification (RADAR_IDB_DEBUG=1) : aucune ecriture tant
+      # que l'entonnoir et les valeurs distinctes n'ont pas ete valides sur
+      # donnees reelles. Meme prudence que pour IsDB, qui avait revele un bug
+      # de filtre pays avant toute ecriture.
+      - name: Collecter les avis IDB (Amerique latine)
+        if: always()
+        env:
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          RADAR_IDB_DEBUG: "1"
+        run: python idb_radar.py
+
       - name: Collecter les attributions IsDB
         if: always()
         env:
