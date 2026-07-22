@@ -866,6 +866,60 @@ def main():
                 (a["_pays_titulaire"] or "?")[:12],
                 (a["valeur_attribuee"] or "montant n.c.")[:18]))
 
+        print("\n[F] LE TEST DECISIF : QUI GAGNE LES GROS MARCHES DE TRAVAUX ?")
+        print("    L'echantillon brut est domine par des micro-contrats de")
+        print("    consultants. La vraie question est ailleurs : sur les marches")
+        print("    de TRAVAUX et de FIRMES, y a-t-il des titulaires ETRANGERS")
+        print("    qui mobilisent des equipes ? C'est cela, la cible Amarante.")
+        gros, gros_etrangers = [], []
+        if colonne_pays:
+            for nom_pays in PAYS_NOMS:
+                for type_contrat in ("Works", "Consulting Firms"):
+                    try:
+                        recs, _c, n = lire_datastore(
+                            rid, limite=400,
+                            filtres={colonne_pays: nom_pays,
+                                     "contract_type": type_contrat})
+                    except Exception:
+                        continue
+                    for rec in recs:
+                        a = normaliser_attribution(rec)
+                        if a is None:
+                            continue
+                        try:
+                            montant = float(rec.get("total_amount") or 0)
+                        except (TypeError, ValueError):
+                            montant = 0.0
+                        a["_montant"] = montant
+                        a["_type"] = type_contrat
+                        gros.append(a)
+                        if a["_etranger"]:
+                            gros_etrangers.append(a)
+        print("\n      {} contrat(s) Works/Firms dans la fenetre, "
+              "dont {} a titulaire ETRANGER".format(len(gros), len(gros_etrangers)))
+        if gros:
+            gros.sort(key=lambda x: -x["_montant"])
+            print("\n      LES 20 PLUS GROS (tous titulaires) :")
+            for a in gros[:20]:
+                print("        {:>14} | {} {} | {:30} <- {}".format(
+                    ("USD {:,.0f}".format(a["_montant"]).replace(",", " ")
+                     if a["_montant"] else "n.c."),
+                    a["pays_execution"], a["date_publication"] or "?",
+                    a["gagnant"][:30],
+                    (a["_pays_titulaire"] or "?")[:14]))
+        if gros_etrangers:
+            gros_etrangers.sort(key=lambda x: -x["_montant"])
+            print("\n      TITULAIRES ETRANGERS (la cible reelle) :")
+            for a in gros_etrangers[:20]:
+                print("        {:>14} | {} | {:30} <- {} | {}".format(
+                    ("USD {:,.0f}".format(a["_montant"]).replace(",", " ")
+                     if a["_montant"] else "n.c."),
+                    a["pays_execution"], a["gagnant"][:30],
+                    (a["_pays_titulaire"] or "?")[:14], a["_type"]))
+        else:
+            print("\n      AUCUN titulaire etranger sur les marches de travaux :")
+            print("      le signal commercial serait alors tres faible.")
+
         print("\n[E] FRAICHEUR : dates de l'echantillon initial")
         colonnes_date = [c for c in champs
                          if any(m in str(c).lower() for m in ("date", "year"))]
