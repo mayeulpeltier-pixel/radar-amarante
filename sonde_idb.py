@@ -1,36 +1,32 @@
 # -*- coding: utf-8 -*-
 """
-RADAR AMARANTE -- SONDE v7 (jetable) : IDB, Banque interamericaine.
-====================================================================
+RADAR AMARANTE -- SONDE v8 (jetable) : Amerique latine, voie DONNEES.
+======================================================================
 
-POURQUOI
---------
-Le perimetre commercial s'est ouvert le 22/07/2026 a 13 pays d'Amerique latine
-et d'Asie. Les sources actuelles y sont generalistes (BM, UNGM, ReliefWeb) :
-aucune source REGIONALE ne couvre l'Amerique latine, alors que la Banque
-interamericaine de developpement (IDB / BID) y est le bailleur principal,
-l'equivalent exact de ce qu'est l'AfDB pour l'Afrique ou l'EBRD pour l'Est.
+CE QUE LA v7 A ETABLI
+---------------------
+  - Les portails WEB de l'IDB renvoient tous un 403 de 5969 octets, taille
+    IDENTIQUE partout : c'est une page de blocage anti-robot, pas une panne.
+    Le grattage est donc mort, comme pour ADB.
+  - MAIS mydata.iadb.org a repondu 404, pas 403. Nuance decisive : l'hote
+    traite la requete, il refuse juste les identifiants de jeux de donnees
+    que j'avais DEVINES. Aucun blocage de ce cote.
 
-REGLE DU PROJET : SONDE AVANT COLLECTEUR.
-Ne PAS ecrire un collecteur avant d'avoir verifie, DEPUIS L'INFRA GITHUB
-ACTIONS, que la source est joignable et grattable. Deux precedents coutent
-cher :
-  - ADB   : 403 puis portail rendu en JavaScript -> collecteur inutile.
-  - UNGM  : deux tours perdus faute d'avoir dumpe le HTML BRUT d'emblee.
-Cette sonde dumpe donc systematiquement du BRUT.
+CE QUE CELLE-CI CORRIGE
+-----------------------
+On arrete de deviner. Socrata expose une API de DECOUVERTE hebergee sur
+api.us.socrata.com, donc SUR UN AUTRE DOMAINE que iadb.org : elle echappe au
+blocage. Elle liste les jeux de donnees d'un portail avec leurs identifiants
+REELS. La sonde ENCHAINE ensuite automatiquement : decouverte -> meilleurs
+candidats -> echantillon -> liste des champs. Un seul run doit suffire a
+decider, au lieu d'un aller-retour par hypothese.
 
-CE QU'ELLE ETABLIT
-------------------
-  A. Quelles URL repondent (statut, type de contenu, taille).
-  B. Le contenu est-il RENDU COTE SERVEUR, ou faut-il un navigateur ?
-     Signal decisif : retrouve-t-on des noms de pays et des libelles d'avis
-     dans le HTML brut, ou seulement un squelette et des <script> ?
-  C. Existe-t-il une voie DONNEES (JSON/API/Socrata) plutot que du grattage ?
-     Une API rend le collecteur dix fois plus robuste.
-  D. Les avis portent-ils un identifiant, une date, un pays exploitables ?
+PISTE 2, EN PARALLELE : les portails nationaux au standard ouvert (Colombie
+SECOP sur Socrata, Chili, Mexique). Concus pour l'acces programmatique, sans
+protection anti-robot. Plus de bruit local a filtrer qu'une banque de
+developpement, mais un volume complet et une bien meilleure disponibilite.
 
-AUCUNE ECRITURE. Sortie toujours en code 0 : une sonde ne doit jamais faire
-echouer un workflow.
+AUCUNE ECRITURE. Sortie toujours en code 0.
 """
 
 import json
@@ -47,30 +43,35 @@ TIMEOUT = 45
 NAVIGATEUR = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 
-# Candidates classees de la plus souhaitable (donnees structurees) a la moins
-# souhaitable (grattage de page). On ne SAIT PAS laquelle existe : c'est
-# precisement l'objet de la sonde. Une 404 est une reponse utile.
-CANDIDATES = [
-    # -- Voie donnees (ideale) --
-    ("API projets IDB", "https://api.iadb.org/projects/v1/projects?limit=5"),
-    ("Socrata mydata (avis)", "https://mydata.iadb.org/resource/p6f5-3xnr.json?$limit=5"),
-    ("Socrata mydata (catalogue)", "https://mydata.iadb.org/api/catalog/v1?q=procurement&limit=5"),
-    # -- Portail achats (grattage) --
-    ("Portail achats projets", "https://projectprocurement.iadb.org/en/procurement-notices"),
-    ("Portail achats (racine)", "https://projectprocurement.iadb.org/en"),
-    ("Avis IDB (site principal)", "https://www.iadb.org/en/procurement-notices"),
-    ("Projets IDB", "https://www.iadb.org/en/projects"),
-    # -- Flux --
-    ("RSS eventuel", "https://www.iadb.org/en/rss/procurement"),
+# API de decouverte Socrata : hebergee par Socrata, PAS par le portail cible.
+DECOUVERTE = "https://api.us.socrata.com/api/catalog/v1"
+
+# Portails Socrata a interroger : (etiquette, domaine, termes de recherche)
+PORTAILS_SOCRATA = [
+    ("IDB / BID", "mydata.iadb.org",
+     ["procurement", "contract", "adquisicion", "operations"]),
+    ("Colombie SECOP", "www.datos.gov.co",
+     ["SECOP procesos", "contratacion", "procurement"]),
 ]
 
-# Marqueurs de contenu reellement utile (pays du perimetre + vocabulaire achat).
-PAYS_CIBLES = ["Mexico", "Colombia", "Ecuador", "Peru", "Bolivia", "Honduras",
-               "Guatemala", "Venezuela", "Brazil", "Argentina", "Chile"]
-MOTS_ACHAT = ["procurement", "tender", "bidding", "notice", "contract",
-              "consultant", "solicitation", "licitacion", "adquisicion"]
+# Points d'entree STANDARD d'un portail Socrata (au lieu d'identifiants devines).
+ENDPOINTS_STANDARD = [
+    ("IDB catalogue DCAT", "https://mydata.iadb.org/data.json"),
+    ("IDB vues", "https://mydata.iadb.org/api/views.json?limit=5"),
+]
+
+# Piste 2 : autres portails nationaux, simple test d'accessibilite.
+PORTAILS_NATIONAUX = [
+    ("Chili Mercado Publico", "https://api.mercadopublico.cl/servicios/v1/publico/licitaciones.json"),
+    ("Mexique datos.gob", "https://api.datos.gob.mx/v1/"),
+    ("Registre OCDS", "https://data.open-contracting.org/en/publications/"),
+]
+
+MOTS_ACHAT = ["procurement", "contract", "tender", "bidding", "adquisici",
+              "contrataci", "licitaci", "proces"]
 
 RESULTATS = []
+CANDIDATS = []          # (etiquette, domaine, id, nom) retenus pour echantillon
 
 
 def _titre(t):
@@ -89,145 +90,178 @@ def _plat(t, n=None):
     return s[:n] if n else s
 
 
-def _texte(html):
-    t = re.sub(r"(?is)<(script|style|nav|header|footer)[^>]*>.*?</\1>", " ", str(html or ""))
-    t = re.sub(r"(?i)</\s*(div|p|tr|td|th|li|h\d|span)\s*>", "\n", t)
-    t = re.sub(r"(?s)<[^>]+>", " ", t)
-    return "\n".join(l for l in (_plat(x) for x in t.split("\n")) if l)
+def _pertinent(texte):
+    bas = (texte or "").lower()
+    return any(m in bas for m in MOTS_ACHAT)
 
 
 def sonde_a(session):
-    """A. Qui repond ? On teste toutes les candidates, sans a priori."""
-    _titre("A. ACCESSIBILITE DEPUIS L'INFRA GITHUB ACTIONS")
-    vivantes = []
-    for nom, url in CANDIDATES:
+    """A. DECOUVERTE : quels jeux de donnees existent REELLEMENT ?"""
+    _titre("A. DECOUVERTE SOCRATA (api.us.socrata.com, hors domaine bloque)")
+    trouves = 0
+    for etiquette, domaine, requetes in PORTAILS_SOCRATA:
+        print("\n  --- {} ({}) ---".format(etiquette, domaine))
+        vus = set()
+        for q in requetes:
+            params = {"domains": domaine, "q": q, "limit": 12}
+            try:
+                r = session.get(DECOUVERTE, params=params, timeout=TIMEOUT)
+            except Exception as e:
+                print("    [KO] requete {!r} : {}".format(q, _plat(e, 60)))
+                continue
+            if r.status_code >= 400:
+                print("    [KO] requete {!r} : statut {}".format(q, r.status_code))
+                continue
+            try:
+                donnees = r.json()
+            except Exception:
+                print("    [KO] requete {!r} : reponse non JSON".format(q))
+                continue
+            resultats = donnees.get("results") or []
+            print("    requete {!r} : {} resultat(s) (total annonce {})".format(
+                q, len(resultats), donnees.get("resultSetSize", "?")))
+            for res in resultats:
+                ressource = res.get("resource") or {}
+                ident = ressource.get("id") or ""
+                nom = _plat(ressource.get("name"), 70)
+                if not ident or ident in vus:
+                    continue
+                vus.add(ident)
+                pertinent = _pertinent(
+                    nom + " " + _plat(ressource.get("description"), 200))
+                print("      {:12} {}{}".format(
+                    ident, nom, " <-- pertinent" if pertinent else ""))
+                if pertinent:
+                    CANDIDATS.append((etiquette, domaine, ident, nom))
+                    trouves += 1
+    _verdict("decouverte", trouves > 0,
+             "{} jeu(x) de donnees pertinent(s) identifie(s)".format(trouves))
+
+
+def sonde_b(session):
+    """B. Points d'entree STANDARD du portail IDB (sans deviner d'identifiant)."""
+    _titre("B. ENDPOINTS STANDARD SOCRATA SUR mydata.iadb.org")
+    ok_global = False
+    for nom, url in ENDPOINTS_STANDARD:
         try:
-            r = session.get(url, timeout=TIMEOUT, allow_redirects=True)
-            ctype = _plat(r.headers.get("Content-Type", ""), 40)
-            taille = len(r.content or b"")
-            print("  [{}] {:28} {:6} | {:32} | {} octets".format(
-                "OK " if r.status_code < 400 else "KO ", nom[:28],
-                r.status_code, ctype, taille))
-            if r.url != url:
-                print("       redirige vers : {}".format(_plat(r.url, 90)))
-            if r.status_code < 400 and taille > 500:
-                vivantes.append((nom, r))
+            r = session.get(url, timeout=TIMEOUT)
         except Exception as e:
-            print("  [KO ] {:28} exception : {}".format(nom[:28], _plat(e, 70)))
-    _verdict("accessibilite", bool(vivantes),
-             "{} URL exploitable(s) sur {}".format(len(vivantes), len(CANDIDATES)))
-    return vivantes
-
-
-def sonde_b(vivantes):
-    """B. Rendu serveur ou piege JavaScript ? (le point qui a tue ADB)"""
-    _titre("B. CONTENU RENDU COTE SERVEUR ?")
-    grattables = []
-    for nom, r in vivantes:
-        html = r.text or ""
-        texte = _texte(html)
-        pays = [p for p in PAYS_CIBLES if p.lower() in texte.lower()]
-        mots = [m for m in MOTS_ACHAT if m in texte.lower()]
-        scripts = len(re.findall(r"(?i)<script", html))
-        # Un squelette JS : beaucoup de <script>, peu de texte utile.
-        verdict = "RENDU SERVEUR" if (pays and mots and len(texte) > 2000) else "squelette probable"
-        print("\n  --- {} ---".format(nom))
-        print("      texte utile : {} caracteres | {} balises <script>".format(
-            len(texte), scripts))
-        print("      pays cibles trouves : {}".format(", ".join(pays[:8]) or "AUCUN"))
-        print("      vocabulaire achat   : {}".format(", ".join(mots[:6]) or "AUCUN"))
-        print("      => {}".format(verdict))
-        if verdict == "RENDU SERVEUR":
-            grattables.append((nom, r))
-    _verdict("rendu serveur", bool(grattables),
-             "{} source(s) grattable(s)".format(len(grattables)))
-    return grattables
-
-
-def sonde_c(vivantes):
-    """C. Une voie DONNEES existe-t-elle ? Bien plus robuste qu'un grattage."""
-    _titre("C. VOIE DONNEES (JSON / API)")
-    trouvee = False
-    for nom, r in vivantes:
-        ctype = (r.headers.get("Content-Type") or "").lower()
-        if "json" not in ctype:
+            print("  [KO] {:22} exception : {}".format(nom, _plat(e, 60)))
             continue
+        taille = len(r.content or b"")
+        print("  [{}] {:22} {} | {} octets".format(
+            "OK" if r.status_code < 400 else "KO", nom, r.status_code, taille))
+        if r.status_code >= 400:
+            continue
+        ok_global = True
         try:
             donnees = r.json()
-        except Exception as e:
-            print("  {} : JSON annonce mais illisible ({})".format(nom, _plat(e, 60)))
+        except Exception:
+            print("       (reponse non JSON)")
             continue
-        trouvee = True
-        echantillon = donnees[0] if isinstance(donnees, list) and donnees else donnees
-        print("\n  --- {} : JSON VALIDE ---".format(nom))
-        if isinstance(echantillon, dict):
-            print("      champs disponibles ({}) :".format(len(echantillon)))
-            for cle in sorted(echantillon)[:30]:
-                print("        {:32} = {}".format(cle, _plat(echantillon[cle], 60)))
-        else:
-            print("      " + _plat(json.dumps(donnees)[:600]))
-    _verdict("voie donnees", trouvee,
-             "API JSON exploitable" if trouvee else "aucune API JSON, grattage a prevoir")
-    return trouvee
+        jeux = donnees.get("dataset") if isinstance(donnees, dict) else donnees
+        if isinstance(jeux, list):
+            pertinents = [j for j in jeux if _pertinent(json.dumps(j)[:400])][:10]
+            print("       {} jeu(x) au catalogue, {} pertinent(s) :".format(
+                len(jeux), len(pertinents)))
+            for j in pertinents:
+                titre = _plat(j.get("title") or j.get("name"), 66)
+                ident = str(j.get("identifier") or j.get("id") or "")
+                print("         {:14} {}".format(_plat(ident, 14), titre))
+                m = re.search(r"([a-z0-9]{4}-[a-z0-9]{4})", ident)
+                if m:
+                    CANDIDATS.append(("IDB / BID", "mydata.iadb.org",
+                                      m.group(1), titre))
+    _verdict("endpoints standard", ok_global,
+             "catalogue lisible" if ok_global else "aucun endpoint standard joignable")
 
 
-def sonde_d(grattables):
-    """D. HTML BRUT autour d'un avis : la lecon UNGM, ne jamais l'omettre."""
-    _titre("D. HTML BRUT AUTOUR D'UN AVIS (balisage reel)")
-    if not grattables:
-        print("  (aucune source grattable : rien a dumper)")
-        _verdict("balisage", False, "non evalue")
+def sonde_c(session):
+    """C. ENCHAINEMENT : echantillon reel du meilleur candidat + ses champs.
+    C'est ce qui evite un aller-retour supplementaire."""
+    _titre("C. ECHANTILLON REEL ET CHAMPS DISPONIBLES")
+    if not CANDIDATS:
+        print("  (aucun candidat : rien a echantillonner)")
+        _verdict("echantillon", False, "non evalue")
         return
-    nom, r = grattables[0]
-    html = r.text or ""
-    ancre = None
-    for mot in ("procurement-notice", "tender", "notice", "licitacion"):
-        m = re.search(r"(?i)href=[\"'][^\"']*" + mot + r"[^\"']*[\"']", html)
-        if m:
-            ancre = m
-            break
-    print("  source : {}".format(nom))
-    if ancre:
-        debut = max(0, ancre.start() - 900)
-        print("\n  --- extrait BRUT autour du premier lien d'avis ---")
-        print(html[debut:ancre.end() + 1400])
-    else:
-        print("\n  --- aucun lien d'avis reconnu, extrait BRUT du corps ---")
-        corps = re.search(r"(?is)<main.*?>(.*?)</main>", html) or \
-            re.search(r"(?is)<body.*?>(.*?)</body>", html)
-        print((corps.group(1) if corps else html)[:2200])
-    liens = re.findall(r"(?i)href=[\"']([^\"']*(?:notice|tender|licitacion)[^\"']*)[\"']", html)
-    uniques = sorted(set(liens))[:12]
-    print("\n  liens d'avis reperes ({}) :".format(len(set(liens))))
-    for l in uniques:
-        print("    " + _plat(l, 100))
-    _verdict("balisage", bool(uniques),
-             "{} lien(s) d'avis identifie(s)".format(len(set(liens))))
+    reussis = 0
+    vus = set()
+    for etiquette, domaine, ident, nom in CANDIDATS[:6]:
+        if ident in vus:
+            continue
+        vus.add(ident)
+        url = "https://{}/resource/{}.json?$limit=3".format(domaine, ident)
+        try:
+            r = session.get(url, timeout=TIMEOUT)
+        except Exception as e:
+            print("  [KO] {} {} : {}".format(etiquette, ident, _plat(e, 55)))
+            continue
+        if r.status_code >= 400:
+            print("  [KO] {} {} : statut {}".format(etiquette, ident, r.status_code))
+            continue
+        try:
+            lignes = r.json()
+        except Exception:
+            print("  [KO] {} {} : reponse non JSON".format(etiquette, ident))
+            continue
+        if not isinstance(lignes, list) or not lignes:
+            print("  [--] {} {} : jeu vide".format(etiquette, ident))
+            continue
+        reussis += 1
+        print("\n  --- {} | {} | {} ---".format(etiquette, ident, nom))
+        print("      {} champ(s) :".format(len(lignes[0])))
+        for cle in sorted(lignes[0]):
+            print("        {:34} = {}".format(cle, _plat(lignes[0][cle], 52)))
+    _verdict("echantillon", reussis > 0,
+             "{} jeu(x) lisible(s) avec leurs champs".format(reussis))
+
+
+def sonde_d(session):
+    """D. Piste 2 : autres portails nationaux (accessibilite brute)."""
+    _titre("D. PORTAILS NATIONAUX (piste de repli)")
+    vivants = 0
+    for nom, url in PORTAILS_NATIONAUX:
+        try:
+            r = session.get(url, timeout=TIMEOUT)
+            ctype = _plat(r.headers.get("Content-Type", ""), 34)
+            taille = len(r.content or b"")
+            if r.status_code < 400:
+                vivants += 1
+            print("  [{}] {:24} {} | {:34} | {} octets".format(
+                "OK" if r.status_code < 400 else "KO", nom, r.status_code,
+                ctype, taille))
+            if r.status_code < 400 and "json" in ctype.lower():
+                print("       apercu : " + _plat(r.text, 200))
+        except Exception as e:
+            print("  [KO] {:24} exception : {}".format(nom, _plat(e, 55)))
+    _verdict("portails nationaux", vivants > 0,
+             "{} portail(s) joignable(s)".format(vivants))
 
 
 def main():
-    print("SONDE IDB (Banque interamericaine) -- aucune ecriture, lecture seule.")
+    print("SONDE v8 -- Amerique latine, voie DONNEES. Lecture seule.")
     session = requests.Session()
     session.headers.update({
         "User-Agent": NAVIGATEUR,
-        "Accept": "text/html,application/json,application/xhtml+xml,*/*",
+        "Accept": "application/json, text/html;q=0.8, */*;q=0.5",
         "Accept-Language": "en,es;q=0.9,fr;q=0.8",
     })
-    vivantes = sonde_a(session)
-    grattables = []
-    if vivantes:
-        grattables = sonde_b(vivantes)
-        sonde_c(vivantes)
-    sonde_d(grattables)
+    sonde_a(session)
+    sonde_b(session)
+    sonde_c(session)
+    sonde_d(session)
 
     _titre("SYNTHESE")
     for nom, ok, detail in RESULTATS:
-        print("  {:18} {:12} {}".format(nom, "OK" if ok else "a creuser", detail))
+        print("  {:20} {:12} {}".format(nom, "OK" if ok else "a creuser", detail))
     print("\nDECISION ATTENDUE :")
-    print("  - voie donnees OK        -> collecteur sur API (robuste, prioritaire)")
-    print("  - rendu serveur OK       -> collecteur par grattage (motif AfDB/EBRD)")
-    print("  - aucun des deux         -> desactiver comme ADB, chercher une")
-    print("                              alternative regionale (CAF, UNDP/UNGM)")
+    print("  - echantillon OK cote IDB   -> collecteur IDB sur API Socrata")
+    print("  - echantillon OK cote SECOP -> collecteur Colombie, puis autres")
+    print("                                 pays au meme standard")
+    print("  - aucun des deux            -> abandonner l'Amerique latine")
+    print("                                 regionale : la Banque Mondiale et")
+    print("                                 UNGM la couvrent deja, c'etait un")
+    print("                                 renfort, pas une necessite.")
 
 
 if __name__ == "__main__":
