@@ -38,7 +38,9 @@ jobs:
           python-version: "3.12"
 
       - name: Installer les dependances
-        run: pip install requests
+        # httpx[http2] : empreinte TLS et protocole differents de requests,
+        # l'une des variantes testees contre le pare-feu applicatif.
+        run: pip install requests "httpx[http2]"
 
-      - name: Sonder l'IDB (Banque interamericaine)
+      - name: Sonder l'IDB (autopsie du blocage et contournements)
         run: python sonde_idb.py
