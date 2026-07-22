@@ -30,7 +30,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Installer les dependances
-        run: pip install requests gspread google-auth python-dateutil pypdf "psycopg[binary]"
+        run: pip install requests gspread google-auth python-dateutil pypdf "psycopg[binary]" fastapi httpx
       # 1) Barriere de securite : les tests d'abord. Si un test casse, on s'arrete.
       - name: Lancer les tests
         run: python -m unittest discover -p "test_*.py" -v
