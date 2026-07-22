@@ -85,6 +85,12 @@ PAYS_ROUGE = {
     "Libye": "LBY", "Mali": "MLI", "Niger": "NER", "Burkina Faso": "BFA",
     "RDC": "COD", "Soudan du Sud": "SSD", "Yemen": "YEM", "Somalie": "SOM",
     "Irak": "IRQ", "Ukraine": "UKR", "Mexique": "MEX",
+    # ELARGISSEMENT AMERIQUE LATINE (22/07/2026), grille validee par
+    # l'analyste. Ces pays etaient en couverture large (0.3) ou absents, donc
+    # jamais analyses, alors qu'Amarante peut y accompagner ses clients.
+    "Venezuela": "VEN",   # effondrement institutionnel, criminalite endemique
+    "Equateur": "ECU",    # explosion narco depuis 2023, etats d'urgence
+    "Honduras": "HND",    # homicides et gangs (etait absent de l'univers)
     "Palestine": "PSE",  # CORRECTION (run reel) : restait en couverture
     # large (poids 0.3) alors que le texte du modele lui-meme decrit un
     # "contexte de tension securitaire elevee" -- incoherence entre la
@@ -95,6 +101,13 @@ PAYS_ROUGE = {
 }
 PAYS_ORANGE = {
     "Ethiopie": "ETH", "Nigeria": "NGA", "Cameroun": "CMR",
+    # ELARGISSEMENT AMERIQUE LATINE / ASIE (22/07/2026) : risque REEL mais
+    # localise (zones rurales, provinces, sites miniers), pas national.
+    "Colombie": "COL",    # ELN et dissidences en zones rurales
+    "Guatemala": "GTM",   # gangs (etait absent de l'univers)
+    "Perou": "PER",       # VRAEM, conflits miniers, criminalite urbaine
+    "Bolivie": "BOL",     # instabilite politique, blocages routiers
+    "Indonesie": "IDN",   # Papouasie occidentale principalement
     "Mozambique": "MOZ", "Bangladesh": "BGD", "Pakistan": "PAK",
     "Egypte": "EGY", "Ouzbekistan": "UZB", "Moldavie": "MDA",
     "Jamaique": "JAM", "Armenie": "ARM", "Jordanie": "JOR",
@@ -132,6 +145,8 @@ AMERIQUE_DU_SUD = {
     "Colombie": "COL", "Equateur": "ECU", "Guyana": "GUY",
     "Paraguay": "PRY", "Perou": "PER", "Suriname": "SUR",
     "Uruguay": "URY", "Venezuela": "VEN",
+    # Amerique centrale (ajout du 22/07/2026) : perimetre commercial Amarante.
+    "Honduras": "HND", "Guatemala": "GTM",
 }
 
 # ELARGISSEMENT (sur demande explicite : "Europe de l'Est, Ukraine,
@@ -150,6 +165,9 @@ ASIE_A_RISQUE = {
     "Myanmar": "MMR", "Sri Lanka": "LKA", "Nepal": "NPL",
     "Philippines": "PHL", "Indonesie": "IDN", "Cambodge": "KHM",
     "Laos": "LAO",
+    # Ajout du 22/07/2026 : perimetre commercial Amarante (sites miniers
+    # isoles, contraintes logistiques plus que securitaires).
+    "Mongolie": "MNG",
 }
 ILES_A_RISQUE = {
     "Trinite-et-Tobago": "TTO", "Iles Salomon": "SLB", "Fidji": "FJI",
@@ -195,6 +213,50 @@ for _code in (
     + list(ILES_A_RISQUE.values()) + list(TERRITOIRES_FRANCAIS_OUTRE_MER_A_RISQUE.values())
 ):
     MULTIPLICATEUR_ZONE.setdefault(_code, 0.3)
+
+
+# ===========================================================================
+# PERIMETRE COMMERCIAL AMARANTE (22/07/2026)
+# ===========================================================================
+# DEUX NOTIONS DISTINCTES, longtemps confondues dans le multiplicateur :
+#
+#   1. MULTIPLICATEUR_ZONE  = evaluation FACTUELLE du risque. Il gonfle le
+#      score d'un lead. Un lead chilien ne doit pas scorer comme un lead
+#      malien : la hierarchie du radar en depend.
+#   2. PAYS_COUVERTS_AMARANTE = perimetre COMMERCIAL. Pays ou Amarante peut
+#      accompagner un client, quel que soit le niveau de risque. Ces pays
+#      franchissent le filtre de collecte meme sous le seuil de risque
+#      minimal, et sont donc analyses -- puis scores a leur juste valeur.
+#
+# Sans ce decouplage, ouvrir le Chili ou l'Argentine imposait de les classer
+# au niveau du Nigeria, ce qui aurait noye les vraies priorites sous du bruit.
+#
+# C'est aussi la bonne fondation pour le multi-client : chaque client aura son
+# propre perimetre commercial, sur la meme evaluation de risque.
+PAYS_COUVERTS_AMARANTE = set(filter(None, (
+    x.strip().upper() for x in
+    os.environ.get("RADAR_PAYS_COUVERTS", "").split(",")))) or {
+    # Amerique latine : perimetre valide par l'analyste le 22/07/2026.
+    "MEX", "VEN", "ECU", "HND",              # rouges (1.0)
+    "COL", "GTM", "PER", "BOL",              # oranges (0.6)
+    "BRA", "ARG", "CHL",                     # couverts, risque faible (0.3)
+    # Asie.
+    "IDN",                                   # orange (0.6)
+    "MNG",                                   # couvert, risque faible (0.3)
+}
+
+
+def dans_le_perimetre(iso3, tier_minimal=0.6):
+    """Vrai si le pays doit etre COLLECTE : soit son risque atteint le seuil,
+    soit il fait partie du perimetre commercial Amarante. Le score, lui, reste
+    pilote par MULTIPLICATEUR_ZONE : etre dans le perimetre ne surevalue
+    jamais un lead."""
+    iso3 = (iso3 or "").strip().upper()
+    if not iso3:
+        return False
+    if iso3 in PAYS_COUVERTS_AMARANTE:
+        return True
+    return MULTIPLICATEUR_ZONE.get(iso3, 0.2) >= tier_minimal
 
 
 # ===========================================================================
