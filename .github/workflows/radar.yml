@@ -21,7 +21,11 @@ concurrency:
 jobs:
   radar:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 150 min : le temps d'absorber le retard d'analyse accumule (correction
+    # de l'ordre plafond/memoire du 22/07/2026). Projection sur les cadences
+    # reelles : ~85 min pour le premier run, quelques minutes ensuite. Le
+    # timeout est un garde-fou, pas une duree : les runs normaux restent courts.
+    timeout-minutes: 150
     # Variables communes a TOUTES les etapes du job.
     env:
       # BASCULE DE LA MEMOIRE INTER-RUNS (22/07/2026).
