@@ -1341,12 +1341,9 @@ def _publications_depuis_valeurs(valeurs, colonnes):
     return nums
 
 
-def numeros_publication_existants(sheet_id, fichier_compte_service, nom_onglet, colonnes):
-    """Memoire inter-runs : ensemble des publication_number deja presents dans un
-    onglet. Permet de NE PAS reanalyser un avis deja traite (economie de tokens)
-    ni de le re-ajouter en double. Lecture positionnelle (robuste a l'en-tete).
-    Tolerant aux pannes : toute erreur ou absence de Sheet -> ensemble vide, on
-    analyse alors tout, comme avant."""
+def _memoire_depuis_sheet(sheet_id, fichier_compte_service, nom_onglet, colonnes):
+    """Mémoire inter-runs telle qu'elle a toujours fonctionné : lecture
+    positionnelle de l'onglet. Tolérante aux pannes -> ensemble vide."""
     if not (sheet_id and fichier_compte_service):
         return set()
     try:
@@ -1363,6 +1360,65 @@ def numeros_publication_existants(sheet_id, fichier_compte_service, nom_onglet, 
     except Exception as e:
         print("  (info) Lecture des avis deja analyses impossible ({}). On analyse tout.".format(e))
         return set()
+
+
+def _memoire_depuis_pg(nom_onglet):
+    """Même mémoire, lue dans le miroir Postgres. None si indisponible : la
+    base ne doit jamais empêcher un run de tourner."""
+    try:
+        import radar_stockage
+        if not radar_stockage.actif():
+            return None
+        with radar_stockage.connexion() as conn:
+            return radar_stockage.publications_existantes(conn, nom_onglet)
+    except Exception as e:
+        print("  (info) memoire Postgres indisponible ({}).".format(str(e)[:90]))
+        return None
+
+
+def numeros_publication_existants(sheet_id, fichier_compte_service, nom_onglet, colonnes):
+    """Mémoire inter-runs : publication_number déjà traités dans un onglet.
+    Évite de réanalyser un avis (économie de tokens) et de le réécrire.
+
+    DERNIÈRE DÉPENDANCE AU SHEET (cap produit, 22/07/2026)
+    ------------------------------------------------------
+    Huit collecteurs passent par CETTE fonction : c'est le point unique où
+    bascule l'indépendance vis-à-vis de Google Sheets. On procède comme pour
+    tout le reste du projet, en deux temps :
+
+      1. PHASE D'OMBRE (par défaut, aujourd'hui) : les deux mémoires sont
+         lues, l'écart est JOURNALISÉ, mais c'est toujours le Sheet qui fait
+         foi. Risque nul, on observe.
+      2. BASCULE (RADAR_MEMOIRE=pg) : Postgres fait foi, le Sheet n'est plus
+         lu. À n'activer qu'après un ou deux runs sans écart.
+
+    Pourquoi cette prudence : une mémoire trop PETITE fait réanalyser des avis
+    (coût LLM et doublons) ; une mémoire trop GRANDE fait silencieusement
+    SAUTER de vrais leads. Le second cas est le vrai danger, invisible sans
+    comparaison préalable."""
+    pg = _memoire_depuis_pg(nom_onglet)
+    bascule = os.environ.get("RADAR_MEMOIRE", "").strip().lower() == "pg"
+
+    if bascule and pg is not None:
+        print("  memoire '{}' : Postgres fait foi ({} connu(s)).".format(
+            nom_onglet, len(pg)))
+        return pg
+
+    sheet = _memoire_depuis_sheet(sheet_id, fichier_compte_service,
+                                  nom_onglet, colonnes)
+    if pg is not None:
+        manquants, en_trop = sheet - pg, pg - sheet
+        if manquants or en_trop:
+            print("  memoire '{}' : ECART Sheet/Postgres -> {} absent(s) de la "
+                  "base, {} en trop. Bascule prematuree.".format(
+                      nom_onglet, len(manquants), len(en_trop)))
+        else:
+            print("  memoire '{}' : Sheet et Postgres identiques ({} connu(s)),"
+                  " bascule sans risque.".format(nom_onglet, len(sheet)))
+    if bascule and pg is None:
+        print("  (info) RADAR_MEMOIRE=pg demande mais base indisponible :"
+              " repli sur le Sheet.")
+    return sheet
 
 
 def ligne_depuis_resultat(r):
