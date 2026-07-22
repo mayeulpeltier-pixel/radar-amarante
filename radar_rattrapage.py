@@ -31,9 +31,30 @@ a la main dans le Sheet ne cree pas de doublon au rejeu suivant. Limite
 honnete : si une donnee de la ligne change dans le Sheet, le rejeu ajoute la
 nouvelle version a cote de l'ancienne (historique conserve, jamais ecrase).
 
+LECTURE POSITIONNELLE (correction du 22/07/2026)
+------------------------------------------------
+La premiere version lisait le Sheet PAR EN-TETE (`get_all_records`). C'etait
+une faute : tout le reste du projet lit PAR POSITION, justement parce qu'un
+en-tete peut etre desaligne. Celui de `bm_radar` l'etait d'exactement une
+colonne, et le rattrapage a donc range toutes les valeurs sous de mauvais
+noms -- la colonne `publication_number` contenait les NUMEROS DE TELEPHONE
+(contact_phone, la colonne juste avant). Diagnostic pose par la phase d'ombre
+de la memoire inter-runs, qui a montre '(258) 843031273' cote base contre
+'OP00264347' cote Sheet.
+
+Desormais : pour tout onglet dont le schema est connu (les collecteurs le
+publient), lecture positionnelle. Pour les onglets libres (watchlist,
+referentiels, suivi), lecture par en-tete, qui reste le seul moyen.
+
+PURGE : `RADAR_RATTRAPAGE_PURGE=1` vide les onglets a schema connu AVANT de
+les reimporter. Sans danger : `radar_lignes` ne contient que de la donnee de
+COLLECTE, integralement reimportable depuis le Sheet ; la zone humaine vit
+dans `radar_statuts`, table SEPAREE, jamais touchee ici.
+
 ENV attendues :
   - TED_SHEET_ID, GOOGLE_SERVICE_ACCOUNT_FILE   (lecture du classeur)
   - DATABASE_URL                                (miroir Postgres)
+  - RADAR_RATTRAPAGE_PURGE   (optionnel : 1 pour reimporter proprement)
   - RADAR_RATTRAPAGE_EXCLUS  (optionnel : noms d'onglets a sauter, separes
     par des virgules)
 
@@ -51,6 +72,51 @@ import radar_stockage as st
 # Zone de saisie humaine : exclue de l'empreinte de contenu pour qu'une mise a
 # jour manuelle de statut ne fabrique pas de doublon au rejeu.
 CLES_HUMAINES = ("statut_suivi", "statut_prospection")
+
+
+def schemas_connus():
+    """{onglet: colonnes officielles}. Chaque collecteur publie son schema ;
+    on l'importe au lieu de le recopier, pour qu'un ajout de colonne demain
+    n'invalide pas le rattrapage. Import best-effort : un module absent retire
+    simplement son onglet de la liste (il retombera en lecture par en-tete)."""
+    plan = [
+        ("ted_complet_v14", "NOM_ONGLET_SHEET", "TOUTES_COLONNES_SHEET"),
+        ("ted_complet_bm", "NOM_ONGLET_BM", "TOUTES_COLONNES_BM"),
+        ("ted_complet_reliefweb", "NOM_ONGLET_RW", "TOUTES_COLONNES_RW"),
+        ("afdb_radar", "NOM_ONGLET", "TOUTES_COLONNES_AFDB"),
+        ("ebrd_radar", "NOM_ONGLET", "TOUTES_COLONNES_EBRD"),
+        ("adb_radar", "NOM_ONGLET", "TOUTES_COLONNES_ADB"),
+        ("ungm_radar", "NOM_ONGLET", "TOUTES_COLONNES_UNGM"),
+        ("ted_complet_attributions", "NOM_ONGLET", "TOUTES_COLONNES"),
+        ("bitd_signaux", "NOM_ONGLET_PRIVE", "TOUTES_COLONNES_PRIVE"),
+        ("enrichir_entreprises", "NOM_ONGLET_ENRICHIES", "COLONNES_ENRICHIES"),
+        ("enrichir_entreprises", "NOM_ONGLET_CONTACTS", "COLONNES_CONTACTS"),
+    ]
+    schemas = {}
+    for module, attr_onglet, attr_colonnes in plan:
+        try:
+            mod = __import__(module)
+            schemas[getattr(mod, attr_onglet)] = list(getattr(mod, attr_colonnes))
+        except Exception:
+            continue
+    return schemas
+
+
+def lignes_positionnelles(valeurs, colonnes):
+    """Grille brute (get_all_values) -> dicts, PAR POSITION. Immunise contre
+    un en-tete desaligne, absent ou obsolete. Une eventuelle ligne d'en-tete
+    est reconnue par son contenu (elle repete les noms de colonnes)."""
+    if not valeurs:
+        return []
+    premiere = [str(c).strip() for c in valeurs[0]]
+    debut = 1 if len(set(premiere) & set(colonnes)) >= 3 else 0
+    lignes = []
+    for row in valeurs[debut:]:
+        d = {c: (str(row[i]).strip() if i < len(row) else "")
+             for i, c in enumerate(colonnes)}
+        if any(v for v in d.values()):
+            lignes.append(d)
+    return lignes
 
 
 def cle_contenu(donnees):
@@ -76,26 +142,39 @@ def preparer_rattrapage(ligne):
     return donnees
 
 
-def rattraper_classeur(classeur, conn, exclus=()):
+def rattraper_classeur(classeur, conn, exclus=(), purger=False, schemas=None):
     """Verse chaque onglet du classeur dans le miroir. {onglet: (lues,
-    ajoutees, deja, erreur|'')} pour le compte-rendu."""
+    ajoutees, deja, erreur|'')} pour le compte-rendu.
+
+    Onglet a schema connu -> lecture POSITIONNELLE (immunisee contre un
+    en-tete desaligne). Onglet libre -> lecture par en-tete, faute de mieux."""
+    schemas = schemas_connus() if schemas is None else schemas
     bilan = {}
     for ws in classeur.worksheets():
         titre = ws.title
         if titre in exclus:
             bilan[titre] = (0, 0, 0, "exclu")
             continue
+        colonnes = schemas.get(titre)
         try:
-            lignes = ws.get_all_records()
+            if colonnes:
+                lignes = lignes_positionnelles(ws.get_all_values(), colonnes)
+            else:
+                lignes = [l for l in ws.get_all_records()
+                          if any(str(v).strip() for v in (l or {}).values())]
         except Exception as e:
             bilan[titre] = (0, 0, 0, "illisible : {}".format(str(e)[:80]))
             continue
-        pretes = [preparer_rattrapage(l) for l in lignes
-                  if any(str(v).strip() for v in (l or {}).values())]
+        pretes = [preparer_rattrapage(l) for l in lignes]
         try:
+            if purger and colonnes:
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM radar_lignes WHERE onglet = %s",
+                                (titre,))
             ajoutees, deja = st.ajouter_lignes(conn, titre, pretes)
             conn.commit()
-            bilan[titre] = (len(pretes), ajoutees, deja, "")
+            bilan[titre] = (len(pretes), ajoutees, deja,
+                            "positionnel" if colonnes else "en-tete")
         except Exception as e:
             conn.rollback()
             bilan[titre] = (len(pretes), 0, 0, "ecriture : {}".format(str(e)[:80]))
@@ -115,22 +194,29 @@ def main():
     exclus = tuple(x.strip() for x in
                    os.environ.get("RADAR_RATTRAPAGE_EXCLUS", "").split(",")
                    if x.strip())
+    purger = os.environ.get("RADAR_RATTRAPAGE_PURGE", "") == "1"
 
+    schemas = schemas_connus()
     print("Rattrapage historique Sheet -> Postgres...")
+    print("  {} onglet(s) a schema connu : lecture POSITIONNELLE.".format(
+        len(schemas)))
+    if purger:
+        print("  PURGE demandee : ces onglets seront vides puis reimportes"
+              " (radar_statuts, la zone humaine, n'est pas touchee).")
     classeur = backup_sheet.ouvrir_classeur(sheet_id, fichier)
     with st.connexion() as conn:
         st.initialiser(conn)
-        bilan = rattraper_classeur(classeur, conn, exclus)
+        bilan = rattraper_classeur(classeur, conn, exclus, purger, schemas)
         etat = st.inventaire(conn)
 
     total_aj = 0
-    for titre, (lues, aj, deja, err) in sorted(bilan.items()):
+    for titre, (lues, aj, deja, note) in sorted(bilan.items()):
         total_aj += aj
-        if err:
-            print("  {:24} {} ({} ligne(s) lue(s))".format(titre, err, lues))
+        if note in ("positionnel", "en-tete", "exclu"):
+            print("  {:24} {} lue(s) | {} ajoutee(s) | {} deja connue(s)  [{}]".format(
+                titre, lues, aj, deja, note))
         else:
-            print("  {:24} {} lue(s) | {} ajoutee(s) | {} deja connue(s)".format(
-                titre, lues, aj, deja))
+            print("  {:24} {} ({} ligne(s) lue(s))".format(titre, note, lues))
     print("Total : {} ligne(s) ajoutee(s) au miroir.".format(total_aj))
     print("\nInventaire Postgres apres rattrapage :")
     for onglet, nb in etat.items():
