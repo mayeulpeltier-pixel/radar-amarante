@@ -314,6 +314,59 @@ class TestDiagnosticRessources(unittest.TestCase):
         self.assertEqual(rap["essais"], [])
 
 
+class TestDatastore(unittest.TestCase):
+    """Le jeu des attributions pese 70 Mo et n'expose AUCUNE URL. Le datastore
+    CKAN, lui, est actif : donnees en JSON, page par page, avec filtrage COTE
+    SERVEUR. On ne rapatrie que le perimetre au lieu du fichier entier."""
+
+    CHAMPS = ["_id", "contract_id", "contract_type", "project_name",
+              "operation_country_code", "operation_country_name",
+              "economic_sector_name", "idb_amount", "awarded_firm_name",
+              "awarded_firm_country_name", "contract_date"]
+
+    def _faux(self, rid, filtres, limite, decalage):
+        rec = {c: "" for c in self.CHAMPS}
+        rec.update({"contract_id": "CO-L1174-C01",
+                    "operation_country_code": "CO",
+                    "awarded_firm_name": "Constructora Odebrecht SA",
+                    "awarded_firm_country_name": "Brazil",
+                    "idb_amount": "12500000"})
+        total = 42 if not filtres else (
+            7 if filtres.get("operation_country_code") == "CO" else 0)
+        return {"records": [rec][:limite],
+                "fields": [{"id": c} for c in self.CHAMPS], "total": total}
+
+    def test_lecture(self):
+        rec, champs, total = idb.lire_datastore("r", fetch=self._faux, limite=5)
+        self.assertEqual(len(champs), len(self.CHAMPS))
+        self.assertEqual(total, 42)
+        self.assertEqual(rec[0]["awarded_firm_name"], "Constructora Odebrecht SA")
+
+    def test_filtrage_serveur(self):
+        _r, _c, n = idb.lire_datastore(
+            "r", filtres={"operation_country_code": "CO"}, fetch=self._faux)
+        self.assertEqual(n, 7)
+        _r2, _c2, n2 = idb.lire_datastore(
+            "r", filtres={"operation_country_code": "FR"}, fetch=self._faux)
+        self.assertEqual(n2, 0)
+
+    def test_ressource_datastore_prioritaire(self):
+        """On choisit la ressource dont le datastore est ACTIF, pas la
+        premiere venue."""
+        paquet = {"resources": [
+            {"id": "sans-datastore", "datastore_active": False},
+            {"id": "avec-datastore", "datastore_active": True}]}
+        self.assertEqual(idb.id_ressource(fetch=lambda: paquet),
+                         "avec-datastore")
+
+    def test_perimetre_sous_les_deux_formes(self):
+        """Le datastore expose le pays en ISO2 et en clair : on doit pouvoir
+        filtrer avec l'un ou l'autre."""
+        self.assertEqual(len(idb.PAYS_ISO2), len(idb.PAYS_NOMS))
+        self.assertIn("CO", idb.PAYS_ISO2)
+        self.assertIn("Colombia", idb.PAYS_NOMS)
+
+
 class TestSortieSheet(unittest.TestCase):
 
     def test_schema_coherent(self):
