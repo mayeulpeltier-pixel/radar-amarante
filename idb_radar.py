@@ -149,11 +149,11 @@ def url_du_fichier(session=None, fetch=None):
                 url = (ressource.get("url") or "").strip()
                 if url:
                     return url
-                # Certaines ressources n'exposent pas d'URL mais un id : le
-                # portail sert alors le fichier via /file/download/<id>.
-                ident = (ressource.get("id") or "").strip()
-                if ident:
-                    return "https://data.iadb.org/file/download/{}".format(ident)
+                # NE PAS fabriquer d'URL a partir de l'identifiant de
+                # ressource : essaye le 22/07/2026 sur le jeu des
+                # attributions, cela produit un 403 applicatif. Une ressource
+                # sans URL se diagnostique (diagnostiquer_paquet), elle ne se
+                # devine pas.
     except Exception as e:
         print("  (info) CKAN indisponible ({}), repli sur l'URL de secours.".format(
             str(e)[:70]))
@@ -460,6 +460,61 @@ def merite_escalade(r):
             in ("prestataire_tiers", "aucune"))
 
 
+def diagnostiquer_paquet(session=None, fetch=None):
+    """Dump COMPLET des ressources d'un paquet CKAN, et essais d'acces.
+
+    Pourquoi : pour le jeu des attributions, la ressource n'expose AUCUNE URL.
+    J'ai alors fabrique "/file/download/<id de ressource>", ce qui a produit un
+    403 applicatif : une URL devinee, une fois de plus. On regarde donc ce que
+    la ressource contient VRAIMENT, et on essaie les voies d'acces normalisees
+    de CKAN, y compris le datastore (qui evite de telecharger 70 Mo)."""
+    session = session or ted.session_robuste()
+    rapport = {"ressources": [], "essais": []}
+    if fetch:
+        res = fetch()
+    else:
+        r = session.get("{}/package_show".format(CKAN), params={"id": PAQUET},
+                        headers=ENTETES, timeout=45)
+        r.raise_for_status()
+        res = (r.json() or {}).get("result") or {}
+    for ressource in res.get("resources") or []:
+        rapport["ressources"].append(dict(ressource))
+        ident = (ressource.get("id") or "").strip()
+        # Toutes les voies d'acces standard, dans l'ordre de preference :
+        # le datastore evite de rapatrier le fichier entier.
+        candidates = []
+        if ident:
+            candidates.append(("datastore_search", "{}/datastore_search"
+                               "?resource_id={}&limit=3".format(CKAN, ident)))
+            candidates.append(("dump datastore",
+                               "https://data.iadb.org/datastore/dump/{}"
+                               "?limit=3".format(ident)))
+        for cle in ("url", "download_url", "access_url", "perma_link",
+                    "cache_url"):
+            val = (ressource.get(cle) or "").strip()
+            if val:
+                candidates.append(("champ " + cle, val))
+        for etiquette, url in candidates:
+            if fetch:                       # mode test : pas d'appel reseau
+                continue
+            try:
+                rr = session.get(url, headers=ENTETES, timeout=60, stream=True)
+                apercu = ""
+                if rr.status_code < 400:
+                    morceaux = []
+                    for bloc in rr.iter_content(4096):
+                        morceaux.append(bloc)
+                        if sum(len(m) for m in morceaux) > 20000:
+                            break
+                    apercu = b"".join(morceaux).decode("utf-8", "replace")[:1200]
+                rr.close()
+                rapport["essais"].append((etiquette, url, rr.status_code, apercu))
+            except Exception as e:
+                rapport["essais"].append((etiquette, url, "exception",
+                                          str(e)[:120]))
+    return rapport
+
+
 def inspecter_schema(session=None, fetch_url=None, fetch_csv=None, maxi=4000):
     """Lit l'en-tete et un echantillon d'un jeu INCONNU, sans rien normaliser.
 
@@ -550,6 +605,31 @@ def main():
             print("       verification (RADAR_IDB_DEBUG=1) tant que son schema")
             print("       n'a pas ete valide. Rien n'est ecrit.")
             return
+        # La ressource des attributions n'expose aucune URL : on DIAGNOSTIQUE
+        # avant toute tentative de lecture, au lieu de fabriquer une URL.
+        print("\n[0] DIAGNOSTIC DES RESSOURCES CKAN")
+        try:
+            rap = diagnostiquer_paquet()
+        except Exception as e:
+            print("      diagnostic impossible : {}".format(str(e)[:150]))
+            rap = {"ressources": [], "essais": []}
+        for i, ressource in enumerate(rap["ressources"], start=1):
+            print("\n  --- ressource {} : tous ses champs ---".format(i))
+            for cle in sorted(ressource):
+                val = str(ressource[cle])
+                if val and val not in ("None", "{}", "[]", ""):
+                    print("      {:24} = {}".format(cle[:24], val[:90]))
+        print("\n  --- voies d'acces essayees ---")
+        for etiquette, url, statut, apercu in rap["essais"]:
+            print("      [{}] {:20} {}".format(statut, etiquette, url[:76]))
+            if apercu and str(statut).startswith("2"):
+                print("           apercu : {}".format(
+                    " ".join(apercu.split())[:420]))
+        if not [e for e in rap["essais"] if str(e[2]).startswith("2")]:
+            print("\n  => AUCUNE voie ouverte sur ce jeu.")
+            print("--- FIN DE L'INSPECTION (aucune ecriture) ---")
+            return
+
         try:
             info = inspecter_schema()
         except Exception as e:
