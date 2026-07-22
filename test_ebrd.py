@@ -83,9 +83,18 @@ class TestResolutionPays(unittest.TestCase):
         self.assertEqual(ebrd.resoudre_iso3("Tajikistan")[0], "TJK")
 
     def test_hors_zone(self):
-        iso, hz = ebrd.resoudre_iso3("Mongolia")
+        """Un pays reellement hors perimetre reste ecarte et signale."""
+        iso, hz = ebrd.resoudre_iso3("Romania")
         self.assertEqual(iso, "")
-        self.assertEqual(hz, "Mongolia")
+        self.assertEqual(hz, "Romania")
+
+    def test_mongolie_entree_dans_le_perimetre(self):
+        """CHANGEMENT ASSUME (22/07/2026) : la Mongolie fait desormais partie
+        du perimetre commercial Amarante. L'EBRD la couvre, elle devient donc
+        une source de leads asiatiques la ou il n'y en avait aucune."""
+        iso, hz = ebrd.resoudre_iso3("Mongolia")
+        self.assertEqual(iso, "MNG")
+        self.assertEqual(hz, "")
 
 
 class TestPipeline(unittest.TestCase):
@@ -97,12 +106,14 @@ class TestPipeline(unittest.TestCase):
 
     def test_retient_suivis_exclut_attrib_et_horszone(self):
         pays = sorted(a["pays_execution"] for a in self.avis)
-        # Kyrgyz, Serbia, Tajikistan, Ukraine gardes.
-        # Moldova (attribution) et Mongolia (hors zone) exclus.
-        self.assertEqual(pays, ["KGZ", "SRB", "TJK", "UKR"])
+        # Kyrgyz, Mongolie, Serbia, Tajikistan, Ukraine gardes.
+        # Moldova (attribution) exclue.
+        self.assertEqual(pays, ["KGZ", "MNG", "SRB", "TJK", "UKR"])
 
-    def test_mongolia_signale(self):
-        self.assertIn("Mongolia", self.stats["pays_hors_zone"])
+    def test_mongolie_desormais_collectee(self):
+        """Elle n'est plus signalee comme hors zone : c'est le gain concret
+        de l'elargissement du perimetre."""
+        self.assertNotIn("Mongolia", self.stats["pays_hors_zone"])
 
     def test_client_devient_acheteur(self):
         kg = [a for a in self.avis if a["pays_execution"] == "KGZ"][0]
