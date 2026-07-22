@@ -153,6 +153,9 @@ ZONE_PAR_ISO3 = {
     "SRB": ("Serbie", "Balkans"), "GEO": ("Géorgie", "Caucase"),
     "HTI": ("Haïti", "Caraïbes"), "JAM": ("Jamaïque", "Caraïbes"),
     "MEX": ("Mexique", "Amérique latine"), "ECU": ("Équateur", "Amérique latine"),
+    # Perimetre commercial elargi le 22/07/2026 (Amerique centrale + Mongolie).
+    "HND": ("Honduras", "Amérique latine"), "GTM": ("Guatemala", "Amérique latine"),
+    "MNG": ("Mongolie", "Asie centrale"),
     "BRA": ("Brésil", "Amérique latine"), "OMN": ("Oman", "Péninsule arabique"),
     "FRA": ("France", "Europe de l'Ouest"), "DEU": ("Allemagne", "Europe de l'Ouest"),
     "DNK": ("Danemark", "Europe de l'Ouest"), "NCL": ("Nouvelle-Calédonie", "Outre-mer"),
@@ -1537,7 +1540,7 @@ const COORDS={
  "Ouzbékistan":[41.4,64.6],"Tadjikistan":[38.9,71.3],"Kirghizistan":[41.2,74.8],"Kazakhstan":[48.0,66.9],
  "Bangladesh":[23.7,90.4],"Pakistan":[30.4,69.3],"Inde":[22.4,78.9],"Népal":[28.4,84.1],"Indonésie":[-2.5,118.0],"Philippines":[12.9,121.8],
  "Ukraine":[48.4,31.2],"Moldavie":[47.2,28.5],"Albanie":[41.2,20.0],"Macédoine du Nord":[41.6,21.7],"Serbie":[44.0,21.0],"Géorgie":[42.3,43.4],"Arménie":[40.1,45.0],"Azerbaïdjan":[40.1,47.6],
- "Haïti":[19.0,-72.3],"Jamaïque":[18.1,-77.3],"Mexique":[23.6,-102.6],"Équateur":[-1.8,-78.2],"Brésil":[-10.3,-53.2],"Colombie":[4.6,-74.3],
+ "Haïti":[19.0,-72.3],"Jamaïque":[18.1,-77.3],"Mexique":[23.6,-102.6],"Honduras":[14.8,-86.2],"Guatemala":[15.5,-90.2],"Mongolie":[46.9,103.8],"Équateur":[-1.8,-78.2],"Brésil":[-10.3,-53.2],"Colombie":[4.6,-74.3],
  "France":[46.6,2.2],"Allemagne":[51.2,10.4],"Danemark":[56.0,9.5],"Nouvelle-Calédonie":[-21.3,165.5],
  // -- Complement carte (audit juillet 2026) : coordonnees des pays qui
  // etaient mappes a une zone mais sans point sur la carte (Afghanistan,
