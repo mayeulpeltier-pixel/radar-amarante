@@ -129,6 +129,7 @@ class TestApplicationIntegration(unittest.TestCase):
         os.environ.pop("RADAR_APP_MOT_DE_PASSE", None)
 
     def setUp(self):
+        radar_app.invalider_cache()
         with self.conn.cursor() as cur:
             cur.execute("TRUNCATE radar_lignes")
             cur.execute("TRUNCATE radar_statuts")
@@ -181,6 +182,51 @@ class TestApplicationIntegration(unittest.TestCase):
         # Le statut serveur voyage dans les donnees de la page (et non plus
         # seulement dans le localStorage du poste qui a clique).
         self.assertIn('"statut": "contacte"', page.replace("'", '"'))
+
+    # -- Performance (mesures du 22/07/2026 : 2,6 Mo -> 96 Ko) -------------
+    def test_page_compressee(self):
+        """uvicorn ne compresse rien par defaut : sans ce middleware, chaque
+        chargement transferait 2,6 Mo."""
+        r = _client().get("/", auth=self.AUTH, headers={"Accept-Encoding": "gzip"})
+        self.assertEqual(r.headers.get("content-encoding"), "gzip")
+
+    def test_cache_evite_de_regenerer(self):
+        """Les donnees ne changent que 2 fois par semaine : la seconde demande
+        ne doit pas reconstruire la page."""
+        appels = []
+        original = radar_app.generer_page
+        radar_app.generer_page = lambda conn: appels.append(1) or original(conn)
+        try:
+            c = _client()
+            c.get("/", auth=self.AUTH)
+            c.get("/", auth=self.AUTH)
+            c.get("/", auth=self.AUTH)
+            self.assertEqual(len(appels), 1, "la page a ete regeneree inutilement")
+        finally:
+            radar_app.generer_page = original
+
+    def test_frais_force_la_regeneration(self):
+        appels = []
+        original = radar_app.generer_page
+        radar_app.generer_page = lambda conn: appels.append(1) or original(conn)
+        try:
+            c = _client()
+            c.get("/", auth=self.AUTH)
+            c.get("/?frais=1", auth=self.AUTH)
+            self.assertEqual(len(appels), 2)
+        finally:
+            radar_app.generer_page = original
+
+    def test_poser_un_statut_invalide_le_cache(self):
+        """Sinon l'utilisateur cliquerait « Je contacte » sans voir sa propre
+        action pendant dix minutes."""
+        c = _client()
+        c.get("/", auth=self.AUTH)
+        c.post("/api/statut", auth=self.AUTH, json={
+            "onglet": "ted_radar", "publication_number": "TED-APP-1",
+            "statut": "gagne"})
+        page = c.get("/", auth=self.AUTH).text
+        self.assertIn("gagne", page)
 
     def test_statut_sans_identifiant_refuse(self):
         r = _client().post("/api/statut", auth=self.AUTH, json={
