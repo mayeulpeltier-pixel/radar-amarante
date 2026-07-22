@@ -42,6 +42,7 @@ VERIFICATION AVANT ECRITURE :  RADAR_IDB_DEBUG=1  (motif IsDB)
 
 import csv
 import io
+import json
 import os
 import time
 from datetime import date, datetime, timedelta
@@ -99,6 +100,12 @@ COL_METHODE = "prcrmnt_mthd_engl_nm"
 COL_CATEGORIE = "category_nm"
 COL_TYPE = "type"
 COL_DESC = "process_desc"
+
+# Perimetre commercial, sous les deux formes possibles : le datastore expose
+# `operation_country_code` (ISO2) et `operation_country_name`.
+PAYS_ISO2 = ["MX", "VE", "EC", "HN", "CO", "GT", "PE", "BO", "BR", "AR", "CL"]
+PAYS_NOMS = ["Mexico", "Venezuela", "Ecuador", "Honduras", "Colombia",
+             "Guatemala", "Peru", "Bolivia", "Brazil", "Argentina", "Chile"]
 
 VIDES = {"", "null", "NULL", "None", "n/a", "N/A", "-"}
 
@@ -460,6 +467,50 @@ def merite_escalade(r):
             in ("prestataire_tiers", "aucune"))
 
 
+def id_ressource(session=None, fetch=None):
+    """Identifiant de la ressource datastore du paquet courant."""
+    if fetch:
+        res = fetch()
+    else:
+        session = session or ted.session_robuste()
+        r = session.get("{}/package_show".format(CKAN), params={"id": PAQUET},
+                        headers=ENTETES, timeout=45)
+        r.raise_for_status()
+        res = (r.json() or {}).get("result") or {}
+    for ressource in res.get("resources") or []:
+        if ressource.get("datastore_active") and ressource.get("id"):
+            return ressource["id"]
+    for ressource in res.get("resources") or []:
+        if ressource.get("id"):
+            return ressource["id"]
+    return ""
+
+
+def lire_datastore(rid, filtres=None, limite=100, decalage=0,
+                   session=None, fetch=None):
+    """Interroge l'API datastore de CKAN. (enregistrements, champs, total).
+
+    POURQUOI CETTE VOIE : la ressource des attributions pese 70 Mo et n'expose
+    AUCUNE URL de telechargement. Le datastore, lui, est actif : il rend les
+    donnees en JSON, page par page, avec filtrage COTE SERVEUR. On ne rapatrie
+    donc que les pays du perimetre, au lieu du fichier entier."""
+    if fetch:
+        donnees = fetch(rid, filtres, limite, decalage)
+    else:
+        session = session or ted.session_robuste()
+        params = {"resource_id": rid, "limit": limite, "offset": decalage,
+                  "include_total": "true"}
+        if filtres:
+            params["filters"] = json.dumps(filtres)
+        r = session.get("{}/datastore_search".format(CKAN), params=params,
+                        headers=ENTETES, timeout=90)
+        r.raise_for_status()
+        donnees = (r.json() or {}).get("result") or {}
+    return (donnees.get("records") or [],
+            [c.get("id") for c in (donnees.get("fields") or [])],
+            donnees.get("total"))
+
+
 def diagnostiquer_paquet(session=None, fetch=None):
     """Dump COMPLET des ressources d'un paquet CKAN, et essais d'acces.
 
@@ -630,28 +681,62 @@ def main():
             print("--- FIN DE L'INSPECTION (aucune ecriture) ---")
             return
 
+        # Le datastore est actif : on lit par API, sans rapatrier les 70 Mo.
         try:
-            info = inspecter_schema()
+            rid = id_ressource()
+            echantillon, champs, total = lire_datastore(rid, limite=5)
         except Exception as e:
-            print("ERREUR : inspection impossible ({}).".format(str(e)[:200]))
+            print("ERREUR : datastore illisible ({}).".format(str(e)[:200]))
             return
-        print("Fichier : {}".format(info["url"]))
-        print("{} ligne(s) lues (echantillon).".format(info["lignes_lues"]))
-        print("\n[A] COLONNES ({}) :".format(len(info["colonnes"])))
-        for c in info["colonnes"]:
+        print("\n[A] CHAMPS DU DATASTORE ({}) | {} enregistrement(s) au total".format(
+            len(champs), total))
+        for c in champs:
             print("      " + str(c)[:70])
-        print("\n[B] FRAICHEUR : annees vues dans les colonnes de date")
-        if not info["annees"]:
-            print("      (aucune colonne de date reconnue)")
-        for cle, compte in info["annees"].items():
-            recentes = sorted(compte.items(), reverse=True)[:8]
-            print("      {} : {}".format(cle, ", ".join(
-                "{} ({})".format(a, n) for a, n in recentes)))
-        print("\n[C] TROIS PREMIERES LIGNES (brut) :")
-        for i, ligne in enumerate(info["echantillon"], start=1):
-            print("\n  --- ligne {} ---".format(i))
-            for cle, val in list(ligne.items())[:30]:
-                print("      {:32} = {}".format(str(cle)[:32], str(val)[:60]))
+
+        print("\n[B] PREMIER ENREGISTREMENT COMPLET (brut) :")
+        if echantillon:
+            for cle in champs:
+                val = str(echantillon[0].get(cle, ""))
+                if val and val.lower() not in ("none", "null", ""):
+                    print("      {:30} = {}".format(str(cle)[:30], val[:64]))
+
+        print("\n[C] VOLUMETRIE PAR PAYS DU PERIMETRE (filtrage cote serveur)")
+        # Le nom exact de la colonne pays reste a confirmer : on essaie les
+        # deux candidates reperees dans l'en-tete du dump.
+        colonne_pays = None
+        for candidate in ("operation_country_code", "operation_country_name"):
+            if candidate in champs:
+                colonne_pays = candidate
+                break
+        if not colonne_pays:
+            print("      (aucune colonne pays reconnue parmi les champs)")
+        else:
+            print("      colonne utilisee : {}".format(colonne_pays))
+            valeurs = (PAYS_ISO2 if colonne_pays.endswith("_code")
+                       else PAYS_NOMS)
+            trouves = 0
+            for v in valeurs:
+                try:
+                    _r, _c, n = lire_datastore(
+                        rid, filtres={colonne_pays: v}, limite=1)
+                except Exception as e:
+                    print("      {:12} erreur : {}".format(v, str(e)[:50]))
+                    continue
+                if n:
+                    trouves += n
+                print("      {:14} {} contrat(s)".format(v, n if n is not None else "?"))
+            print("      TOTAL perimetre : {}".format(trouves))
+
+        print("\n[D] FRAICHEUR : dernieres valeurs des colonnes de date")
+        colonnes_date = [c for c in champs
+                         if any(m in str(c).lower() for m in ("date", "year"))]
+        if not colonnes_date:
+            print("      (aucune colonne de date dans le schema)")
+        if echantillon and colonnes_date:
+            print("      valeurs sur l'echantillon :")
+            for c in colonnes_date[:4]:
+                print("        {:26} = {}".format(
+                    str(c)[:26], str(echantillon[0].get(c, ""))[:40]))
         print("\n--- FIN DE L'INSPECTION (aucune ecriture) ---")
         return
 
