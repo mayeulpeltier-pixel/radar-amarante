@@ -39,6 +39,11 @@ jobs:
       - name: Rattraper l'historique
         env:
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          # PURGE : vide les onglets a schema connu avant reimport. Necessaire
+          # une fois, pour remplacer les lignes rangees sous de mauvais noms par
+          # l'ancienne lecture par en-tete (bug du 22/07/2026). Sans danger :
+          # radar_statuts (zone humaine) est une table SEPAREE, jamais touchee.
+          RADAR_RATTRAPAGE_PURGE: "1"
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python radar_rattrapage.py
