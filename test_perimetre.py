@@ -122,5 +122,38 @@ class TestAffichageDashboard(unittest.TestCase):
                           "{} tomberait dans 'Non classe'".format(iso))
 
 
+class TestCorrespondanceDesNoms(unittest.TestCase):
+    """Piege decouvert le 22/07/2026 en preparant le collecteur IDB : ouvrir
+    un pays dans PAYS_COUVERTS_AMARANTE ne sert A RIEN si son NOM ne se
+    traduit pas en ISO3. La Banque Mondiale recoit des noms ("Argentina"),
+    pas des codes : sans correspondance, code_iso3_pays renvoie "" -> tier 0.2
+    -> pays ecarte, en silence, malgre son ajout au perimetre."""
+
+    NOMS = {"Argentina": "ARG", "Brazil": "BRA", "Chile": "CHL",
+            "Venezuela": "VEN", "Mongolia": "MNG", "Mexico": "MEX",
+            "Colombia": "COL", "Peru": "PER", "Bolivia": "BOL",
+            "Honduras": "HND", "Guatemala": "GTM", "Ecuador": "ECU",
+            "Indonesia": "IDN"}
+
+    def test_chaque_nom_se_traduit(self):
+        import ted_complet_bm as bm
+        for nom, iso in self.NOMS.items():
+            self.assertEqual(bm.code_iso3_pays(nom), iso,
+                             "{} ne se traduit pas en {}".format(nom, iso))
+
+    def test_chaque_nom_franchit_le_filtre(self):
+        """Le bout de la chaine : nom -> ISO3 -> perimetre -> collecte."""
+        import ted_complet_bm as bm
+        for nom in self.NOMS:
+            self.assertTrue(ted.dans_le_perimetre(bm.code_iso3_pays(nom)),
+                            "{} serait ecarte a la collecte".format(nom))
+
+    def test_pas_de_repli_par_sous_chaine(self):
+        """La garde historique tient : 'mali' est contenu dans 'somalia'."""
+        import ted_complet_bm as bm
+        self.assertEqual(bm.code_iso3_pays("Somalia"), "SOM")
+        self.assertEqual(bm.code_iso3_pays("Romania"), "")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
