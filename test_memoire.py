@@ -63,6 +63,18 @@ class TestMemoireInterRuns(unittest.TestCase):
         self.assertIn("1 absent(s)", journal)      # A manque en base
         self.assertIn("1 en trop", journal)        # C est en trop
 
+    def test_ecart_montre_des_exemples(self):
+        """Un ecart sans exemples est indiagnosticable a distance : il faut
+        VOIR les valeurs pour distinguer un decalage de colonne d'un simple
+        ecart de format."""
+        self._brancher({"OP00439235", "OP00453659"}, {"2347061371240"})
+        _res, journal = self._appeler()
+        self.assertIn("cote Sheet", journal)
+        self.assertIn("cote Postgres", journal)
+        self.assertIn("en commun", journal)
+        self.assertIn("OP00439235", journal)       # exemple reel montre
+        self.assertIn("2347061371240", journal)
+
     def test_accord_journalise_comme_sans_risque(self):
         self._brancher({"A", "B"}, {"A", "B"})
         _res, journal = self._appeler()
