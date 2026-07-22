@@ -190,6 +190,34 @@ class TestChaineComplete(unittest.TestCase):
         self.assertEqual(len(avis), 1)
 
 
+class TestEntetesReseau(unittest.TestCase):
+    """Le bug du premier run reel (22/07/2026) : Cloudflare a renvoye 403 sur
+    le telechargement parce que la session s'annoncait 'python-requests/2.33.1'."""
+
+    def test_entete_navigateur(self):
+        ua = idb.ENTETES.get("User-Agent", "")
+        self.assertIn("Mozilla", ua)
+        self.assertNotIn("python-requests", ua)
+
+    def test_les_appels_reseau_portent_les_entetes(self):
+        """Structurel : les deux appels (CKAN et telechargement) doivent
+        passer ENTETES, sinon le 403 revient."""
+        import inspect
+        for fonction in (idb.url_du_fichier, idb.lignes_csv):
+            src = inspect.getsource(fonction)
+            self.assertIn("headers=ENTETES", src,
+                          "{} n'envoie pas les en-tetes".format(fonction.__name__))
+
+    def test_session_globale_non_mutee(self):
+        """PIEGE MAJEUR : ted.session_robuste() est un SINGLETON partage avec
+        TED et Anthropic. Modifier ses en-tetes contaminerait tout le pipeline.
+        Les en-tetes doivent etre passes par requete, jamais poses dessus."""
+        import inspect
+        src = inspect.getsource(idb)
+        self.assertNotIn("session.headers.update", src)
+        self.assertNotIn("session_robuste().headers", src)
+
+
 class TestSortieSheet(unittest.TestCase):
 
     def test_schema_coherent(self):
