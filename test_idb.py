@@ -252,6 +252,40 @@ class TestMotifsDeRejet(unittest.TestCase):
         self.assertEqual(self._motif(), "")
 
 
+class TestInspectionSchema(unittest.TestCase):
+    """Le jeu ATTRIBUTIONS (70 Mo) n'a jamais ete inspecte. On lit son schema
+    AVANT d'ecrire la moindre regle : coder a l'aveugle est exactement ce qui
+    a range des numeros de telephone sous `publication_number`."""
+
+    FAUX = ("award_id,contract_date,supplier_name,supplier_country,"
+            "country_name,amount_usd\n"
+            "A1,2026-06-15T00:00,Odebrecht SA,Brazil,Colombia,12500000\n"
+            "A2,2025-11-02T00:00,Sacyr,Spain,Peru,8200000\n")
+
+    def _info(self):
+        return idb.inspecter_schema(fetch_url=lambda: "u",
+                                    fetch_csv=lambda _u: self.FAUX)
+
+    def test_colonnes_relevees(self):
+        self.assertEqual(self._info()["colonnes"][0], "award_id")
+        self.assertIn("supplier_name", self._info()["colonnes"])
+
+    def test_fraicheur_par_colonne_de_date(self):
+        """La mesure decisive : le jeu d'avis s'est revele fige a 2025-10."""
+        annees = self._info()["annees"]
+        self.assertIn("contract_date", annees)
+        self.assertEqual(annees["contract_date"]["2026"], 1)
+
+    def test_echantillon_brut_conserve(self):
+        ligne = self._info()["echantillon"][0]
+        self.assertEqual(ligne["supplier_name"], "Odebrecht SA")
+
+    def test_choix_du_jeu(self):
+        """RADAR_IDB_JEU bascule sur le paquet des attributions."""
+        self.assertNotEqual(idb.PAQUET_AVIS, idb.PAQUET_ATTRIB)
+        self.assertIn(idb.PAQUET, (idb.PAQUET_AVIS, idb.PAQUET_ATTRIB))
+
+
 class TestSortieSheet(unittest.TestCase):
 
     def test_schema_coherent(self):
