@@ -22,6 +22,23 @@ jobs:
   radar:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # Variables communes a TOUTES les etapes du job.
+    env:
+      # BASCULE DE LA MEMOIRE INTER-RUNS (22/07/2026).
+      # Les collecteurs lisent desormais dans Postgres ce qu'ils ont deja
+      # traite, et ne consultent plus Google Sheets pour cela. Pose au niveau
+      # du job pour couvrir toutes les etapes d'un coup.
+      #
+      # Decide APRES verification, pas a l'aveugle : la phase d'ombre a compare
+      # les deux memoires sur plusieurs runs, et les six onglets etaient
+      # identiques au caractere pres (ted 64, bm 292, afdb 103, ebrd 1099,
+      # reliefweb 237, attributions 752). Elle a d'ailleurs intercepte au
+      # passage une corruption de bm_radar que rien d'autre ne montrait.
+      #
+      # RETOUR EN ARRIERE : mettre "0" (ou retirer la ligne) et le Sheet
+      # redevient la reference, sans autre changement. Si la base est
+      # injoignable, le repli sur le Sheet est AUTOMATIQUE.
+      RADAR_MEMOIRE: "pg"
     steps:
       - name: Recuperer le code
         uses: actions/checkout@v4
