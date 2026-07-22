@@ -447,6 +447,105 @@ class TestAttributions(unittest.TestCase):
                           "colonne '{}' manquante".format(colonne))
 
 
+class TestCollecteAttributions(unittest.TestCase):
+    """Les trois filtres, mesures sur donnees reelles le 22/07/2026 : 82 % de
+    titulaires anonymes, une masse de micro-contrats (741 USD), et un jeu qui
+    accuse 7 mois de retard."""
+
+    AUJOURD = date(2026, 7, 22)
+    BASE = {"awarded_firm_name": "IZAMAK S.A. DE C.V.",
+            "operation_country_name": "GUATEMALA",
+            "awarded_firm_country_name": "MEXICO", "contract_id": "GU-L1-C01",
+            "project_number": "GU-L1", "project_name": "Carretera CA-9",
+            "contract_type": "Works", "economic_sector_name": "TRANSPORT",
+            "total_amount": "1121569", "executing_agency": "CIV",
+            "signature_date": "2025-11-14 09:00:00"}
+
+    def _collecte(self, records):
+        def faux(rid, filtres, limite, decalage):
+            if (decalage or filtres.get("operation_country_name") != "GUATEMALA"
+                    or filtres.get("contract_type") != "Works"):
+                return {"records": [], "fields": [], "total": 0}
+            return {"records": records, "fields": [], "total": len(records)}
+        return idb.collecter_attributions(rid="r", fetch=faux,
+                                          aujourd_hui=self.AUJOURD)
+
+    def test_les_trois_filtres(self):
+        recs = [self.BASE,
+                dict(self.BASE, contract_id="X2", total_amount="741"),
+                dict(self.BASE, contract_id="X3",
+                     awarded_firm_name="Not Available"),
+                dict(self.BASE, contract_id="X4",
+                     signature_date="2020-01-01 09:00:00")]
+        a, s = self._collecte(recs)
+        self.assertEqual(s["retenus"], 1)
+        self.assertEqual(s["sans_nom"], 1)
+        self.assertEqual(s["trop_petit"], 1)
+        self.assertEqual(s["hors_fenetre"], 1)
+        self.assertEqual(a[0]["gagnant"], "IZAMAK S.A. DE C.V.")
+
+    def test_titulaire_etranger_compte(self):
+        _a, s = self._collecte([self.BASE])
+        self.assertEqual(s["etrangers"], 1)
+
+    def test_tri_par_montant_decroissant(self):
+        gros = dict(self.BASE, contract_id="G", total_amount="17547637")
+        a, _s = self._collecte([self.BASE, gros])
+        self.assertEqual(a[0]["publication_number"], "IDB-C-G")
+
+    def test_doublons_ecartes(self):
+        a, _s = self._collecte([self.BASE, dict(self.BASE)])
+        self.assertEqual(len(a), 1)
+
+    def test_seuil_pilotable(self):
+        self.assertIsInstance(idb.MONTANT_MIN, float)
+        self.assertIn("Works", idb.TYPES_RETENUS)
+
+
+class TestEcritureAttributions(unittest.TestCase):
+    """La garde partagee par les cinq sources d'attributions : une ligne
+    existante n'est JAMAIS reecrite (statut_prospection = saisie humaine)."""
+
+    class _Feuille:
+        def __init__(self, existants=()):
+            self._rec = [{"publication_number": p} for p in existants]
+            self.ajouts = []
+
+        def get_all_records(self):
+            return list(self._rec)
+
+        def append_rows(self, lignes, value_input_option=None):
+            self.ajouts.append(list(lignes))
+
+    def _attrib(self, pub="IDB-C-1"):
+        import bm_attributions
+        a = {c: "" for c in bm_attributions.COLONNES}
+        a.update({"publication_number": pub, "gagnant": "IZAMAK",
+                  "pays_execution": "GTM", "a_demarcher": "oui"})
+        return a
+
+    def test_ligne_existante_jamais_reecrite(self):
+        f = self._Feuille(["IDB-C-1"])
+        nb, ignorees = idb.ecrire_attributions(f, [self._attrib()])
+        self.assertEqual((nb, ignorees), (0, 1))
+        self.assertEqual(f.ajouts, [])
+
+    def test_nouvelle_ligne_statut_vierge(self):
+        import bm_attributions
+        f = self._Feuille()
+        nb, _i = idb.ecrire_attributions(f, [self._attrib("IDB-C-9")])
+        self.assertEqual(nb, 1)
+        ligne = f.ajouts[0][0]
+        self.assertEqual(len(ligne), len(bm_attributions.TOUTES_COLONNES))
+        self.assertEqual(ligne[-2], "")          # statut a remplir par l'humain
+
+    def test_doublon_dans_le_meme_lot(self):
+        f = self._Feuille()
+        nb, ignorees = idb.ecrire_attributions(
+            f, [self._attrib("IDB-C-5"), self._attrib("IDB-C-5")])
+        self.assertEqual((nb, ignorees), (1, 1))
+
+
 class TestSortieSheet(unittest.TestCase):
 
     def test_schema_coherent(self):
