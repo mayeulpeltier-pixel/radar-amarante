@@ -160,7 +160,7 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          RADAR_IDB_DEBUG: "1"
+          RADAR_IDB_DEBUG: "0"
           # Le jeu AVIS s'est revele FIGE (plus recent : 03/10/2025, aucun
           # 2026). On inspecte donc le jeu ATTRIBUTIONS, jamais examine :
           # un titulaire reste un prospect bien plus longtemps qu'un avis.
