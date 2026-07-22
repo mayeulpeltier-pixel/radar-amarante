@@ -38,13 +38,71 @@ HEBERGEMENT      : Render (render.yaml a la racine du depot).
 
 import os
 import secrets as _secrets
+import threading
+import time
 
 from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 
 import radar_dashboard as dash
 import radar_stockage as st
+
+
+# ===========================================================================
+# PERFORMANCE : COMPRESSION + CACHE
+# ===========================================================================
+# Mesures du 22/07/2026 sur les volumes reels (3 200 lignes, ~2 500 leads) :
+#     page HTML brute .......... 2,6 Mo
+#     page compressee (gzip) ... 96 Ko   (28x plus legere)
+#     generation complete ...... 0,27 s en local (+ latence reseau vers Neon)
+# Deux leviers, tous deux sans risque fonctionnel :
+#   1. GZip : 2,6 Mo transferes a chaque chargement, c'est inacceptable en
+#      mobilite. uvicorn ne compresse RIEN par defaut.
+#   2. Cache memoire : les donnees ne changent que deux fois par semaine (runs
+#      du lundi et du jeudi). Regenerer la page a chaque rafraichissement est
+#      du gaspillage pur. TTL court malgre tout, et invalidation immediate des
+#      qu'un statut est pose, pour que l'utilisateur voie toujours son action.
+#
+# NOTE MULTI-CLIENT (a traiter le jour venu) : ce cache est GLOBAL au processus.
+# Des lors que l'application servira plusieurs clients, la cle de cache devra
+# inclure l'identite du client, sinon fuite de donnees entre comptes.
+CACHE_S = int(os.environ.get("RADAR_APP_CACHE_S", "600"))
+
+_cache = {"html": None, "t": 0.0}
+_verrou = threading.Lock()
+_schema_pret = False
+
+
+def invalider_cache():
+    """Force la regeneration a la prochaine demande (apres un statut pose)."""
+    _cache["html"] = None
+    _cache["t"] = 0.0
+
+
+def _initialiser_une_fois(conn):
+    """Le schema est idempotent mais inutile a rejouer a CHAQUE requete."""
+    global _schema_pret
+    if not _schema_pret:
+        st.initialiser(conn)
+        _schema_pret = True
+
+
+def page_en_cache(frais=False):
+    """(html, depuis_le_cache). Le verrou evite que dix rafraichissements
+    simultanes declenchent dix generations completes."""
+    if not frais and _cache["html"] and (time.time() - _cache["t"]) < CACHE_S:
+        return _cache["html"], True
+    with _verrou:
+        # Un autre fil a pu regenerer pendant l'attente du verrou.
+        if not frais and _cache["html"] and (time.time() - _cache["t"]) < CACHE_S:
+            return _cache["html"], True
+        with st.connexion() as conn:
+            _initialiser_une_fois(conn)
+            html = generer_page(conn)
+        _cache["html"], _cache["t"] = html, time.time()
+        return html, False
 
 
 # ===========================================================================
@@ -160,21 +218,25 @@ def _verifier(identifiants: HTTPBasicCredentials = Depends(_basic)):
 
 def creer_application():
     app = FastAPI(title="Radar Amarante", docs_url=None, redoc_url=None)
+    # 2,6 Mo -> 96 Ko. Le seuil evite de compresser les petites reponses JSON.
+    app.add_middleware(GZipMiddleware, minimum_size=1000)
 
     @app.get("/sante")
     def sante():
         """Diagnostic sans authentification NI donnees : juste l'etat des
         branchements, pour Render et pour le depannage."""
         return {"miroir": st.actif(),
-                "mot_de_passe_configure": bool(os.environ.get("RADAR_APP_MOT_DE_PASSE"))}
+                "mot_de_passe_configure": bool(os.environ.get("RADAR_APP_MOT_DE_PASSE")),
+                "cache_secondes": CACHE_S,
+                "page_en_cache": bool(_cache["html"])}
 
     @app.get("/")
-    def accueil(_: None = Depends(_verifier)):
+    def accueil(frais: int = 0, _: None = Depends(_verifier)):
+        """La page. `?frais=1` force la regeneration (utile juste apres un run
+        du radar, sans attendre l'expiration du cache)."""
         if not st.actif():
             raise HTTPException(503, "DATABASE_URL absent ou pilote manquant.")
-        with st.connexion() as conn:
-            st.initialiser(conn)
-            html = generer_page(conn)
+        html, _cache_utilise = page_en_cache(frais=bool(frais))
         return Response(content=html, media_type="text/html; charset=utf-8")
 
     @app.post("/api/statut")
@@ -184,9 +246,11 @@ def creer_application():
         if not s.publication_number.strip():
             raise HTTPException(422, "publication_number requis.")
         with st.connexion() as conn:
-            st.initialiser(conn)
+            _initialiser_une_fois(conn)
             st.definir_statut(conn, s.onglet.strip(), s.publication_number.strip(),
                               s.statut.strip())
+        # L'utilisateur doit VOIR son action au rafraichissement suivant.
+        invalider_cache()
         return {"ok": True}
 
     return app
