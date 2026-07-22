@@ -435,6 +435,145 @@ def normaliser_attribution(rec, aujourd_hui=None):
     }
 
 
+TYPES_RETENUS = [t.strip() for t in os.environ.get(
+    "IDB_TYPES", "Works,Consulting Firms,Goods").split(",") if t.strip()]
+MONTANT_MIN = float(os.environ.get("IDB_MONTANT_MIN", "500000"))
+PAGE = 500
+PAGES_MAX = int(os.environ.get("IDB_PAGES_MAX", "6"))
+
+
+def _montant_brut(rec):
+    for cle in ("total_amount", "idb_amount"):
+        try:
+            v = float(str(rec.get(cle) or "").strip())
+        except (TypeError, ValueError):
+            continue
+        if v > 0:
+            return v
+    return 0.0
+
+
+def collecter_attributions(rid=None, session=None, fetch=None, aujourd_hui=None):
+    """Attributions exploitables du perimetre, par le datastore.
+
+    TROIS FILTRES, tous justifies par la mesure du 22/07/2026 :
+      - TYPE de marche : 82 % des 158 640 contrats n'ont aucun titulaire nomme,
+        et la masse est faite de micro-contrats de consultants individuels. On
+        ne demande donc que Works / Consulting Firms / Goods.
+      - MONTANT : un contrat de 741 USD n'est pas un prospect. Seuil par
+        defaut a 500 000 USD, pilotable par IDB_MONTANT_MIN.
+      - FRAICHEUR : 365 jours, comme IsDB. Le jeu accuse ~7 mois de retard
+        (dernier contrat vu : 30/12/2025), ce qui reste pertinent pour une
+        ATTRIBUTION : un marche signe fin 2025 est en pleine execution.
+
+    Tri serveur par signature_date decroissante : on pagine jusqu'a sortir de
+    la fenetre, au lieu de balayer 99 735 lignes."""
+    rid = rid or id_ressource(session=session)
+    aujourd_hui = aujourd_hui or date.today()
+    stats = {"pages": 0, "lus": 0, "sans_nom": 0, "trop_petit": 0,
+             "hors_fenetre": 0, "retenus": 0, "etrangers": 0}
+    attributions, vus = [], set()
+    for nom_pays in PAYS_NOMS:
+        for type_contrat in TYPES_RETENUS:
+            for page in range(PAGES_MAX):
+                filtres = {"operation_country_name": nom_pays,
+                           "contract_type": type_contrat}
+                try:
+                    recs, _c, _t = lire_datastore(
+                        rid, filtres=filtres, limite=PAGE,
+                        decalage=page * PAGE, session=session, fetch=fetch,
+                        tri="signature_date desc")
+                except Exception as e:
+                    print("  (info) {} / {} : {}".format(
+                        nom_pays, type_contrat, str(e)[:70]))
+                    break
+                if not recs:
+                    break
+                stats["pages"] += 1
+                stats["lus"] += len(recs)
+                trop_vieux = 0
+                for rec in recs:
+                    brut = (rec.get("awarded_firm_name") or "").strip()
+                    if not brut or brut.lower() in INDISPONIBLES:
+                        stats["sans_nom"] += 1
+                        continue
+                    if _montant_brut(rec) < MONTANT_MIN:
+                        stats["trop_petit"] += 1
+                        continue
+                    a = normaliser_attribution(rec, aujourd_hui)
+                    if a is None:
+                        stats["hors_fenetre"] += 1
+                        trop_vieux += 1
+                        continue
+                    cle = a["publication_number"] or (a["gagnant"] + a["titre"])
+                    if cle in vus:
+                        continue
+                    vus.add(cle)
+                    a["_montant"] = _montant_brut(rec)
+                    a["_type"] = type_contrat
+                    attributions.append(a)
+                    if a["_etranger"]:
+                        stats["etrangers"] += 1
+                # Tri decroissant : une page entierement hors fenetre signifie
+                # que les suivantes le seront aussi.
+                if trop_vieux >= len(recs) * 0.9:
+                    break
+    stats["retenus"] = len(attributions)
+    attributions.sort(key=lambda x: -x.get("_montant", 0))
+    return attributions, stats
+
+
+def ecrire_attributions(feuille, attributions):
+    """Ajoute les attributions dans l'onglet PARTAGE `attributions_radar`.
+
+    MEME GARDE QUE LES QUATRE AUTRES SOURCES : une ligne deja presente n'est
+    JAMAIS reecrite. La colonne `statut_prospection` est une zone de saisie
+    humaine, et un run ne doit pas ecraser le travail de suivi commercial."""
+    import bm_attributions
+    existants = set()
+    for ligne in feuille.get_all_records():
+        pub = str(ligne.get("publication_number", "") or "").strip()
+        if pub:
+            existants.add(pub)
+    nouvelles, ignorees = [], 0
+    for a in attributions:
+        pub = str(a.get("publication_number", "") or "").strip()
+        if pub and pub in existants:
+            ignorees += 1
+            continue
+        existants.add(pub)
+        nouvelles.append([str(a.get(c, "")) for c in bm_attributions.COLONNES]
+                         + ["", date.today().isoformat()])
+    if nouvelles:
+        feuille.append_rows(nouvelles, value_input_option="RAW")
+    # Miroir Postgres best-effort : on passe TOUT, il a sa propre memoire.
+    try:
+        import radar_stockage
+        plates = [dict(zip(bm_attributions.COLONNES,
+                           [str(a.get(c, "")) for c in bm_attributions.COLONNES]))
+                  for a in attributions]
+        print("  (pg) " + radar_stockage.ecrire_miroir(
+            NOM_ONGLET_ATTRIB, plates))
+    except Exception as e:
+        print("  (pg) miroir indisponible ({})".format(e))
+    return len(nouvelles), ignorees
+
+
+def ouvrir_feuille_attributions(sheet_id, fichier_cs):
+    import gspread
+    import bm_attributions
+    from google.oauth2.service_account import Credentials
+    portee = ["https://www.googleapis.com/auth/spreadsheets"]
+    creds = Credentials.from_service_account_file(fichier_cs, scopes=portee)
+    classeur = gspread.authorize(creds).open_by_key(sheet_id)
+    try:
+        return classeur.worksheet(NOM_ONGLET_ATTRIB)
+    except gspread.WorksheetNotFound:
+        f = classeur.add_worksheet(title=NOM_ONGLET_ATTRIB, rows=5000,
+                                   cols=len(bm_attributions.TOUTES_COLONNES))
+        f.append_row(bm_attributions.TOUTES_COLONNES)
+        return f
+
 # ===========================================================================
 # PARTIE 4 -- SORTIE GOOGLE SHEET (avis)
 # ===========================================================================
@@ -590,7 +729,7 @@ def id_ressource(session=None, fetch=None):
 
 
 def lire_datastore(rid, filtres=None, limite=100, decalage=0,
-                   session=None, fetch=None):
+                   session=None, fetch=None, tri=None):
     """Interroge l'API datastore de CKAN. (enregistrements, champs, total).
 
     POURQUOI CETTE VOIE : la ressource des attributions pese 70 Mo et n'expose
@@ -605,6 +744,10 @@ def lire_datastore(rid, filtres=None, limite=100, decalage=0,
                   "include_total": "true"}
         if filtres:
             params["filters"] = json.dumps(filtres)
+        if tri:
+            # signature_date est un texte "AAAA-MM-JJ ..." : le tri
+            # lexicographique est donc chronologique.
+            params["sort"] = tri
         r = session.get("{}/datastore_search".format(CKAN), params=params,
                         headers=ENTETES, timeout=90)
         r.raise_for_status()
@@ -932,6 +1075,44 @@ def main():
                     str(c)[:26], str(echantillon[0].get(c, ""))[:40]))
         print("\n--- FIN DE L'INSPECTION (aucune ecriture) ---")
         return
+
+    # ---- MODE REEL : collecte, puis ecriture dans l'onglet partage ----
+    try:
+        attributions, st = collecter_attributions()
+    except Exception as e:
+        print("ERREUR : collecte des attributions impossible ({}).".format(
+            str(e)[:200]))
+        print("(info) Les autres collecteurs ne sont pas affectes.")
+        return
+    print("{} page(s) | {} contrat(s) lus | retenus : {} dont {} etranger(s)".format(
+        st["pages"], st["lus"], st["retenus"], st["etrangers"]))
+    print("  ecartes -> titulaire non nomme : {} | sous {:,.0f} USD : {} | "
+          "hors fenetre : {}".format(
+              st["sans_nom"], MONTANT_MIN, st["trop_petit"], st["hors_fenetre"]))
+    if not attributions:
+        print("Aucune attribution IDB exploitable ce run.")
+        return
+
+    sheet_id = os.environ.get("TED_SHEET_ID")
+    fichier = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
+    if not (sheet_id and fichier):
+        print("(info) Pas de Sheet configure : affichage seulement.")
+        for a in attributions[:20]:
+            print("  {:>14} | {} | {:34} <- {}".format(
+                a["valeur_attribuee"] or "n.c.", a["pays_execution"],
+                a["gagnant"][:34], a["_pays_titulaire"] or "?"))
+        return
+    feuille = ouvrir_feuille_attributions(sheet_id, fichier)
+    nb, ignorees = ecrire_attributions(feuille, attributions)
+    print("-> {} nouvelle(s) ligne(s) dans '{}' ({} deja connue(s)).".format(
+        nb, NOM_ONGLET_ATTRIB, ignorees))
+    print("\nLES PLUS GROS TITULAIRES DE CE RUN :")
+    for a in attributions[:12]:
+        print("  {:>14} | {} | {:32} <- {:14} | {}".format(
+            a["valeur_attribuee"] or "n.c.", a["pays_execution"],
+            a["gagnant"][:32], (a["_pays_titulaire"] or "?")[:14],
+            a.get("_type", "")))
+    return
 
     try:
         avis, stats = collecter_et_normaliser()
