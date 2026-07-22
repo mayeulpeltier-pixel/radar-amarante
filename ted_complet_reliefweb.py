@@ -591,22 +591,20 @@ def main():
         _, iso3 = _premier_pays_a_risque(r)
         return ted.MULTIPLICATEUR_ZONE.get(iso3, 0.2)
     uniques.sort(key=_tier, reverse=True)
-    plafonne = len(uniques) > MAX_AVIS_LLM_RW
-    if plafonne:
-        uniques = uniques[:MAX_AVIS_LLM_RW]
 
     avis_normalises = [normaliser_reliefweb(r) for r in uniques]
     print("ReliefWeb -- Bruts : {} | cibles (risque + deploiement plausible) : {}".format(
         len(bruts), len(avis_normalises)))
-    if plafonne:
-        print("    (plafond de {} atteint : seules les zones les plus a risque "
-              "sont analysees ce run.)".format(MAX_AVIS_LLM_RW))
 
     if not avis_normalises:
         print("Aucune offre ReliefWeb a analyser.")
         return
 
     # Memoire inter-runs (tolerante : pas de Sheet -> on analyse tout).
+    # ORDRE CORRIGE LE 22/07/2026 : memoire AVANT plafond (cf. meme correction
+    # cote Banque Mondiale). Auparavant, 120 places retenues dont 116 deja
+    # connues ne laissaient que 4 analyses neuves par run, et les offres
+    # situees juste sous la barre n'avaient jamais leur tour.
     sheet_id = os.environ.get("TED_SHEET_ID")
     fichier = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
     deja_vus = ted.numeros_publication_existants(
@@ -620,6 +618,14 @@ def main():
     if not avis_normalises:
         print("Aucune NOUVELLE offre ReliefWeb a analyser (tout deja vu).")
         return
+
+    # Plafond applique aux offres NEUVES : le reliquat passera au run suivant.
+    if len(avis_normalises) > MAX_AVIS_LLM_RW:
+        en_attente = len(avis_normalises) - MAX_AVIS_LLM_RW
+        avis_normalises = avis_normalises[:MAX_AVIS_LLM_RW]
+        print("    (plafond de {} : {} nouvelle(s) offre(s) analysee(s) ce run, "
+              "{} en attente pour le prochain, les plus a risque d'abord.)".format(
+                  MAX_AVIS_LLM_RW, MAX_AVIS_LLM_RW, en_attente))
 
     # Mode DRY-RUN : entonnoir sans aucun appel paye.
     if os.environ.get("RELIEFWEB_DRY_RUN"):
