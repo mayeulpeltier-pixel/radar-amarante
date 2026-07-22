@@ -315,7 +315,8 @@ def cible_amarante(record):
     ("epidemiolog" -> epidemiologist, "ecole" -> ecoles). L'override positif
     gere les cas que la borne ne peut pas sauver (mot entier "audit" dans un
     contexte de surete reelle)."""
-    if tier_risque_record(record) < TIER_RISQUE_MINIMAL:
+    if not ted.dans_le_perimetre(code_iso3_pays(record.get("project_ctry_name") or ""),
+                                 TIER_RISQUE_MINIMAL):
         return False
     titre = "{} {}".format(
         record.get("bid_description") or "", record.get("project_name") or ""
