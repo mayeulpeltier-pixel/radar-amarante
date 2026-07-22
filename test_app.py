@@ -228,6 +228,38 @@ class TestApplicationIntegration(unittest.TestCase):
         page = c.get("/", auth=self.AUTH).text
         self.assertIn("gagne", page)
 
+    def test_cache_se_renouvelle_quand_la_base_change(self):
+        """LE bug du 22/07/2026 : un run du radar ecrivait de nouveaux leads et
+        l'application continuait de servir l'ancienne page. Le cache ne
+        reposait que sur un delai."""
+        radar_app.VERIF_S = 0            # on verifie a chaque appel
+        appels = []
+        original = radar_app.generer_page
+        radar_app.generer_page = lambda conn: appels.append(1) or original(conn)
+        try:
+            c = _client()
+            c.get("/", auth=self.AUTH)
+            c.get("/", auth=self.AUTH)
+            self.assertEqual(len(appels), 1, "regeneration inutile")
+            # Le radar ecrit une nouvelle ligne : la page DOIT se renouveler.
+            st.ajouter_lignes(self.conn, "ted_radar", [{
+                "publication_number": "TED-NOUVEAU", "titre": "Escorte Sahel",
+                "pays_execution": "MLI", "score_final": 7}])
+            self.conn.commit()
+            page = c.get("/", auth=self.AUTH).text
+            self.assertEqual(len(appels), 2, "la page n'a pas ete regeneree")
+            self.assertIn("Escorte Sahel", page)
+        finally:
+            radar_app.generer_page = original
+            radar_app.VERIF_S = 30
+
+    def test_version_change_avec_les_donnees(self):
+        avant = radar_app.version_donnees(self.conn)
+        st.ajouter_lignes(self.conn, "ted_radar",
+                          [{"publication_number": "TED-V2", "titre": "x"}])
+        self.conn.commit()
+        self.assertNotEqual(radar_app.version_donnees(self.conn), avant)
+
     def test_statut_sans_identifiant_refuse(self):
         r = _client().post("/api/statut", auth=self.AUTH, json={
             "onglet": "ted_radar", "publication_number": "  ", "statut": "x"})
