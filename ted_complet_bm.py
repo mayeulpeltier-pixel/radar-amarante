@@ -145,7 +145,7 @@ MOTS_SIGNAL_SURETE = [
 # Plafond de securite : meme apres filtrage, ne jamais envoyer plus de N
 # avis au LLM en un run. Les avis sont d'abord tries par niveau de risque
 # pays decroissant, donc le plafond garde les plus pertinents s'il est atteint.
-MAX_AVIS_LLM_BM = 150
+MAX_AVIS_LLM_BM = int(os.environ.get("BM_BUDGET", "150"))  # plafond d'appels LLM par run
 
 NOM_ONGLET_BM = "bm_radar"
 
@@ -604,19 +604,11 @@ def main():
     # est atteint, on garde les avis les plus pertinents (zones les plus
     # exposees) plutot qu'un echantillon arbitraire.
     uniques.sort(key=tier_risque_record, reverse=True)
-    plafonne = False
-    if len(uniques) > MAX_AVIS_LLM_BM:
-        plafonne = True
-        uniques = uniques[:MAX_AVIS_LLM_BM]
 
     avis_normalises = [normaliser_bm(n) for n in uniques]
     print("BM -- Bruts : {} | fenetre : {} | CS/CW publies : {} | cibles (risque+hors bureau) : {}".format(
         len(bruts), len(recents), len(pertinents), len(avis_normalises)
     ))
-    if plafonne:
-        print("    (plafond de {} atteint : seuls les pays les plus a risque "
-              "sont analyses ce run. Resserre le filtre ou relance pour la suite.)".format(
-                  MAX_AVIS_LLM_BM))
 
     if not avis_normalises:
         print("Aucun avis Banque Mondiale a analyser.")
@@ -626,6 +618,14 @@ def main():
     # precedent (economie de tokens + temps), ce qui evite aussi de le
     # re-ajouter en double. Lecture tolerante : si pas de Sheet ou erreur, on
     # analyse tout (comportement d'avant).
+    #
+    # ORDRE CORRIGE LE 22/07/2026 : la memoire s'applique AVANT le plafond.
+    # L'inverse gaspillait tout le budget d'analyse sur des avis deja connus :
+    # au run du 22/07, 150 places retenues dont 146 deja vues, soit 4 nouveaux
+    # avis analyses pendant que des centaines de candidats attendaient sans
+    # jamais avoir leur tour (le tri par risque etant stable, c'etaient
+    # toujours les memes qui passaient). AfDB et EBRD faisaient deja
+    # correctement dans cet ordre.
     sheet_id = os.environ.get("TED_SHEET_ID")
     fichier = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
     deja_vus = ted.numeros_publication_existants(
@@ -640,6 +640,16 @@ def main():
         print("Aucun NOUVEL avis Banque Mondiale a analyser (tout deja vu). "
               "Le Sheet et le dashboard restent a jour.")
         return
+
+    # Plafond de securite, applique aux avis NEUFS uniquement : le budget sert
+    # desormais a decouvrir, plus a redecouvrir. Le reliquat n'est pas perdu,
+    # il passera au run suivant (il ne sera plus dans la memoire).
+    if len(avis_normalises) > MAX_AVIS_LLM_BM:
+        en_attente = len(avis_normalises) - MAX_AVIS_LLM_BM
+        avis_normalises = avis_normalises[:MAX_AVIS_LLM_BM]
+        print("    (plafond de {} : {} nouveau(x) avis analyses ce run, {} en "
+              "attente pour le prochain, les plus a risque d'abord.)".format(
+                  MAX_AVIS_LLM_BM, MAX_AVIS_LLM_BM, en_attente))
 
     # Fix 3 (audit) : mode DRY-RUN. Avec la variable d'env BM_DRY_RUN definie,
     # on s'arrete ici : on voit l'entonnoir et les titres qui PASSERAIENT au
