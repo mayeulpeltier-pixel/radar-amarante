@@ -714,8 +714,14 @@ def lire_onglets(sheet_id, fichier_cs):
             lignes_ungm)
 
 
-def generer_html(leads, watchlist=None):
-    """Produit la page HTML autonome (situation board) a partir des leads."""
+def generer_html(leads, watchlist=None, api_statut=False):
+    """Produit la page HTML autonome (situation board) a partir des leads.
+
+    api_statut : True uniquement quand la page est servie par l'APPLICATION
+    (radar_app). Le bouton « Je contacte » ecrit alors AUSSI dans la table
+    radar_statuts via POST /api/statut, en plus de l'Apps Script. False par
+    defaut : la page statique Cloudflare garde EXACTEMENT le comportement
+    d'avant (l'appel /api/statut n'existe pas sur un hebergement statique)."""
     watchlist = watchlist or []
     # Les titulaires (ATTRIB) sont un REGISTRE DE PROSPECTS, pas des avis
     # analyses : on les EXCLUT des KPI d'action pour ne pas gonfler
@@ -774,7 +780,8 @@ def generer_html(leads, watchlist=None):
             .replace("__WATCHLIST_JSON__", watchlist_json)
             .replace("__CONVERSION_JSON__", conversion_json)
             .replace("__SUIVI_URL__", json.dumps(surl))
-            .replace("__SUIVI_TOKEN__", json.dumps(stok)))
+            .replace("__SUIVI_TOKEN__", json.dumps(stok))
+            .replace("__API_STATUT__", "true" if api_statut else "false"))
 
 
 def main():
@@ -1170,7 +1177,20 @@ const WATCHLIST = __WATCHLIST_JSON__;
 const CONVERSION = __CONVERSION_JSON__;
 const SUIVI_URL = __SUIVI_URL__;
 const SUIVI_TOKEN = __SUIVI_TOKEN__;
-const SUIVI_ON = !!SUIVI_URL;
+// Servi par l'application (radar_app) : le bouton ecrit AUSSI en base.
+const API_STATUT = __API_STATUT__;
+// Le bouton s'affiche des qu'UNE destination existe : Apps Script (page
+// statique) ou l'API (application). Sans quoi l'app, qui n'a pas de secret
+// Apps Script, n'afficherait aucun bouton.
+const SUIVI_ON = !!SUIVI_URL || API_STATUT;
+// Correspondance source -> onglet, cle d'ecriture dans radar_statuts.
+const ONGLET_SRC = {TED:'ted_radar',BM:'bm_radar',AFDB:'afdb_radar',ADB:'adb_radar',
+  EBRD:'ebrd_radar',UNGM:'ungm_radar',RW:'reliefweb_radar','PRIVÉ':'prive_radar',
+  ATTRIB:'attributions_radar'};
+// Statut CRM deja pose (serveur) : survit au changement de navigateur, ce que
+// le localStorage seul ne permettait pas.
+function dejaContacte(l){const s=String(l.statut||'').toLowerCase();
+  return s.indexOf('contact')>=0||s.indexOf('gagn')>=0||s.indexOf('perd')>=0||s.indexOf('relanc')>=0;}
 const CONTACTES = new Set((()=>{try{return JSON.parse(localStorage.getItem('suivi_contactes')||'[]')}catch(e){return[]}})());
 const SRC_SUIVI = {TED:'TED',BM:'Banque Mondiale','PRIVÉ':'Privé BITD',RW:'ReliefWeb',ONG:'ReliefWeb'};
 function leadId(l){return l.pub||l.lien||(l.src+'|'+l.pays+'|'+l.agence+'|'+l.titre);}
@@ -1183,7 +1203,16 @@ function marquerContacte(idx,btn){
     pays:l.pays||'',zone:l.zone||'',agence:l.agence||'',titre:l.titre||'',lien:l.lien||'',
     score:l.final,surete:l.surete,comm:l.comm,action:l.action||'',fenetre:l.win||'',
     contact:(l.nom&&l.nom!=='n.c.')?l.nom:'',email:(l.email&&l.email!=='n.c.')?l.email:''};
-  fetch(SUIVI_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(p)}).catch(function(){});
+  // 1) Sheet via Apps Script, tant qu'il reste la reference CRM.
+  if(SUIVI_URL){fetch(SUIVI_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(p)}).catch(function(){});}
+  // 2) Base, quand la page est servie par l'application. Best-effort : un
+  //    echec ici ne doit jamais bloquer l'interface (le bouton est deja passe
+  //    en « Contacte » et l'ecriture Sheet a eu lieu).
+  if(API_STATUT&&l.pub&&ONGLET_SRC[l.src]){
+    fetch('/api/statut',{method:'POST',credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({onglet:ONGLET_SRC[l.src],publication_number:l.pub,statut:'contacte'})}).catch(function(){});
+  }
 }
 const ORDRE_ZONES = ["Afrique de l'Ouest","Sahel","Afrique centrale","Afrique de l'Est","Afrique australe","Afrique du Nord","Proche-Orient","Péninsule arabique","Asie centrale","Asie du Sud","Asie du Sud-Est","Caucase","Balkans","Europe de l'Est","Caraïbes","Amérique latine","Europe de l'Ouest","Outre-mer","Non classé"];
 const winLabel={immediate:'Fenêtre immédiate',court_terme:'Court terme',indetermine:'Fenêtre indéterminée'};
@@ -1765,7 +1794,7 @@ function render(){
   AFFICHES=filtered;
   box.innerHTML=filtered.map((l,i)=>{
     const tier=l.action;
-    const done=SUIVI_ON&&CONTACTES.has(leadId(l));
+    const done=SUIVI_ON&&(CONTACTES.has(leadId(l))||dejaContacte(l));
     const win=(['immediate','court_terme','indetermine'].includes(l.win))?l.win:'indetermine';
     const mail=l.email!=='n.c.'?`<a href="mailto:${esc(l.email)}">${esc(l.email)}</a>`:'n.c.';
     const tel=l.tel!=='n.c.'?`<a href="tel:${esc(l.tel.replace(/\s/g,''))}">${esc(l.tel)}</a>`:'n.c.';
