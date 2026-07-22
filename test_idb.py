@@ -286,6 +286,34 @@ class TestInspectionSchema(unittest.TestCase):
         self.assertIn(idb.PAQUET, (idb.PAQUET_AVIS, idb.PAQUET_ATTRIB))
 
 
+class TestDiagnosticRessources(unittest.TestCase):
+    """Le jeu des attributions n'expose AUCUNE URL de ressource. J'ai alors
+    fabrique '/file/download/<id>' -> 403 applicatif. Une URL ne se devine
+    pas : elle se diagnostique."""
+
+    PAQUET = {"resources": [
+        {"id": "dd09c605", "name": "Awards CSV", "format": "CSV",
+         "size": 70076202, "url": "", "datastore_active": True}]}
+
+    def test_tous_les_champs_sont_rendus(self):
+        rap = idb.diagnostiquer_paquet(fetch=lambda: self.PAQUET)
+        champs = rap["ressources"][0]
+        self.assertIn("datastore_active", champs)
+        self.assertIn("size", champs)
+
+    def test_aucune_url_fabriquee(self):
+        """Garde anti-regression : le code ne doit plus construire d'URL de
+        telechargement a partir d'un identifiant de ressource."""
+        import inspect
+        src = inspect.getsource(idb.url_du_fichier)
+        self.assertNotIn('"https://data.iadb.org/file/download/{}".format', src)
+
+    def test_paquet_sans_ressource(self):
+        rap = idb.diagnostiquer_paquet(fetch=lambda: {"resources": []})
+        self.assertEqual(rap["ressources"], [])
+        self.assertEqual(rap["essais"], [])
+
+
 class TestSortieSheet(unittest.TestCase):
 
     def test_schema_coherent(self):
