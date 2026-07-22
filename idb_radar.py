@@ -64,6 +64,22 @@ MAX_LIGNES_CSV = int(os.environ.get("IDB_MAX_LIGNES", "400000"))
 
 CKAN = "https://data.iadb.org/api/3/action"
 PAQUET_AVIS = "project-procurement-bidding-notices-and-notification-of-contract-awards"
+PAQUET_ATTRIB = "idb-project-procurement-contract-awards-data"
+
+# CONSTAT DU 22/07/2026, mesure sur le fichier reel : le jeu AVIS est un
+# ARCHIVAGE FIGE. Son avis le plus recent dans le perimetre date du 03/10/2025,
+# soit 292 jours, et il ne contient AUCUNE ligne de 2026. Le CKAN affiche
+# pourtant "mis a jour aujourd'hui" : c'est la METADONNEE qui bouge, pas le
+# contenu. Des avis d'appel d'offres de dix mois n'ont aucune valeur (18 862
+# lignes rejetees pour echeance depassee).
+#
+# D'ou ce parametre : RADAR_IDB_JEU=attributions bascule sur le jeu des
+# CONTRATS ATTRIBUES (70 Mo), jamais inspecte, et dont la fraicheur reste a
+# mesurer. Un titulaire reste un prospect bien plus longtemps qu'un avis :
+# les quatre sources d'attributions existantes utilisent des fenetres de 180 a
+# 365 jours, car une entreprise qui a gagne un marche en 2025 l'execute encore.
+JEU = os.environ.get("RADAR_IDB_JEU", "avis").strip().lower()
+PAQUET = PAQUET_ATTRIB if JEU == "attributions" else PAQUET_AVIS
 # Repli si le CKAN change de forme : URL relevee par la sonde le 22/07/2026.
 URL_SECOURS = "https://data.iadb.org/file/download/9cc29cd0-c487-42e9-ad49-9971b4125066"
 
@@ -125,7 +141,7 @@ def url_du_fichier(session=None, fetch=None):
     session = session or ted.session_robuste()
     try:
         r = session.get("{}/package_show".format(CKAN),
-                        params={"id": PAQUET_AVIS}, headers=ENTETES,
+                        params={"id": PAQUET}, headers=ENTETES,
                         timeout=45)
         if r.status_code < 400:
             res = (r.json() or {}).get("result") or {}
@@ -444,6 +460,36 @@ def merite_escalade(r):
             in ("prestataire_tiers", "aucune"))
 
 
+def inspecter_schema(session=None, fetch_url=None, fetch_csv=None, maxi=4000):
+    """Lit l'en-tete et un echantillon d'un jeu INCONNU, sans rien normaliser.
+
+    Indispensable avant d'ecrire la moindre regle : c'est en codant a l'aveugle
+    qu'on range des numeros de telephone sous `publication_number`. Renvoie
+    colonnes, distribution des annees vues dans les colonnes de date, et les
+    lignes les plus recentes."""
+    url = url_du_fichier(session=session, fetch=fetch_url)
+    colonnes, echantillon, annees = [], [], {}
+    total = 0
+    for ligne in lignes_csv(url, session=session, fetch=fetch_csv):
+        total += 1
+        if not colonnes:
+            colonnes = list(ligne.keys())
+        if len(echantillon) < 3:
+            echantillon.append(dict(ligne))
+        # Toute colonne qui ressemble a une date alimente la distribution.
+        for cle, val in ligne.items():
+            if not val or "date" not in cle.lower():
+                continue
+            an = str(val)[:4]
+            if an.isdigit() and 1990 <= int(an) <= 2100:
+                annees.setdefault(cle, {})
+                annees[cle][an] = annees[cle].get(an, 0) + 1
+        if total >= maxi:
+            break
+    return {"url": url, "lignes_lues": total, "colonnes": colonnes,
+            "echantillon": echantillon, "annees": annees}
+
+
 def collecter_et_normaliser(session=None, fetch_url=None, fetch_csv=None):
     """Etapes deterministes, testables sans reseau ni LLM."""
     url = url_du_fichier(session=session, fetch=fetch_url)
@@ -493,7 +539,41 @@ def main():
         return
     print("=" * 60)
     print("COLLECTEUR IDB (Banque Interamericaine) - Radar Amarante")
+    print("  jeu : {} | paquet : {}".format(JEU, PAQUET))
     print("=" * 60)
+
+    # Jeu ATTRIBUTIONS : schema inconnu a ce jour. On INSPECTE avant de
+    # normaliser quoi que ce soit, jamais l'inverse.
+    if JEU == "attributions":
+        if not DEBUG:
+            print("(info) Le jeu 'attributions' n'est disponible qu'en mode")
+            print("       verification (RADAR_IDB_DEBUG=1) tant que son schema")
+            print("       n'a pas ete valide. Rien n'est ecrit.")
+            return
+        try:
+            info = inspecter_schema()
+        except Exception as e:
+            print("ERREUR : inspection impossible ({}).".format(str(e)[:200]))
+            return
+        print("Fichier : {}".format(info["url"]))
+        print("{} ligne(s) lues (echantillon).".format(info["lignes_lues"]))
+        print("\n[A] COLONNES ({}) :".format(len(info["colonnes"])))
+        for c in info["colonnes"]:
+            print("      " + str(c)[:70])
+        print("\n[B] FRAICHEUR : annees vues dans les colonnes de date")
+        if not info["annees"]:
+            print("      (aucune colonne de date reconnue)")
+        for cle, compte in info["annees"].items():
+            recentes = sorted(compte.items(), reverse=True)[:8]
+            print("      {} : {}".format(cle, ", ".join(
+                "{} ({})".format(a, n) for a, n in recentes)))
+        print("\n[C] TROIS PREMIERES LIGNES (brut) :")
+        for i, ligne in enumerate(info["echantillon"], start=1):
+            print("\n  --- ligne {} ---".format(i))
+            for cle, val in list(ligne.items())[:30]:
+                print("      {:32} = {}".format(str(cle)[:32], str(val)[:60]))
+        print("\n--- FIN DE L'INSPECTION (aucune ecriture) ---")
+        return
 
     try:
         avis, stats = collecter_et_normaliser()
