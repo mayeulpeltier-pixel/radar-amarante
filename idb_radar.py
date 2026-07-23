@@ -530,11 +530,11 @@ def ecrire_attributions(feuille, attributions):
     JAMAIS reecrite. La colonne `statut_prospection` est une zone de saisie
     humaine, et un run ne doit pas ecraser le travail de suivi commercial."""
     import bm_attributions
-    existants = set()
-    for ligne in feuille.get_all_records():
-        pub = str(ligne.get("publication_number", "") or "").strip()
-        if pub:
-            existants.add(pub)
+    # Meme regle 4 : les identifiants deja presents sont lus PAR POSITION,
+    # selon le schema partage des attributions. Les cles de l'index sont
+    # exactement les publication_number, d'ou le `set(...)`.
+    existants = set(ted.charger_index_publication(feuille,
+                                                  bm_attributions.COLONNES))
     nouvelles, ignorees = [], 0
     for a in attributions:
         pub = str(a.get("publication_number", "") or "").strip()
@@ -656,12 +656,12 @@ def ligne_depuis_resultat(r):
 def ecrire_resultats(feuille, resultats):
     """Insere les nouveaux avis, met a jour les scores des avis presents SANS
     toucher a statut_suivi ni date_detection (zone de saisie humaine)."""
-    valeurs = feuille.get_all_records()
-    index = {}
-    for num, ligne in enumerate(valeurs, start=2):
-        pub = ligne.get("publication_number", "")
-        if pub:
-            index[pub] = num
+    # Index construit en LECTURE POSITIONNELLE depuis le SCHEMA (regle 4).
+    # `get_all_records()` numerisait les identifiants ("12345678" -> entier,
+    # donc plus aucune correspondance avec les chaines, donc re-ajout
+    # silencieux a chaque run) et levait `GSpreadException` sur un en-tete
+    # duplique, en fin de run, apres avoir paye les appels au modele.
+    index = ted.charger_index_publication(feuille, COLONNES_IDB)
     derniere = ted.lettre_colonne(len(COLONNES_IDB))
     maj, nouvelles, nb_maj, nb_new = [], [], 0, 0
     for r in resultats:
