@@ -646,7 +646,11 @@ def ligne_pour_sheet(a):
 def ecrire(feuille, attributions):
     """N'ajoute que les nouvelles lignes. Ne REECRIT jamais une ligne existante :
     la colonne `statut_prospection` est une zone de saisie humaine."""
-    index = ted.charger_index_publication(feuille)
+    # Index construit en LECTURE POSITIONNELLE depuis le SCHEMA (regle 4) :
+    # la position de `publication_number` vient de COLONNES, jamais de
+    # l'en-tete de la feuille. Immunise contre un en-tete desaligne, un en-tete
+    # duplique et la numerisation des identifiants. Voir ted.index_publications.
+    index = ted.charger_index_publication(feuille, COLONNES)
     nouvelles, ignorees = [], 0
     for a in attributions:
         pub = a.get("publication_number", "")
