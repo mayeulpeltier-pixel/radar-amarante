@@ -780,7 +780,11 @@ def ouvrir_feuille(sheet_id, fichier):
 
 
 def ecrire(feuille, attributions):
-    index = ted.charger_index_publication(feuille)
+    # Index construit en LECTURE POSITIONNELLE depuis le SCHEMA (regle 4) :
+    # la position de `publication_number` vient de COLONNES, jamais de
+    # l'en-tete de la feuille. Immunise contre un en-tete desaligne, un en-tete
+    # duplique et la numerisation des identifiants. Voir ted.index_publications.
+    index = ted.charger_index_publication(feuille, COLONNES)
     nouvelles, deja = [], 0
     for a in attributions:
         pub = a.get("publication_number", "")
