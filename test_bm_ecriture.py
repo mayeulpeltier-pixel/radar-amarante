@@ -37,16 +37,44 @@ except Exception:                                     # dependance absente en lo
 
 class FausseFeuille:
     """Imite le strict necessaire de gspread.Worksheet :
-      - get_all_records() : lignes existantes sous forme de dicts (ce que lit
-        ted.charger_index_publication) ;
+      - get_all_values()  : GRILLE BRUTE (en-tete + lignes), ce que lit
+        desormais ted.charger_index_publication ;
+      - get_all_records() : meme contenu en dicts, conserve pour les quatre
+        collecteurs (AfDB, ADB, EBRD, IDB) qui l'appellent encore en direct ;
       - append_rows()     : enregistre ce que `ecrire` AJOUTE ;
       - update()/update_cell() : pieges. `ecrire` ne doit JAMAIS les appeler,
-        c'est precisement la promesse testee (zone de saisie humaine)."""
+        c'est precisement la promesse testee (zone de saisie humaine).
 
-    def __init__(self, lignes_existantes=None):
+    BASCULE DU 23/07/2026 : le chemin d'ecriture construit son index par
+    LECTURE POSITIONNELLE. `get_all_records` numerisait les identifiants
+    ("12345678" -> 12345678, donc plus aucune correspondance avec les chaines
+    des collecteurs, donc re-ajout silencieux a chaque run) et levait
+    `GSpreadException` sur un en-tete duplique."""
+
+    def __init__(self, lignes_existantes=None, colonnes=None):
         self._records = list(lignes_existantes or [])
+        self._colonnes = list(colonnes) if colonnes else None
         self.ajouts = []                  # lots passes a append_rows
         self.reecritures = 0              # compteur d'appels interdits
+
+    def _entete(self):
+        """Schema explicite s'il est fourni, sinon l'union des cles vues, en
+        conservant l'ordre d'apparition (comportement d'un vrai onglet)."""
+        if self._colonnes:
+            return list(self._colonnes)
+        entete = []
+        for r in self._records:
+            for c in r:
+                if c not in entete:
+                    entete.append(c)
+        return entete
+
+    def get_all_values(self):
+        if not self._records:
+            return []
+        entete = self._entete()
+        return ([list(entete)] +
+                [[str(r.get(c, "")) for c in entete] for r in self._records])
 
     def get_all_records(self):
         return list(self._records)
