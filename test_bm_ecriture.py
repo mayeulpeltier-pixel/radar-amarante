@@ -58,11 +58,18 @@ class FausseFeuille:
         self.reecritures = 0              # compteur d'appels interdits
 
     def _entete(self):
-        """Schema explicite s'il est fourni, sinon l'union des cles vues, en
-        conservant l'ordre d'apparition (comportement d'un vrai onglet)."""
+        """Schema de l'onglet simule.
+
+        Par defaut `bm_attributions.COLONNES` : c'est le schema REEL de
+        l'onglet partage `attributions_radar`, et c'est desormais lui que
+        `ecrire` transmet a `ted.charger_index_publication` pour localiser
+        `publication_number` PAR POSITION. Une doublure qui inventerait son
+        propre ordre de colonnes testerait autre chose que la production."""
         if self._colonnes:
             return list(self._colonnes)
-        entete = []
+        if bm_attributions is not None:
+            return list(bm_attributions.COLONNES)
+        entete = []                      # repli : union des cles vues
         for r in self._records:
             for c in r:
                 if c not in entete:
