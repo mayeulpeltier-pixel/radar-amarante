@@ -34,9 +34,18 @@ stocke donc chaque ligne en JSONB, fidele au Sheet :
     radar_lignes(onglet, publication_number, donnees JSONB, date_detection, maj)
 
 avec un index UNIQUE sur (onglet, publication_number) quand l'identifiant est
-non vide. L'insertion se fait en ON CONFLICT DO NOTHING : une ligne existante
-n'est JAMAIS reecrite -- c'est la transposition exacte de la garde du Sheet
-qui protege `statut_prospection` (zone de saisie humaine). Les requetes
+non vide. L'insertion se fait en ON CONFLICT DO UPDATE : une ligne existante
+est RAFRAICHIE (voir `ajouter_lignes`).
+
+  Correction du 23/07/2026. C'etait `DO NOTHING`, au motif de "proteger la
+  zone de saisie humaine". Motif errone : cette zone n'est pas dans cette
+  table, elle vit dans `radar_statuts`. La garde ne protegeait donc rien,
+  mais elle empechait les scores RAFFINES (escalade Sonnet) d'arriver en
+  base. L'application Render affichait 5.0 / "surveiller" quand le dashboard
+  Cloudflare affichait 8.5 / "contacter", pour le meme avis. Un miroir qui
+  ne reflete pas n'est pas un miroir.
+
+`date_detection` (premiere detection) n'est jamais reecrite. Les requetes
 analytiques viendront plus tard par des vues SQL, sans toucher aux donnees.
 
 SECURITE
@@ -157,13 +166,43 @@ def initialiser(conn):
 
 
 def ajouter_lignes(conn, onglet, lignes):
-    """Insere les lignes d'un onglet. (ajoutees, ignorees).
+    """Insere ou RAFRAICHIT les lignes d'un onglet. (ajoutees, mises_a_jour).
 
-    ON CONFLICT DO NOTHING : une ligne deja presente (meme onglet, meme
-    publication_number) est IGNOREE, jamais mise a jour. Meme promesse que
-    l'ecriture Sheet : ce qui est en base -- y compris de futures saisies
-    humaines -- survit a tous les runs."""
-    ajoutees = ignorees = 0
+    POURQUOI CE N'EST PLUS `DO NOTHING` (23/07/2026)
+    ------------------------------------------------
+    L'ancienne version ignorait toute ligne deja presente, au motif de
+    "proteger la zone de saisie humaine". Ce motif etait FAUX : la zone
+    humaine ne vit pas ici. `radar_lignes` ne contient QUE de la donnee de
+    collecte ; les statuts de prospection vivent dans `radar_statuts`, table
+    separee que rien ici ne touche. La garde protegeait donc quelque chose
+    qui n'etait pas la, au prix d'un vrai defaut :
+
+      Le Sheet, lui, MET A JOUR les scores d'un avis reanalyse (escalade
+      Sonnet). Postgres, non. Resultat constate : l'application Render
+      affichait 5.0 / "surveiller" pendant que le dashboard Cloudflare
+      affichait 8.5 / "contacter" POUR LE MEME AVIS. Deux surfaces, deux
+      verites, sur un produit dont l'application est le livrable.
+
+    Desormais le miroir merite son nom : il reflete le Sheet.
+
+    CE QUI EST RAFRAICHI, CE QUI NE L'EST PAS
+    -----------------------------------------
+      - `donnees`        : rafraichi (scores, action recommandee, raffine...) ;
+      - `maj`            : rafraichi, ce qui fait aussi expirer le cache de
+                           l'application (voir radar_app.version_donnees, qui
+                           s'appuie sur max(maj)) ;
+      - `date_detection` : JAMAIS touche. C'est la date de PREMIERE detection,
+                           elle n'a de sens que si elle ne bouge pas ;
+      - `radar_statuts`  : autre table, hors de portee de cette requete.
+
+    Les lignes sans identifiant restent en insertion pure : l'index unique
+    est partiel (`WHERE publication_number <> ''`), donc aucun conflit a
+    resoudre pour elles.
+
+    NOTE SUR `xmax = 0` : c'est l'idiome Postgres pour distinguer une
+    insertion d'une mise a jour dans un ON CONFLICT. Il suppose un ecrivain
+    unique, ce qui est le cas ici (le workflow a un groupe de concurrence)."""
+    ajoutees = mises_a_jour = 0
     with conn.cursor() as cur:
         for ligne in lignes or []:
             pub, donnees = preparer_ligne(ligne)
@@ -171,13 +210,16 @@ def ajouter_lignes(conn, onglet, lignes):
                 "INSERT INTO radar_lignes (onglet, publication_number, donnees)"
                 " VALUES (%s, %s, %s::jsonb)"
                 " ON CONFLICT (onglet, publication_number)"
-                " WHERE publication_number <> '' DO NOTHING",
+                " WHERE publication_number <> ''"
+                " DO UPDATE SET donnees = EXCLUDED.donnees, maj = now()"
+                " RETURNING (xmax = 0) AS insertion",
                 (onglet, pub, json.dumps(donnees, ensure_ascii=False)))
-            if cur.rowcount:
+            resultat = cur.fetchone()
+            if resultat is None or resultat[0]:
                 ajoutees += 1
             else:
-                ignorees += 1
-    return ajoutees, ignorees
+                mises_a_jour += 1
+    return ajoutees, mises_a_jour
 
 
 def publications_existantes(conn, onglet):
@@ -201,9 +243,10 @@ def lire_onglet(conn, onglet):
 
 
 # ---------------------------------------------------------------------------
-# STATUTS (zone de saisie HUMAINE) -- la seule table ou la reecriture est
-# permise, car c'est sa raison d'etre : "contacte", "perdu", "gagne"...
-# evoluent au fil de la prospection. radar_lignes reste, elle, en ajout seul.
+# STATUTS (zone de saisie HUMAINE) -- table SEPAREE, et c'est tout l'interet :
+# "contacte", "perdu", "gagne"... evoluent au fil de la prospection, sans
+# jamais croiser les donnees de collecte. C'est cette separation qui autorise
+# `radar_lignes` a rafraichir ses lignes sans risque pour le travail humain.
 # ---------------------------------------------------------------------------
 
 def definir_statut(conn, onglet, publication_number, statut):
@@ -250,9 +293,9 @@ def ecrire_miroir(onglet, lignes):
     try:
         with connexion() as conn:
             initialiser(conn)
-            ajoutees, ignorees = ajouter_lignes(conn, onglet, lignes)
-        return "miroir '{}' : {} ajoutee(s), {} deja connue(s)".format(
-            onglet, ajoutees, ignorees)
+            ajoutees, mises_a_jour = ajouter_lignes(conn, onglet, lignes)
+        return "miroir '{}' : {} ajoutee(s), {} mise(s) a jour".format(
+            onglet, ajoutees, mises_a_jour)
     except Exception as e:
         return "miroir '{}' indisponible ({}) -- run non affecte".format(
             onglet, str(e)[:120])
