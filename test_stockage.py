@@ -11,9 +11,16 @@ Deux etages, pour que la CI reste verte partout :
      sinon sautes proprement. La CI GitHub n'a pas de base : elle valide
      l'etage 1 et saute l'etage 2, c'est voulu.
 
-Le point le plus important verrouille ici : ON CONFLICT DO NOTHING. Une
-ligne existante n'est JAMAIS reecrite -- transposition en base de la garde
-Sheet qui protege `statut_prospection` (test_bm_ecriture.py).
+Le point le plus important verrouille ici : ON CONFLICT DO UPDATE. Une ligne
+existante est RAFRAICHIE, jamais dupliquee, et `date_detection` ne bouge pas.
+
+  Correction du 23/07/2026. C'etait `DO NOTHING`, presente comme la
+  transposition en base de la garde Sheet qui protege `statut_prospection`.
+  La transposition etait fausse : cette zone humaine n'est pas dans
+  `radar_lignes`, elle est dans `radar_statuts`. La garde ne protegeait donc
+  rien, mais elle bloquait les scores raffines : l'application Render
+  affichait 5.0 / "surveiller" quand le dashboard Cloudflare affichait
+  8.5 / "contacter", pour le meme avis.
 """
 
 import json
@@ -162,17 +169,73 @@ class TestIntegrationPostgres(unittest.TestCase):
         self.assertEqual(lignes[0]["gagnant"], "Yema Group Co., Ltd")
         self.assertNotIn("_etranger", lignes[0])   # cle technique non persistee
 
-    def test_ligne_existante_jamais_reecrite(self):
-        """LA garde centrale, comme au Sheet : rejouer la meme publication ne
-        touche pas la ligne d'origine, meme si le contenu a change."""
+    def test_ligne_existante_rafraichie_sans_doublon(self):
+        """LA garde centrale, version 23/07/2026 : rejouer la meme publication
+        MET A JOUR la ligne, sans jamais en creer une seconde.
+
+        Le Sheet fait exactement cela quand un avis est reanalyse (escalade
+        Sonnet). Postgres le faisait pas : l'application Render restait sur le
+        score Haiku pendant que le dashboard Cloudflare affichait le score
+        raffine. Un miroir qui ne reflete pas n'est pas un miroir."""
         st.ajouter_lignes(self.conn, "attributions_radar",
-                          [self._ligne(gagnant="ORIGINAL")])
-        aj, ig = st.ajouter_lignes(self.conn, "attributions_radar",
-                                   [self._ligne(gagnant="ECRASEUR")])
-        self.assertEqual((aj, ig), (0, 1))
+                          [self._ligne(gagnant="AVANT RAFFINEMENT")])
+        aj, maj = st.ajouter_lignes(self.conn, "attributions_radar",
+                                    [self._ligne(gagnant="APRES RAFFINEMENT")])
+        self.assertEqual((aj, maj), (0, 1))
         lignes = st.lire_onglet(self.conn, "attributions_radar")
-        self.assertEqual(len(lignes), 1)
-        self.assertEqual(lignes[0]["gagnant"], "ORIGINAL")
+        self.assertEqual(len(lignes), 1, "une mise a jour ne doit pas dupliquer")
+        self.assertEqual(lignes[0]["gagnant"], "APRES RAFFINEMENT")
+
+    def test_date_de_premiere_detection_jamais_reecrite(self):
+        """`date_detection` repond a "depuis quand connait-on ce lead ?".
+        Une mise a jour de score ne doit pas la faire glisser, sinon la
+        question n'a plus de reponse."""
+        st.ajouter_lignes(self.conn, "attributions_radar", [self._ligne()])
+        with self.conn.cursor() as cur:
+            cur.execute("UPDATE radar_lignes SET date_detection = %s",
+                        (date(2026, 1, 15),))
+        st.ajouter_lignes(self.conn, "attributions_radar",
+                          [self._ligne(gagnant="AUTRE")])
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT date_detection FROM radar_lignes")
+            self.assertEqual(cur.fetchone()[0], date(2026, 1, 15))
+
+    def test_maj_rafraichie_pour_expirer_le_cache(self):
+        """`radar_app.version_donnees` s'appuie sur max(maj) pour savoir si la
+        page doit etre reconstruite. Avec DO NOTHING, un run qui ne faisait
+        QUE raffiner des scores ne bougeait pas `maj` : l'application servait
+        une page perimee sans aucun moyen de le savoir."""
+        st.ajouter_lignes(self.conn, "attributions_radar", [self._ligne()])
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT maj FROM radar_lignes")
+            avant = cur.fetchone()[0]
+        # COMMIT VOLONTAIRE, et ce n'est pas un detail de plomberie : `now()`
+        # renvoie l'heure de la TRANSACTION, pas de l'instruction. Deux
+        # ecritures dans une meme transaction portent donc le meme `maj`. En
+        # production le cas ne se pose pas -- `ecrire_miroir` ouvre sa propre
+        # connexion a chaque appel, donc une transaction par run -- mais si un
+        # jour quelqu'un regroupe plusieurs runs dans une seule transaction,
+        # `maj` cessera de bouger et le cache de l'application se figera.
+        # Le commit ci-dessous reproduit fidelement la production.
+        self.conn.commit()
+        st.ajouter_lignes(self.conn, "attributions_radar",
+                          [self._ligne(gagnant="AUTRE")])
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT maj FROM radar_lignes")
+            self.assertGreater(cur.fetchone()[0], avant)
+
+    def test_les_statuts_humains_survivent_a_une_mise_a_jour(self):
+        """La raison pour laquelle le rafraichissement est SANS DANGER : la
+        zone de saisie humaine vit dans `radar_statuts`, table separee. C'est
+        cette separation qui rendait la garde `DO NOTHING` inutile."""
+        st.ajouter_lignes(self.conn, "attributions_radar", [self._ligne()])
+        st.definir_statut(self.conn, "attributions_radar",
+                          "ISDB-route-kg", "contacte")
+        st.ajouter_lignes(self.conn, "attributions_radar",
+                          [self._ligne(gagnant="APRES RAFFINEMENT")])
+        self.assertEqual(
+            st.lire_statuts(self.conn)[("attributions_radar", "ISDB-route-kg")],
+            "contacte")
 
     def test_meme_publication_dans_deux_onglets_coexiste(self):
         """L'unicite est PAR ONGLET : 'BM-1' peut exister dans les avis et
@@ -214,7 +277,7 @@ class TestIntegrationPostgres(unittest.TestCase):
             self.assertIn("1 ajoutee(s)", msg)
             msg2 = st.ecrire_miroir("attributions_radar",
                                     [self._ligne(pub="MIROIR-1")])
-            self.assertIn("1 deja connue(s)", msg2)
+            self.assertIn("1 mise(s) a jour", msg2)
         finally:
             if avant is None:
                 os.environ.pop("DATABASE_URL", None)
