@@ -351,12 +351,12 @@ def ligne_depuis_resultat(r):
 
 
 def ecrire_resultats(feuille, resultats):
-    valeurs = feuille.get_all_records()
-    index = {}
-    for num, ligne in enumerate(valeurs, start=2):
-        pub = ligne.get("publication_number", "")
-        if pub:
-            index[pub] = num
+    # Index construit en LECTURE POSITIONNELLE depuis le SCHEMA (regle 4).
+    # `get_all_records()` numerisait les identifiants ("12345678" -> entier,
+    # donc plus aucune correspondance avec les chaines, donc re-ajout
+    # silencieux a chaque run) et levait `GSpreadException` sur un en-tete
+    # duplique, en fin de run, apres avoir paye les appels au modele.
+    index = ted.charger_index_publication(feuille, COLONNES_EBRD)
     derniere = ted.lettre_colonne(len(COLONNES_EBRD))
     maj, nouvelles, nb_maj, nb_new = [], [], 0, 0
     for r in resultats:
