@@ -1370,16 +1370,76 @@ def ouvrir_feuille(sheet_id, fichier_compte_service):
     return feuille
 
 
-def charger_index_publication(feuille):
-    """{publication_number -> numero de ligne}, pour mettre a jour un
-    avis deja vu plutot que de le dupliquer a chaque run."""
-    valeurs = feuille.get_all_records()
+def index_publications(valeurs, colonnes=None):
+    """{publication_number -> numero de ligne} depuis une grille BRUTE
+    (`get_all_values`). Fonction PURE : testable sans Google Sheet.
+
+    POURQUOI CETTE FONCTION EXISTE (23/07/2026)
+    -------------------------------------------
+    La regle 4 du projet ("LECTURE POSITIONNELLE, JAMAIS PAR EN-TETE") avait
+    ete appliquee au chemin de LECTURE (memoire inter-runs, dashboard) mais
+    PAS au chemin d'ECRITURE, qui reposait encore sur `get_all_records()`.
+    C'est pourtant celui qui decide dans QUELLE LIGNE on ecrit.
+
+    Trois modes de defaillance, tous verifies sur gspread 6.2.1 :
+
+      1. EN-TETE DUPLIQUE -> `get_all_records()` leve `GSpreadException`.
+         Le collecteur s'arrete net, en fin de run, apres avoir paye les
+         appels au modele.
+      2. NUMERISATION -> `get_all_records()` convertit toute valeur qui
+         ressemble a un nombre : un identifiant "12345678" devient l'entier
+         12345678. Les collecteurs, eux, comparent des CHAINES : la
+         correspondance echoue toujours, et chaque avis deja connu est
+         RE-AJOUTE a chaque run. Aucune erreur, aucun test rouge, juste
+         l'onglet qui enfle.
+      3. EN-TETE DESALIGNE -> l'index se construit sur la colonne voisine.
+         C'est l'incident `bm_radar` : des numeros de telephone ranges sous
+         `publication_number`.
+
+    La lecture positionnelle ferme les trois d'un coup, et coute un appel
+    reseau de MOINS au passage (`get_all_values` ne numerise rien).
+
+    `colonnes` : ordre officiel du schema (source de verite = le collecteur).
+    Quand il est fourni, l'en-tete de la feuille n'est JAMAIS consulte pour
+    localiser la colonne. Quand il est absent, on retombe sur l'en-tete, mais
+    sans exception sur les doublons (on prend la PREMIERE occurrence, celle
+    qui correspond au schema canonique) et sans numerisation : deja plus sur
+    que `get_all_records()`."""
+    if not valeurs:
+        return {}
+    premiere = [str(c).strip() for c in (valeurs[0] or [])]
+    entete_present = "publication_number" in premiere
+    if colonnes:
+        try:
+            idx = colonnes.index("publication_number")
+        except ValueError:
+            return {}          # schema sans identifiant : rien a indexer
+    elif entete_present:
+        idx = premiere.index("publication_number")   # premiere occurrence
+    else:
+        return {}              # ni schema ni en-tete : on ne devine pas
+    debut = 1 if entete_present else 0
     index = {}
-    for numero_ligne, ligne in enumerate(valeurs, start=2):  # ligne 1 = entetes
-        pub = ligne.get("publication_number", "")
+    for decalage, ligne in enumerate(valeurs[debut:]):
+        if idx >= len(ligne):
+            continue
+        pub = str(ligne[idx]).strip()
         if pub:
-            index[pub] = numero_ligne
+            # Numero de ligne du Sheet (1-base). Le premier avis est en
+            # ligne 2 quand une ligne d'en-tete est presente.
+            index[pub] = debut + decalage + 1
     return index
+
+
+def charger_index_publication(feuille, colonnes=None):
+    """{publication_number -> numero de ligne}, pour mettre a jour un
+    avis deja vu plutot que de le dupliquer a chaque run.
+
+    `colonnes` est OPTIONNEL pour rester compatible avec les huit collecteurs
+    qui appellent encore `charger_index_publication(feuille)`. Le passer est
+    neanmoins la bonne pratique : c'est ce qui immunise contre un en-tete
+    desaligne. Voir `index_publications` pour le detail."""
+    return index_publications(feuille.get_all_values(), colonnes)
 
 
 def _publications_depuis_valeurs(valeurs, colonnes):
@@ -1548,7 +1608,10 @@ def ecrire_resultats_dans_sheet(feuille, resultats):
     et on perdait ~N x 0.3s en pauses. Desormais c'est 2 appels au maximum,
     quel que soit le nombre d'avis. Bonus : supprime aussi le
     DeprecationWarning de feuille.update() (ordre des arguments)."""
-    index = charger_index_publication(feuille)
+    # COLONNES_SHEET passe explicitement : la position de `publication_number`
+    # vient du SCHEMA, jamais de l'en-tete de la feuille. C'est ce qui evite
+    # qu'un en-tete desaligne fasse ecrire dans la mauvaise ligne (regle 4).
+    index = charger_index_publication(feuille, COLONNES_SHEET)
     derniere_lettre = lettre_colonne(len(COLONNES_SHEET))
 
     maj_groupees = []       # mises a jour : liste de {range, values}
