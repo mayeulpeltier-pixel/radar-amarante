@@ -369,6 +369,14 @@ def cible_commerciale_rw(avis, extraction):
 # ted.calculer_scores / calculer_action_recommandee fonctionnent SANS
 # modification. Seul le cadrage change : ici on lit une offre d'emploi, pas
 # un marche public.
+#
+# ALIGNEMENT DU 23/07/2026 : ce prompt etait reste sur l'ANCIEN champ booleen
+# `securite_existante_detectee`, alors que le coeur avait bascule sur l'enum
+# quatre valeurs. Consequence : le levier [DEPLACEMENT CONCURRENT] ne
+# s'appliquait pas a ReliefWeb, et un dispositif tiers y valait "ignorer" --
+# l'exact inverse de la doctrine ("logique commerciale, pas de kill-switch").
+# Le schema du Sheet, lui, n'a PAS bouge : COLONNES_RW ne porte que le booleen
+# derive, comme COLONNES_SHEET. Aucune migration d'onglet n'est donc requise.
 PROMPT_RELIEFWEB = """Tu es analyste sûreté pour une société française de protection de personnes en zones à risque (escorte, protection rapprochée CPO/CPD, chauffeur sécurité, véhicule sécurisé, sécurisation de déplacements terrain). Elle ne vend PAS de conseil voyage générique ni de simple briefing.
 
 On te donne une OFFRE D'EMPLOI humanitaire/développement publiée sur ReliefWeb pour un pays à risque. L'organisation qui recrute déploie ce personnel sur place. Détermine si ce poste implique une présence PHYSIQUE et RÉGULIÈRE sur le terrain à l'étranger, créant un besoin probable de prestations opérationnelles de sûreté.
@@ -383,7 +391,13 @@ RÈGLE SUR LA MOBILITÉ TERRAIN (distincte de la durée) : classe le profil de m
 - terrain_isole : zones rurales/isolées, accès difficile.
 - frontiere : zone frontalière ou de tension active.
 
-RÈGLE SUR LA SÉCURITÉ DÉJÀ EN PLACE : si l'offre indique qu'un dispositif de sûreté/escorte existe déjà (poste de "security officer" interne, dispositif UNDSS, prestataire déjà en place), l'opportunité pour Amarante sur ce signal précis est réduite.
+RÈGLE SUR LA SÉCURITÉ DÉJÀ EN PLACE (lis bien -- ça change la conclusion ET la nature de l'opportunité) :
+Détermine QUI assure déjà la sûreté, car cela distingue un marché fermé d'une opportunité de conquête. Renseigne "securite_existante" avec l'une des quatre valeurs :
+- "interne_client" : la sûreté est visiblement gérée EN INTERNE par l'organisation elle-même (poste de "security officer"/"safety and security manager" au sein de l'ONG, dispositif UNDSS, cellule sûreté intégrée, personnel de garde salarié). Là, il n'y a généralement PAS d'ouverture pour Amarante -> l'offre peut être écartée.
+- "prestataire_tiers" : la sûreté est déjà fournie par un PRESTATAIRE EXTERNE (société privée de sécurité, contrat de gardiennage, escorte sous-traitée, "security provider", "contracted guards"). Ce N'EST PAS une raison d'écarter : c'est au contraire une OPPORTUNITÉ DE DÉPLACEMENT concurrentiel -- un contrat existe, un concurrent est en place, il peut être disputé (renouvellement, extension, sous-traitance). À CONSERVER et signaler.
+- "aucune" : aucun dispositif de sûreté mentionné, besoin potentiellement ouvert.
+- "inconnu" : impossible à déterminer depuis l'offre.
+Attention au piège fréquent sur ReliefWeb : une offre QUI RECRUTE un poste de sûreté ("Security Officer", "Safety Advisor") indique un dispositif INTERNE, pas un prestataire. À l'inverse, une mention de "contracted security", "security company" ou "outsourced guarding" désigne un tiers.
 
 RÈGLE SUR LE TYPE DE CLIENT : agence ONU (UNDSS gère souvent la sûreté en interne -> marché moins accessible), ONG internationale, bailleur, ou entreprise privée. Une ONG internationale ou un acteur privé est souvent plus accessible commercialement qu'une agence ONU.
 
@@ -400,7 +414,7 @@ Schéma de sortie :
   "deploiement_terrain_reel": true | false,
   "type_mobilite": "aucune | capitale | multi_sites | chantier | terrain_isole | frontiere",
   "profil_personnes_exposees": "expert_international | executive | technicien | ouvrier_local | aucun",
-  "securite_existante_detectee": true | false,
+  "securite_existante": "aucune | interne_client | prestataire_tiers | inconnu",
   "indices_deploiement": ["courtes citations textuelles"],
   "type_activite": "assistance_technique | supervision_chantier | etude_terrain | fourniture_equipement | formation | autre",
   "type_client": "bailleur_donateur | institution_ue_onu | etat_administration_locale | entreprise_privee | autre",
@@ -437,21 +451,28 @@ def analyser_reliefweb(avis, modele=None):
     texte = ted.appeler_modele(prompt, modele=modele)
     if texte is None:
         return None
+    # ted.normaliser_securite sur CHACUNE des trois sorties possibles, comme le
+    # fait ted.appeler_llm. C'est ce qui manquait jusqu'au 23/07/2026 : sans
+    # elle, `securite_existante_detectee` n'existait tout simplement pas dans
+    # l'extraction ReliefWeb, et `calculer_action_recommandee` traitait un
+    # dispositif tiers comme un marche ferme -> "ignorer". Les offres ou un
+    # CONCURRENT est deja en place, c'est-a-dire les meilleures cibles de
+    # conquete, etaient donc silencieusement jetees.
     try:
-        return json.loads(texte)
+        return ted.normaliser_securite(json.loads(texte))
     except json.JSONDecodeError:
         pass
     debut, fin = texte.find("{"), texte.rfind("}")
     if debut != -1 and fin != -1 and fin > debut:
         try:
-            return json.loads(texte[debut:fin + 1])
+            return ted.normaliser_securite(json.loads(texte[debut:fin + 1]))
         except json.JSONDecodeError:
             pass
     repare = ted.reparer_json(texte, modele=ted.MODELE_RAFFINEMENT)
     if repare is None:
         return None
     try:
-        return json.loads(repare)
+        return ted.normaliser_securite(json.loads(repare))
     except json.JSONDecodeError:
         return None
 
