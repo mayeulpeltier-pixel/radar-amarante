@@ -18,7 +18,7 @@ Pre-requis : ted_complet_v14.py et ted_complet_bm.py dans le meme dossier.
 
 import os
 import unittest
-from datetime import date
+from datetime import date, timedelta
 
 import ted_complet_v14 as ted
 import ted_complet_bm as bm
@@ -1510,6 +1510,52 @@ except Exception:
     ungm_radar = None
 
 
+# ===========================================================================
+# DATES DES FIXTURES UNGM : CALCULEES, JAMAIS FIGEES.
+# ===========================================================================
+# Meme defaut que celui qui a fait tomber test_adb le 23/07/2026 et qui aurait
+# fait tomber test_afdb le 01/08/2026 : des dates ECRITES EN DUR confrontees a
+# une fenetre GLISSANTE. Ici c'est `ungm_radar.dans_la_fenetre`, qui ecarte un
+# avis publie il y a plus de RADAR_UNGM_JOURS jours (45 par defaut), et
+# `ungm_attributions` (RADAR_UNGM_ATTRIB_JOURS, 180 par defaut).
+#
+# Simulation temporelle avant correction : la date `05-Jul-2026` sortait de la
+# fenetre le 20/08/2026, emportant 10 tests de TestUNGM, puis 6 de
+# TestAttributionsUNGM en janvier 2027. Or un test rouge fait echouer le job
+# `radar.yml` des l'etape 1, ce qui SAUTE la reconstitution de
+# service_account.json et toute la collecte : une bombe a retardement dans un
+# test est une panne de production differee, pas un simple bruit de CI.
+#
+# REGLE : une date de fixture se calcule depuis date.today() et depuis la
+# constante de fenetre du collecteur. Jamais en dur. Les tests de PARSING PUR
+# (`test_formats_de_date`) gardent evidemment leurs dates fixes : ils ne
+# dependent d'aucune horloge, c'est precisement ce qu'ils verifient.
+_MOIS_UNGM = ("", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep",
+              "Oct", "Nov", "Dec")
+
+
+def _date_ungm(d):
+    """date -> "10-Jul-2026", le format du portail UNGM.
+
+    Table de mois en dur : strftime("%b") depend de la locale du runner, alors
+    qu'UNGM publie en anglais. On ne laisse pas l'hote decider du verdict."""
+    return "{:02d}-{}-{}".format(d.day, _MOIS_UNGM[d.month], d.year)
+
+
+_AUJ_UNGM = date.today()
+# Publication RECENTE : dans la fenetre quelle que soit RADAR_UNGM_JOURS.
+UNGM_PUB = _AUJ_UNGM - timedelta(days=1)
+UNGM_PUB_TXT, UNGM_PUB_ISO = _date_ungm(UNGM_PUB), UNGM_PUB.isoformat()
+# Echeance A VENIR, et surtout POSTERIEURE a la publication : interpreter_ligne
+# trie les dates trouvees et prend la premiere pour la publication, la derniere
+# pour l'echeance. L'ordre porte donc du sens, il n'est pas decoratif.
+UNGM_ECH = _AUJ_UNGM + timedelta(days=28)
+UNGM_ECH_TXT, UNGM_ECH_ISO = _date_ungm(UNGM_ECH), UNGM_ECH.isoformat()
+# Attribution : meme principe, sur la fenetre bien plus large des titulaires.
+UNGMA_PUB = _AUJ_UNGM - timedelta(days=1)
+UNGMA_PUB_TXT, UNGMA_PUB_ISO = _date_ungm(UNGMA_PUB), UNGMA_PUB.isoformat()
+
+
 @unittest.skipIf(ungm_radar is None, "ungm_radar indisponible")
 class TestUNGM(unittest.TestCase):
     """Collecteur UNGM. Le portail rend ses lignes en <div role="row"> et non
@@ -1525,7 +1571,7 @@ class TestUNGM(unittest.TestCase):
 
     STANDARD = ["Request for Proposal",
                 "Provision of Security Guard Services for UNHCR Offices",
-                "UNHCR", "Mali", "RFP/MLI/2026/047", "10-Jul-2026", "15-Aug-2026"]
+                "UNHCR", "Mali", "RFP/MLI/2026/047", UNGM_PUB_TXT, UNGM_ECH_TXT]
 
     # -- Extraction des lignes -------------------------------------------
     def test_lignes_en_div_role_row(self):
@@ -1549,8 +1595,8 @@ class TestUNGM(unittest.TestCase):
         self.assertEqual(a["acheteur"], "UNHCR")
         self.assertEqual(a["type_notice"], "Request for Proposal")
         self.assertIn("Security Guard", a["titre"])
-        self.assertEqual(a["date_publication"], "2026-07-10")
-        self.assertEqual(a["deadline"], "2026-08-15")
+        self.assertEqual(a["date_publication"], UNGM_PUB_ISO)
+        self.assertEqual(a["deadline"], UNGM_ECH_ISO)
 
     def test_ordre_des_colonnes_inverse(self):
         """Le portail peut reordonner ses colonnes : le parseur doit tenir."""
@@ -1558,12 +1604,12 @@ class TestUNGM(unittest.TestCase):
         a = ungm_radar.normaliser(ungm_radar.extraire_lignes(self._html(inverse))[0])
         self.assertEqual(a["pays_execution"], "MLI")
         self.assertEqual(a["acheteur"], "UNHCR")
-        self.assertEqual(a["date_publication"], "2026-07-10")
+        self.assertEqual(a["date_publication"], UNGM_PUB_ISO)
 
     def test_titre_mentionnant_une_agence_n_est_pas_l_agence(self):
         """Piege reel : "…for UNHCR Offices" contient UNHCR sans etre l'emetteur."""
         cellules = ["Provision of Security Guard Services for UNHCR Offices",
-                    "UNHCR", "Mali", "10-Jul-2026"]
+                    "UNHCR", "Mali", UNGM_PUB_TXT]
         a = ungm_radar.normaliser(ungm_radar.extraire_lignes(self._html(cellules))[0])
         self.assertEqual(a["acheteur"], "UNHCR")
         self.assertIn("Security Guard", a["titre"])
@@ -1572,18 +1618,18 @@ class TestUNGM(unittest.TestCase):
         """UNGM publie en anglais : la table francaise seule ne suffisait pas."""
         for nom, iso in (("Somalia", "SOM"), ("South Sudan", "SSD"),
                          ("Iraq", "IRQ"), ("Afghanistan", "AFG")):
-            cellules = ["WFP", nom, "Convoy escort services", "05-Jul-2026"]
+            cellules = ["WFP", nom, "Convoy escort services", UNGM_PUB_TXT]
             a = ungm_radar.normaliser(ungm_radar.extraire_lignes(self._html(cellules))[0])
             self.assertIsNotNone(a, "{} non reconnu".format(nom))
             self.assertEqual(a["pays_execution"], iso)
 
     def test_pays_hors_perimetre_rejete(self):
-        cellules = ["UNICEF", "Denmark", "Fournitures de bureau", "06-Jul-2026"]
+        cellules = ["UNICEF", "Denmark", "Fournitures de bureau", UNGM_PUB_TXT]
         self.assertIsNone(
             ungm_radar.normaliser(ungm_radar.extraire_lignes(self._html(cellules))[0]))
 
     def test_agence_inconnue_repli_neutre(self):
-        cellules = ["Mali", "Fourniture de vehicules blindes", "12-Jul-2026"]
+        cellules = ["Mali", "Fourniture de vehicules blindes", UNGM_PUB_TXT]
         a = ungm_radar.normaliser(ungm_radar.extraire_lignes(self._html(cellules))[0])
         self.assertEqual(a["acheteur"], "Nations Unies")
 
@@ -1595,9 +1641,9 @@ class TestUNGM(unittest.TestCase):
         self.assertEqual(ungm_radar.lire_date("sans date"), "")
 
     def test_une_seule_date_ne_cree_pas_de_fausse_echeance(self):
-        cellules = ["WFP", "Mali", "Escorte de convois", "10-Jul-2026"]
+        cellules = ["WFP", "Mali", "Escorte de convois", UNGM_PUB_TXT]
         a = ungm_radar.normaliser(ungm_radar.extraire_lignes(self._html(cellules))[0])
-        self.assertEqual(a["date_publication"], "2026-07-10")
+        self.assertEqual(a["date_publication"], UNGM_PUB_ISO)
         self.assertEqual(a["deadline"], "")
 
     def test_fenetre_de_publication(self):
@@ -1606,6 +1652,41 @@ class TestUNGM(unittest.TestCase):
         self.assertTrue(ungm_radar.dans_la_fenetre((auj - _td(days=10)).isoformat(), auj, 45))
         self.assertFalse(ungm_radar.dans_la_fenetre((auj - _td(days=200)).isoformat(), auj, 45))
         self.assertTrue(ungm_radar.dans_la_fenetre("", auj, 45))   # sans date, on garde
+
+    def test_avis_publie_hors_fenetre_est_ecarte(self):
+        """La fenetre de fraicheur, verifiee de BOUT EN BOUT.
+
+        `test_fenetre_de_publication` teste la fonction seule ; celui-ci verifie
+        qu'elle est bien BRANCHEE dans `normaliser`. Le Mali est un pays suivi
+        et la ligne est par ailleurs valide : si l'avis est ecarte, c'est la
+        fenetre et rien d'autre."""
+        vieux = _date_ungm(_AUJ_UNGM - timedelta(days=ungm_radar.JOURS_FENETRE + 5))
+        cellules = ["WFP", "Mali", "Escorte de convois", vieux]
+        self.assertIsNone(
+            ungm_radar.normaliser(ungm_radar.extraire_lignes(self._html(cellules))[0]))
+
+    def test_avis_publie_dans_la_fenetre_est_conserve(self):
+        """Contraste : meme ligne, seule la date change."""
+        cellules = ["WFP", "Mali", "Escorte de convois", UNGM_PUB_TXT]
+        a = ungm_radar.normaliser(ungm_radar.extraire_lignes(self._html(cellules))[0])
+        self.assertIsNotNone(a)
+        self.assertEqual(a["pays_execution"], "MLI")
+
+    def test_fixtures_restent_dans_la_fenetre(self):
+        """Garde-fou anti-recidive.
+
+        Si quelqu'un rebascule un jour une date en dur dans ce fichier, cette
+        assertion le dit tout de suite, avec un message explicite, plutot que
+        de laisser un test metier tomber au hasard des mois plus tard, un lundi
+        matin, en bloquant toute la collecte."""
+        self.assertTrue(
+            ungm_radar.dans_la_fenetre(UNGM_PUB_ISO),
+            "Le fixture de publication UNGM est sorti de la fenetre : les dates "
+            "de test se calculent depuis date.today(), jamais en dur.")
+        self.assertGreater(
+            UNGM_ECH, UNGM_PUB,
+            "L'echeance doit rester posterieure a la publication : "
+            "interpreter_ligne trie les dates et en deduit les deux champs.")
 
     # -- Identifiants et schema -------------------------------------------
     def test_identifiant_et_lien(self):
@@ -1638,7 +1719,7 @@ class TestUNGM(unittest.TestCase):
     def test_construire_compte_les_rejets(self):
         bons = ungm_radar.extraire_lignes(self._html(self.STANDARD))
         hors = ungm_radar.extraire_lignes(
-            self._html(["UNICEF", "Denmark", "Fournitures", "06-Jul-2026"], ident="9"))
+            self._html(["UNICEF", "Denmark", "Fournitures", UNGM_PUB_TXT], ident="9"))
         avis, motifs = ungm_radar.construire(bons + hors)
         self.assertEqual(len(avis), 1)
         self.assertEqual(motifs["sans_pays"], 1)
@@ -1650,8 +1731,8 @@ class TestUNGM(unittest.TestCase):
               "able to save procurement opportunities.",
               "WRDJI001/2026 Study, acquisition, and installation of a solar power "
               "system for the WHO Djibouti Open in a new window",
-              "20-Aug-2026 04:00 (GMT 3.00) 30.6971513338947",
-              "20-Jul-2026", "WHO", "Request for proposal", "EM/ACO/DJI/P/0009332"]
+              UNGM_ECH_TXT + " 04:00 (GMT 3.00) 30.6971513338947",
+              UNGM_PUB_TXT, "WHO", "Request for proposal", "EM/ACO/DJI/P/0009332"]
 
     def test_cellule_de_service_ecartee(self):
         """La cellule "Unsave this procurement opportunity..." est presente sur
@@ -1668,14 +1749,14 @@ class TestUNGM(unittest.TestCase):
         elle etait rejetee par l'ancienne limite de longueur."""
         ligne = ungm_radar.extraire_lignes(self._html(self.REELLE))[0]
         champs = ungm_radar.interpreter_ligne(ligne["cellules"])
-        self.assertEqual(champs["date_publication"], "2026-07-20")
-        self.assertEqual(champs["deadline"], "2026-08-20")
+        self.assertEqual(champs["date_publication"], UNGM_PUB_ISO)
+        self.assertEqual(champs["deadline"], UNGM_ECH_ISO)
 
     def test_titre_commencant_comme_un_type_reste_un_titre(self):
         """Bug reel : "ITB for Supply of veterinary drugs" etait pris pour le
         type d'avis, et "Invitation to bid" devenait le titre."""
         cellules = ["ITB for Supply of veterinary drugs Open in a new window",
-                    "30-Jul-2026 14:00 (GMT 2.00) 10.15", "20-Jul-2026",
+                    UNGM_ECH_TXT + " 14:00 (GMT 2.00) 10.15", UNGM_PUB_TXT,
                     "FAO", "Invitation to bid", "2026/FNSDN/137675"]
         champs = ungm_radar.interpreter_ligne(
             ungm_radar.extraire_lignes(self._html(cellules))[0]["cellules"])
@@ -1708,7 +1789,7 @@ class TestUNGM(unittest.TestCase):
 
     def test_avis_sans_pays_identifiable_est_ecarte(self):
         """Mieux vaut ne rien remonter qu'un avis mal localise."""
-        cellules = ["Supply of veterinary drugs", "20-Jul-2026", "FAO",
+        cellules = ["Supply of veterinary drugs", UNGM_PUB_TXT, "FAO",
                     "Invitation to bid", "2026/FNSDN/137675"]
         self.assertIsNone(
             ungm_radar.normaliser(ungm_radar.extraire_lignes(self._html(cellules))[0]))
@@ -1750,7 +1831,7 @@ class TestUNGM(unittest.TestCase):
         if page > 0:
             return ""
         return self._html(["Escorte de convois et gardiennage",
-                           "30-Jul-2026 14:00 (GMT 2.00) 1.5", "20-Jul-2026",
+                           UNGM_ECH_TXT + " 14:00 (GMT 2.00) 1.5", UNGM_PUB_TXT,
                            "WFP", "Invitation to bid", "REF-1"],
                           ident=str(abs(hash(iso)) % 99999))
 
@@ -1769,7 +1850,7 @@ class TestUNGM(unittest.TestCase):
     def test_pays_certain_ecrase_une_detection_erronee(self):
         """Un titre citant la Zambie ne doit pas deplacer un avis malien."""
         ligne = ungm_radar.extraire_lignes(self._html(
-            ["Air ticket from Lusaka, Zambia", "20-Jul-2026", "ILO",
+            ["Air ticket from Lusaka, Zambia", UNGM_PUB_TXT, "ILO",
              "Request for quotation", "REF-9"]))[0]
         ligne["pays_iso3"] = "MLI"
         self.assertEqual(ungm_radar.normaliser(ligne)["pays_execution"], "MLI")
@@ -1940,7 +2021,7 @@ class TestCablageUNGMDashboard(unittest.TestCase):
                 "type_notice": "Invitation to bid", "phase": "avis",
                 "lien_avis": "https://www.ungm.org/Public/Notice/307870",
                 "publication_number": "UNGM-307870",
-                "deadline": "2026-08-02", "date_publication": "2026-07-20"}
+                "deadline": "2026-08-02", "date_publication": UNGM_PUB_ISO}
         extraction = ungm_radar.ted.normaliser_securite({
             "type_client": "organisation_internationale",
             "type_mobilite": "terrain_isole",
@@ -2056,32 +2137,32 @@ class TestAttributionsUNGM(unittest.TestCase):
     # -- Normalisation et schema ------------------------------------------
     def test_ligne_complete(self):
         html = self._html(["Provision of armoured vehicle rental and convoy escort",
-                           "Bancroft Global Development", "WFP", "12-Jun-2026",
+                           "Bancroft Global Development", "WFP", UNGMA_PUB_TXT,
                            "USD 4250000", "WFP/SOM/2026/117"])
         a = ungm_attributions.normaliser(
             ungm_attributions.extraire_attributions(html)[0], "SOM")
         self.assertEqual(a["gagnant"], "Bancroft Global Development")
         self.assertEqual(a["pays_execution"], "SOM")
         self.assertEqual(a["acheteur"], "WFP")
-        self.assertEqual(a["date_publication"], "2026-06-12")
+        self.assertEqual(a["date_publication"], UNGMA_PUB_ISO)
         self.assertEqual(a["publication_number"], "UNGMA-88214")
         self.assertEqual(a["a_demarcher"], "oui")
 
     def test_pays_ecrit_en_iso3(self):
         """Le dashboard resout les attributions en mode ISO : un nom de pays
         donnerait "Non classé" (leçon des attributions BM)."""
-        html = self._html(["Escorte", "Bancroft Global Development", "WFP", "12-Jun-2026"])
+        html = self._html(["Escorte", "Bancroft Global Development", "WFP", UNGMA_PUB_TXT])
         a = ungm_attributions.normaliser(
             ungm_attributions.extraire_attributions(html)[0], "SOM")
         self.assertEqual(a["pays_execution"], "SOM")
 
     def test_sans_titulaire_rien_n_est_ecrit(self):
-        html = self._html(["Provision of catering services", "WFP", "12-Jun-2026"])
+        html = self._html(["Provision of catering services", "WFP", UNGMA_PUB_TXT])
         self.assertIsNone(ungm_attributions.normaliser(
             ungm_attributions.extraire_attributions(html)[0], "SOM"))
 
     def test_pays_hors_perimetre_rejete(self):
-        html = self._html(["Escorte", "Bancroft Global Development", "WFP", "12-Jun-2026"])
+        html = self._html(["Escorte", "Bancroft Global Development", "WFP", UNGMA_PUB_TXT])
         ligne = ungm_attributions.extraire_attributions(html)[0]
         self.assertIsNone(ungm_attributions.normaliser(ligne, "DNK"))
 
@@ -2102,7 +2183,7 @@ class TestAttributionsUNGM(unittest.TestCase):
         except Exception:
             self.skipTest("radar_dashboard indisponible")
         html = self._html(["Convoy escort services", "Bancroft Global Development",
-                           "WFP", "12-Jun-2026", "USD 4250000"])
+                           "WFP", UNGMA_PUB_TXT, "USD 4250000"])
         a = ungm_attributions.normaliser(
             ungm_attributions.extraire_attributions(html)[0], "SOM")
         lead = dash.attribution_vers_lead(a)
@@ -2112,7 +2193,7 @@ class TestAttributionsUNGM(unittest.TestCase):
         self.assertNotEqual(lead["zone"], "Non classé")
 
     def test_deduplication(self):
-        html = self._html(["Escorte", "Bancroft Global Development", "WFP", "12-Jun-2026"])
+        html = self._html(["Escorte", "Bancroft Global Development", "WFP", UNGMA_PUB_TXT])
         l1 = ungm_attributions.extraire_attributions(html)[0]
         l2 = dict(l1, id="99999")          # identifiant different, meme marche
         for l in (l1, l2):
@@ -2125,6 +2206,18 @@ class TestAttributionsUNGM(unittest.TestCase):
     # designe l'endpoint et buildOptions(), qui donne la charge exacte. Quatorze
     # tentatives avaient echoue avant cette lecture : /Search existe mais
     # renvoie un reliquat interne, le bon chemin est /PublicSearch.
+    def test_fixture_reste_dans_la_fenetre(self):
+        """Garde-fou anti-recidive, cote attributions (fenetre 180 j).
+
+        La classe entiere serait passee au rouge en janvier 2027 avec l'ancienne
+        date figee `12-Jun-2026`."""
+        import bm_attributions as _bma
+        self.assertTrue(
+            _bma.dans_la_fenetre(UNGMA_PUB_ISO,
+                                 jours=ungm_attributions.JOURS_FENETRE),
+            "Le fixture d'attribution UNGM est sorti de la fenetre : les dates "
+            "de test se calculent depuis date.today(), jamais en dur.")
+
     def test_endpoint_est_publicsearch(self):
         self.assertTrue(ungm_attributions.ENDPOINT_AWARDS.endswith("/PublicSearch"))
 
@@ -2191,7 +2284,7 @@ class TestAttributionsUNGM(unittest.TestCase):
                     "Harirod Construction Company", "COM.INT SPA (Italy)",
                     "AL-KASID COMMERCIAL AGENCIES LTD."):
             cellules = ["Supply of heavy equipment - Afghanistan", nom,
-                        "10-Jul-2026", "UNOPS", "ITB/2026/1", "Afghanistan"]
+                        UNGM_PUB_TXT, "UNOPS", "ITB/2026/1", "Afghanistan"]
             a = ungm_attributions.normaliser(
                 ungm_attributions.extraire_attributions(self._html(cellules))[0],
                 "AFG")
@@ -2252,7 +2345,7 @@ class TestAttributionsUNGM(unittest.TestCase):
 
     def test_nature_visible_dans_le_secteur(self):
         cellules = ["Construction of water points - Mali", "Sogea Satom SARL",
-                    "10-Jul-2026", "UNOPS", "ITB/2026/1", "Mali"]
+                    UNGM_PUB_TXT, "UNOPS", "ITB/2026/1", "Mali"]
         a = ungm_attributions.normaliser(
             ungm_attributions.extraire_attributions(self._html(cellules))[0], "MLI")
         self.assertIn("travaux", a["secteur"])
