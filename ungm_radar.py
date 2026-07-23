@@ -827,7 +827,11 @@ def ligne_depuis_resultat(r):
 def ecrire(feuille, resultats):
     """N'ajoute que les avis inconnus. Ne reecrit jamais une ligne existante :
     `statut_suivi` est une zone de saisie humaine."""
-    index = ted.charger_index_publication(feuille)
+    # Index construit en LECTURE POSITIONNELLE depuis le SCHEMA (regle 4) :
+    # la position de `publication_number` vient de COLONNES_UNGM, jamais de
+    # l'en-tete de la feuille. Immunise contre un en-tete desaligne, un en-tete
+    # duplique et la numerisation des identifiants. Voir ted.index_publications.
+    index = ted.charger_index_publication(feuille, COLONNES_UNGM)
     nouvelles, deja = [], 0
     for r in resultats:
         pub = r["avis"].get("publication_number", "")
