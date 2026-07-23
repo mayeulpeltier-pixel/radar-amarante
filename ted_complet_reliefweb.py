@@ -541,7 +541,11 @@ def ecrire_resultats_rw(feuille, resultats):
     """Ecriture groupee (2 appels max). statut_suivi et date_detection (zone
     preservee) jamais ecrases sur un re-run. Reutilise l'indexation par
     publication_number du coeur TED."""
-    index = ted.charger_index_publication(feuille)
+    # Index construit en LECTURE POSITIONNELLE depuis le SCHEMA (regle 4) :
+    # la position de `publication_number` vient de COLONNES_RW, jamais de
+    # l'en-tete de la feuille. Immunise contre un en-tete desaligne, un en-tete
+    # duplique et la numerisation des identifiants. Voir ted.index_publications.
+    index = ted.charger_index_publication(feuille, COLONNES_RW)
     derniere_lettre = ted.lettre_colonne(len(COLONNES_RW))
     maj_groupees, nouvelles_lignes = [], []
     nb_nouveaux, nb_maj = 0, 0
