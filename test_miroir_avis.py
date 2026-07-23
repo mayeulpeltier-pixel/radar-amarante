@@ -40,7 +40,16 @@ CABLAGES = [
 
 class FeuilleInerte:
     """Doublure minimale : liste vide, et toute ecriture est interdite (une
-    liste de resultats vide ne doit produire AUCUN appel Sheet)."""
+    liste de resultats vide ne doit produire AUCUN appel Sheet).
+
+    `get_all_values` depuis le 23/07/2026 : le chemin d'ecriture construit son
+    index de lignes en LECTURE POSITIONNELLE (`ted.index_publications`) et non
+    plus via `get_all_records`, qui numerisait les identifiants et levait sur
+    un en-tete duplique. `get_all_records` est conserve : quatre collecteurs
+    (AfDB, ADB, EBRD, IDB) l'appellent encore en direct."""
+
+    def get_all_values(self):
+        return []
 
     def get_all_records(self):
         return []
