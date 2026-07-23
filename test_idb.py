@@ -511,6 +511,20 @@ class TestEcritureAttributions(unittest.TestCase):
             self._rec = [{"publication_number": p} for p in existants]
             self.ajouts = []
 
+        def get_all_values(self):
+            """Grille BRUTE (en-tete + lignes), comme gspread.
+
+            Depuis le 23/07/2026 le chemin d'ecriture construit son index en
+            LECTURE POSITIONNELLE selon le schema partage des attributions
+            (regle 4), et non plus via `get_all_records`, qui numerisait les
+            identifiants et levait sur un en-tete duplique."""
+            import bm_attributions
+            if not self._rec:
+                return []
+            colonnes = list(bm_attributions.COLONNES)
+            return ([colonnes] +
+                    [[str(r.get(c, "")) for c in colonnes] for r in self._rec])
+
         def get_all_records(self):
             return list(self._rec)
 
