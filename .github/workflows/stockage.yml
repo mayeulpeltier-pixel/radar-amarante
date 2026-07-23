@@ -1,25 +1,71 @@
 name: Stockage Postgres
 
-# Verification ponctuelle, DECLENCHEMENT MANUEL UNIQUEMENT (workflow_dispatch).
-# Ne touche ni au Sheet, ni au dashboard, ni a l'etat du radar.
+# Verification de la couche de stockage.
 #
-# ROLE : valider la chaine complete secret -> connexion -> schema -> inventaire
-# AVANT d'activer la double ecriture dans radar.yml. Meme philosophie que la
-# sonde des sources : on verifie l'infrastructure separement, on branche
-# ensuite.
+# ROLE : valider la chaine complete secret -> connexion -> schema -> inventaire,
+# et surtout EXECUTER LES TESTS D'INTEGRATION.
 #
-# UTILISATION : onglet Actions > "Stockage Postgres" > Run workflow, puis lire
-# le journal de l'etape "Verifier le stockage".
-#   - "DATABASE_URL absent"  -> creer le secret (chaine de connexion Neon).
-#   - "schema OK" + inventaire -> pret pour la double ecriture (PR suivante).
+# POURQUOI UN SERVICE POSTGRES (23/07/2026)
+# -----------------------------------------
+# `test_stockage.py` contient deux etages : des tests PURS, et 25 tests
+# d'INTEGRATION qui ne s'executent que si RADAR_TEST_DATABASE_URL est definie.
+# Cette variable n'existait nulle part en CI : ces 25 tests ne tournaient donc
+# JAMAIS, ni ici ni dans radar.yml. Toute la logique SQL (unicite par onglet,
+# index partiel sur les identifiants vides, rattrapage historique, purge)
+# etait ecrite, documentee, testee sur le poste de developpement, et
+# totalement absente de la barriere CI.
+#
+# Constate en corrigeant le miroir : le passage de DO NOTHING a DO UPDATE a
+# fait rougir deux tests d'integration. En CI, ce changement serait passe
+# entierement inapercu.
+#
+# Un service `postgres:16` coute quelques secondes de demarrage et rend la
+# barriere reelle. Aucun secret requis : la base de test est ephemere et vit
+# le temps du job.
+#
+# DECLENCHEMENT : automatique sur les fichiers concernes, plus manuel.
+#   Si tu preferes revenir au manuel seul, supprime le bloc `push:` ci-dessous.
+#
+# UTILISATION MANUELLE : onglet Actions > "Stockage Postgres" > Run workflow.
+#   - "DATABASE_URL absent"     -> creer le secret (chaine de connexion Neon).
+#   - "schema OK" + inventaire  -> la base de production repond.
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - "radar_stockage.py"
+      - "radar_rattrapage.py"
+      - "backup_sheet.py"
+      - "test_stockage.py"
+      - ".github/workflows/stockage.yml"
 
 jobs:
   verifier:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+
+    # Postgres ephemere pour les tests d'integration. La version suit celle de
+    # Neon (16) : tester sur une autre version reviendrait a valider autre
+    # chose que la production.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: radar
+          POSTGRES_PASSWORD: radar
+          POSTGRES_DB: radar_test
+        ports:
+          - 5432:5432
+        # Sans ce health check, le job demarre avant que la base accepte les
+        # connexions : les tests se sauteraient silencieusement, ce qui est
+        # exactement le probleme qu'on corrige.
+        options: >-
+          --health-cmd "pg_isready -U radar"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - name: Recuperer le code
         uses: actions/checkout@v4
@@ -32,12 +78,37 @@ jobs:
       - name: Installer les dependances
         run: pip install "psycopg[binary]"
 
-      # Les tests purs de la couche d'abord (les tests d'integration se
-      # sautent d'eux-memes sans RADAR_TEST_DATABASE_URL : voulu).
+      # Les deux etages tournent maintenant : purs ET integration.
       - name: Tester la couche de stockage
+        env:
+          RADAR_TEST_DATABASE_URL: postgresql://radar:radar@localhost:5432/radar_test
         run: python -m unittest test_stockage -v
 
-      - name: Verifier le stockage
+      # Garde-fou : si la variable de test venait a disparaitre, l'etape
+      # ci-dessus redeviendrait verte en sautant 25 tests, sans rien dire.
+      # Celle-ci compte les tests sautes et echoue si le silence revient.
+      - name: Verifier que les tests d'integration ont bien tourne
+        env:
+          RADAR_TEST_DATABASE_URL: postgresql://radar:radar@localhost:5432/radar_test
+        run: |
+          python - <<'PY'
+          import unittest
+          suite = unittest.TestLoader().loadTestsFromName("test_stockage")
+          res = unittest.TextTestRunner(verbosity=0).run(suite)
+          sautes = len(res.skipped)
+          print("tests executes : {} | sautes : {}".format(res.testsRun, sautes))
+          if sautes:
+              for cas, motif in res.skipped:
+                  print("  SAUTE :", cas, "->", motif)
+              raise SystemExit(
+                  "Des tests d'integration ont ete sautes : la base de test "
+                  "n'est pas joignable. Une barriere qui se saute elle-meme "
+                  "ne protege rien.")
+          PY
+
+      # Verification de la base de PRODUCTION (Neon), inchangee. Sans le
+      # secret, le script l'explique et sort en code 0.
+      - name: Verifier le stockage de production
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python radar_stockage.py
