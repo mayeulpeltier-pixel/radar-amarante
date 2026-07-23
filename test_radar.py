@@ -253,6 +253,158 @@ class TestActionRecommandee(unittest.TestCase):
 
 
 # ===========================================================================
+# 7 BIS. CHEMIN D'ECRITURE : index positionnel des publications
+# ===========================================================================
+# La regle 4 ("LECTURE POSITIONNELLE, JAMAIS PAR EN-TETE") etait appliquee au
+# chemin de LECTURE mais pas au chemin d'ECRITURE, qui reposait encore sur
+# `get_all_records()`. C'est pourtant lui qui decide DANS QUELLE LIGNE on
+# ecrit. Ces tests verrouillent les trois modes de defaillance constates sur
+# gspread 6.2.1 : en-tete duplique (exception), numerisation silencieuse des
+# identifiants, en-tete desaligne (l'incident `bm_radar`).
+class TestIndexPublications(unittest.TestCase):
+
+    COLONNES = ["date_maj", "score_final", "titre", "publication_number", "lien"]
+
+    def _grille(self, lignes, entete=None):
+        return [list(entete if entete is not None else self.COLONNES)] + [
+            list(l) for l in lignes]
+
+    # -- Cas nominal -------------------------------------------------------
+    def test_numeros_de_ligne_conformes_au_sheet(self):
+        """La ligne 1 etant l'en-tete, le premier avis est en ligne 2."""
+        grille = self._grille([
+            ["2026-07-20", "8", "Route Mali", "123456-2026", "http://a"],
+            ["2026-07-21", "6", "Escorte", "123457-2026", "http://b"]])
+        index = ted.index_publications(grille, self.COLONNES)
+        self.assertEqual(index, {"123456-2026": 2, "123457-2026": 3})
+
+    def test_sans_entete_les_donnees_commencent_ligne_1(self):
+        grille = [["2026-07-20", "8", "Route", "123456-2026", "http://a"]]
+        self.assertEqual(ted.index_publications(grille, self.COLONNES),
+                         {"123456-2026": 1})
+
+    def test_lignes_vides_et_colonnes_manquantes_ignorees(self):
+        grille = self._grille([
+            ["2026-07-20", "8", "Route", "123456-2026", "http://a"],
+            [],                                   # ligne vide
+            ["2026-07-21", "6", "Escorte"],       # ligne tronquee
+            ["2026-07-22", "5", "Convoi", "   ", "http://c"]])   # identifiant vide
+        self.assertEqual(ted.index_publications(grille, self.COLONNES),
+                         {"123456-2026": 2})
+
+    # -- Mode de defaillance 1 : en-tete desaligne (incident bm_radar) ------
+    def test_entete_desaligne_ne_fausse_plus_l_index(self):
+        """L'incident reel : un en-tete decale d'une colonne rangeait des
+        numeros de telephone sous `publication_number`. En positionnel, le
+        schema fait foi et l'identifiant reste le bon."""
+        entete_decale = ["date_maj", "score_final", "titre", "telephone",
+                         "publication_number"]
+        grille = self._grille(
+            [["2026-07-20", "8", "Route Mali", "123456-2026", "http://a"]],
+            entete=entete_decale)
+        index = ted.index_publications(grille, self.COLONNES)
+        self.assertEqual(index, {"123456-2026": 2})
+
+    def test_sans_schema_le_repli_suit_l_entete(self):
+        """Repli assume pour les appelants qui ne passent pas encore leur
+        schema : on lit l'en-tete, donc on herite de son eventuel decalage.
+        C'est le comportement historique, mais sans exception ni numerisation."""
+        entete_decale = ["date_maj", "score_final", "titre", "telephone",
+                         "publication_number"]
+        grille = self._grille(
+            [["2026-07-20", "8", "Route Mali", "0033123456789", "123456-2026"]],
+            entete=entete_decale)
+        self.assertEqual(ted.index_publications(grille), {"123456-2026": 2})
+
+    # -- Mode de defaillance 2 : en-tete duplique --------------------------
+    def test_entete_duplique_ne_leve_plus(self):
+        """`get_all_records()` levait GSpreadException sur un en-tete duplique
+        et arretait le collecteur en fin de run, APRES avoir paye les appels au
+        modele. Les donnees, elles, restent rangees selon le SCHEMA."""
+        entete = ["date_maj", "publication_number", "publication_number",
+                  "titre", "lien"]
+        grille = self._grille(
+            [["2026-07-20", "8", "Route", "123456-2026", "http://a"]],
+            entete=entete)
+        # Avec schema : la position officielle gagne, le doublon est sans effet.
+        self.assertEqual(ted.index_publications(grille, self.COLONNES),
+                         {"123456-2026": 2})
+
+    def test_entete_duplique_sans_schema_ne_leve_pas_non_plus(self):
+        """Sans schema, le repli reste tributaire de l'en-tete : il ne CORRIGE
+        pas le desalignement, il garantit seulement qu'on ne leve plus et qu'on
+        ne numerise plus. C'est exactement pourquoi passer `colonnes` est la
+        bonne pratique, et le repli une simple compatibilite."""
+        entete = ["date_maj", "publication_number", "publication_number",
+                  "titre", "lien"]
+        grille = self._grille(
+            [["2026-07-20", "8", "Route", "123456-2026", "http://a"]],
+            entete=entete)
+        index = ted.index_publications(grille)      # ne doit pas lever
+        self.assertIsInstance(index, dict)
+
+    # -- Mode de defaillance 3 : numerisation silencieuse ------------------
+    def test_identifiant_numerique_reste_une_chaine(self):
+        """`get_all_records()` convertissait "12345678" en entier 12345678,
+        alors que les collecteurs comparent des CHAINES. La correspondance
+        echouait toujours et chaque avis connu etait RE-AJOUTE a chaque run,
+        sans erreur ni test rouge."""
+        grille = self._grille([
+            ["2026-07-20", "8", "Route", "12345678", "http://a"],
+            ["2026-07-21", "6", "Escorte", "00123456", "http://b"]])
+        index = ted.index_publications(grille, self.COLONNES)
+        self.assertEqual(set(index), {"12345678", "00123456"})
+        for cle in index:
+            self.assertIsInstance(cle, str)
+        # Le zero de tete est preserve : c'est un identifiant, pas un nombre.
+        self.assertIn("00123456", index)
+
+    # -- Robustesse --------------------------------------------------------
+    def test_grille_vide(self):
+        self.assertEqual(ted.index_publications([], self.COLONNES), {})
+        self.assertEqual(ted.index_publications([[]], self.COLONNES), {})
+
+    def test_schema_sans_identifiant_renvoie_un_index_vide(self):
+        """Plutot un index vide (des doublons) qu'un index faux (une ligne
+        ecrasee) : l'echec doit rester du cote sur."""
+        self.assertEqual(
+            ted.index_publications(self._grille([["a", "b", "c", "d", "e"]]),
+                                   ["date_maj", "titre"]),
+            {})
+
+    def test_ni_schema_ni_entete_ne_devine_rien(self):
+        grille = [["2026-07-20", "8", "Route", "123456-2026", "http://a"]]
+        self.assertEqual(ted.index_publications(grille), {})
+
+    # -- Integration : le chemin d'ecriture passe bien son schema -----------
+    def test_ecriture_ted_transmet_son_schema(self):
+        """Garde-fou de cablage : si quelqu'un retire COLONNES_SHEET de
+        l'appel, l'ecriture TED redevient dependante de l'en-tete."""
+        import inspect
+        source = inspect.getsource(ted.ecrire_resultats_dans_sheet)
+        self.assertIn("charger_index_publication(feuille, COLONNES_SHEET)", source)
+
+    def test_charger_index_lit_bien_get_all_values(self):
+        """`get_all_records` ne doit plus etre appele : c'est lui qui numerise
+        et qui leve sur les doublons d'en-tete."""
+        appels = []
+
+        class FausseFeuille:
+            def get_all_values(self_inner):
+                appels.append("get_all_values")
+                return [["date_maj", "score_final", "titre",
+                         "publication_number", "lien"],
+                        ["2026-07-20", "8", "Route", "123456-2026", "http://a"]]
+
+            def get_all_records(self_inner):
+                raise AssertionError("get_all_records ne doit plus etre utilise")
+
+        index = ted.charger_index_publication(FausseFeuille(), self.COLONNES)
+        self.assertEqual(index, {"123456-2026": 2})
+        self.assertEqual(appels, ["get_all_values"])
+
+
+# ===========================================================================
 # 8. MEMOIRE INTER-RUNS : ne pas reanalyser un avis deja vu
 # ===========================================================================
 class TestMemoireInterRuns(unittest.TestCase):
