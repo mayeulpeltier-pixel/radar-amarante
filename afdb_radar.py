@@ -374,12 +374,12 @@ def ecrire_resultats(feuille, resultats):
     """Insere les nouveaux avis, met a jour les scores des avis deja presents
     SANS toucher a statut_suivi ni date_detection (zone preservee). Ecriture
     groupee (2 appels reseau max), meme logique que le coeur TED."""
-    valeurs = feuille.get_all_records()
-    index = {}
-    for num, ligne in enumerate(valeurs, start=2):
-        pub = ligne.get("publication_number", "")
-        if pub:
-            index[pub] = num
+    # Index construit en LECTURE POSITIONNELLE depuis le SCHEMA (regle 4).
+    # `get_all_records()` numerisait les identifiants ("12345678" -> entier,
+    # donc plus aucune correspondance avec les chaines, donc re-ajout
+    # silencieux a chaque run) et levait `GSpreadException` sur un en-tete
+    # duplique, en fin de run, apres avoir paye les appels au modele.
+    index = ted.charger_index_publication(feuille, COLONNES_AFDB)
     derniere = ted.lettre_colonne(len(COLONNES_AFDB))
     maj, nouvelles, nb_maj, nb_new = [], [], 0, 0
     for r in resultats:
