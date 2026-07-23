@@ -537,7 +537,11 @@ def ecrire_resultats_bm(feuille, resultats):
     """Ecriture groupee (batch) : mises a jour en un appel, nouveaux en un
     appel. statut_suivi et date_detection (zone preservee) jamais ecrases
     sur un re-run. Reutilise l'indexation par publication_number du coeur."""
-    index = ted.charger_index_publication(feuille)
+    # Index construit en LECTURE POSITIONNELLE depuis le SCHEMA (regle 4) :
+    # la position de `publication_number` vient de COLONNES_BM, jamais de
+    # l'en-tete de la feuille. Immunise contre un en-tete desaligne, un en-tete
+    # duplique et la numerisation des identifiants. Voir ted.index_publications.
+    index = ted.charger_index_publication(feuille, COLONNES_BM)
     derniere_lettre = ted.lettre_colonne(len(COLONNES_BM))
     maj_groupees, nouvelles_lignes = [], []
     nb_nouveaux, nb_maj = 0, 0
