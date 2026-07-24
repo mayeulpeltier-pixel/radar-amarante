@@ -1,6 +1,36 @@
 # Dependances de l'APPLICATION WEB (Render lit ce fichier au build).
-# Les collecteurs, eux, restent installes par radar.yml : deux mondes,
-# deux listes, pas de dependance croisee inutile.
-fastapi
-uvicorn
-psycopg[binary]
+# Les collecteurs, eux, ont leur propre liste : requirements-radar.txt.
+# Deux mondes, deux listes, pas de dependance croisee inutile -- Render n'a
+# aucune raison d'installer gspread ou pypdf.
+#
+# ---------------------------------------------------------------------------
+# POURQUOI DES VERSIONS FIGEES (23/07/2026)
+# ---------------------------------------------------------------------------
+# Ce fichier ne portait aucune contrainte de version. Render reinstalle a
+# CHAQUE deploiement : un commit anodin suffisait donc a embarquer une majeure
+# de fastapi ou de pydantic publiee entre-temps, et a rendre l'application
+# indisponible pour une raison sans rapport avec le commit. Un plan gratuit
+# qui ne redemarre pas, c'est le dashboard hors service sans explication.
+#
+# Ces versions sont celles contre lesquelles la suite complete (571 tests) a
+# ete verifiee dans un environnement vierge.
+#
+# MISE A JOUR : voir la procedure en tete de requirements-radar.txt. Les
+# paquets communs aux deux fichiers (psycopg, fastapi, pydantic) doivent
+# rester a la MEME version des deux cotes, sans quoi l'application servirait
+# des donnees lues par une version de psycopg que la CI n'a jamais testee.
+#
+# Python : 3.12.6 (python-version.txt).
+
+# --- Serveur ---------------------------------------------------------------
+fastapi==0.139.2
+uvicorn==0.51.0
+
+# --- Modeles de donnees ----------------------------------------------------
+# radar_app fait `from pydantic import BaseModel` : dependance DIRECTE, donc
+# declaree ici. S'appuyer sur ce que fastapi tire avec lui, c'est accepter
+# qu'une majeure de pydantic arrive sans prevenir.
+pydantic==2.13.4
+
+# --- Postgres --------------------------------------------------------------
+psycopg[binary]==3.3.4
