@@ -1,320 +1,797 @@
 # -*- coding: utf-8 -*-
-"""Tests ReliefWeb : alignement sur l'enum securite, levier de deplacement
-concurrentiel, et stabilite du schema Sheet.
+"""
+RADAR AMARANTE -- Collecteur RELIEFWEB (offres d'emploi terrain).
+=================================================================
 
-POURQUOI CE FICHIER EXISTE (23/07/2026)
----------------------------------------
-ReliefWeb etait le seul collecteur reste sur l'ANCIEN champ booleen
-`securite_existante_detectee`, alors que le coeur avait bascule sur l'enum a
-quatre valeurs (aucune / interne_client / prestataire_tiers / inconnu). Deux
-consequences, cumulatives :
+Quatrieme source publique du radar. ReliefWeb (service d'information
+humanitaire de l'OCHA/ONU) expose une API publique, gratuite et sans cle,
+qui renvoie du JSON. On exploite l'endpoint JOBS : chaque offre d'emploi
+publiee pour un pays a risque revele une organisation qui DEPLOIE du
+personnel sur le terrain (coordinateur pays, chef de projet, logisticien,
+expert...). C'est exactement le profil de client d'Amarante -- et, a la
+difference d'un marche public, l'organisation qui recrute EST elle-meme le
+deployeur, donc la cible commerciale directe (pas un titulaire a retrouver).
 
-  1. `PROMPT_RELIEFWEB` demandait un booleen : le modele ne pouvait donc PAS
-     distinguer une securite interne (marche ferme) d'un prestataire tiers
-     (concurrent en place, donc opportunite de conquete) ;
-  2. `analyser_reliefweb` n'appelait jamais `ted.normaliser_securite`, si bien
-     que la cle `securite_existante` n'existait meme pas dans l'extraction.
+DOC API (verifiee) : https://apidoc.reliefweb.int/
+  - Endpoint jobs : https://api.reliefweb.int/v2/jobs
+  - Le parametre `appname` est OBLIGATOIRE (dans l'URL, GET comme POST) et
+    sert au suivi statistique cote ReliefWeb.
+  - Enveloppe de reponse : {"data": [{"id": ..., "fields": {...}}],
+    "count": N, "totalCount": N}. On lit tout de facon DEFENSIVE (les
+    champs peuvent etre absents ou de forme variable), comme le reste du
+    radar.
+  - Aucun frais, mais limite a 1000 entrees par appel : on pagine.
 
-Comportement mesure AVANT correction, sur une offre mentionnant explicitement
-"contracted security company" :
+REUTILISATION : ce module reutilise INTEGRALEMENT la plomberie de
+ted_complet_v14 (session resiliente, appel modele, reparation JSON,
+scoring deterministe, garde-fou anti faux-FORT, escalade Sonnet, ecriture
+Sheet groupee, memoire inter-runs). Seuls la COLLECTE, la NORMALISATION,
+le PROMPT (adapte a une offre d'emploi, pas a un marche public) et le
+SCHEMA Sheet sont propres a ReliefWeb.
 
-    securite signalee par le modele = True  -> score 5.0, action "ignorer"
+Pre-requis : ted_complet_v14.py dans le MEME dossier. Ecrit dans l'onglet
+SEPARE "reliefweb_radar" du meme Google Sheet.
 
-Autrement dit : les offres ou un CONCURRENT est deja en place, c'est-a-dire
-les meilleures cibles de conquete, etaient silencieusement jetees. C'est
-l'inverse exact de la doctrine du projet ("logique commerciale, pas de
-kill-switch").
-
-APRES correction :
-
-    prestataire_tiers -> score 7.5, action "contacter", [DEPLACEMENT CONCURRENT]
-    interne_client    -> score 5.0, action "ignorer"        (marche ferme, ok)
-    aucune            -> score 7.5, action "contacter"
-
-Le schema du Sheet n'a PAS bouge : `COLONNES_RW` ne porte que le booleen
-derive, exactement comme `COLONNES_SHEET`. Aucune migration d'onglet requise,
-et c'est verifie ici (`TestSchemaSheetInchange`) parce qu'ajouter une colonne
-au milieu d'un schema positionnel desalignerait toutes les lignes existantes.
-
-Aucun appel reseau ni LLM : `ted.appeler_modele` est remplace par une reponse
-figee.
+Interrupteur : RADAR_RELIEFWEB=0 desactive completement le collecteur.
+Mode reglage : RELIEFWEB_DRY_RUN=1 montre l'entonnoir SANS aucun appel paye.
 """
 
 import json
-import unittest
+import os
+import time
+from datetime import date, datetime, timedelta
 
-import ted_complet_v14 as ted
-import ted_complet_reliefweb as rw
+import requests
 
-
-# Extraction de reference : une offre terrain qui merite d'etre poussee. Seule
-# la valeur de `securite_existante` varie d'un test a l'autre, pour que le
-# contraste isole bien la regle etudiee.
-BASE = {
-    "deploiement_terrain_reel": True,
-    "type_mobilite": "terrain_isole",
-    "profil_personnes_exposees": "expert_international",
-    "type_client": "bailleur_donateur",
-    "accessibilite_commerciale": "moyenne",
-    "duree_estimee": "longue_ou_residente",
-    "niveau_opportunite_amarante": "fort",
-    "confiance": 0.8,
-    "justification": "Deplacements terrain frequents, besoin d'escorte.",
-}
-
-AVIS = {
-    "acheteur": "ONG Internationale",
-    "organisation": "ONG Internationale",
-    "pays_execution": "MLI",
-    "titre": "Field Coordinator - Mopti",
-    "categorie": "Job",
-    "description": "Convoy movements secured by a contracted security company.",
-}
+# --- Reutilisation du coeur TED (aucune modification de ce fichier) ---------
+try:
+    import ted_complet_v14 as ted
+except ModuleNotFoundError:
+    raise SystemExit(
+        "ERREUR : ted_complet_v14.py doit etre dans le MEME dossier que ce "
+        "collecteur (il en importe le coeur : session, LLM, scoring, Sheet)."
+    )
 
 
-class _ModeleFige:
-    """Remplace `ted.appeler_modele` le temps d'un test. Compte les appels :
-    la reparation JSON coute un appel Sonnet, on veut savoir si elle a eu
-    lieu."""
+# ===========================================================================
+# PARTIE 1 -- CONFIGURATION SPECIFIQUE RELIEFWEB
+# ===========================================================================
 
-    def __init__(self, reponse):
-        self.reponse, self.appels = reponse, 0
+RELIEFWEB_ENDPOINT = "https://api.reliefweb.int/v2/jobs"
+# appname non generique demande par ReliefWeb (suivi statistique). Surchargeable.
+APPNAME = os.environ.get("RELIEFWEB_APPNAME", "radar-amarante")
+LIEN_RELIEFWEB = "https://reliefweb.int/node/{}"
 
-    def __call__(self, prompt, modele=None):
-        self.appels += 1
-        return self.reponse
+NB_JOURS_FENETRE_RW = int(os.environ.get("RELIEFWEB_JOURS", "30"))  # offres publiees dans les N derniers jours
+ROWS_RW = 200                 # entrees par page (max API = 1000, on reste modere)
+MAX_PAGES_RW = 10             # garde-fou anti-boucle
+MAX_AVIS_LLM_RW = int(os.environ.get("RELIEFWEB_BUDGET", "120"))  # plafond d'appels LLM par run
+
+ACTIVER_RELIEFWEB = os.environ.get("RADAR_RELIEFWEB", "1") != "0"
+
+NOM_ONGLET_RW = "reliefweb_radar"
+
+# Univers de risque = exactement celui du radar (codes ISO3 suivis par TED).
+# Une offre hors de cet ensemble est ignoree (pays sans enjeu surete).
+CODES_RISQUE = set(ted.CODES_PAYS_SUIVIS)
+
+# Pre-filtre bon marche (AVANT tout appel LLM) : postes manifestement SANS
+# deploiement terrain expose. Volontairement court et prudent -- on n'exclut
+# PAS les intitules ambigus, le LLM tranche ensuite. On ecarte surtout le
+# distanciel et les postes non deployes.
+MOTS_EXCLUSION_RW = [
+    "home-based", "home based", "remote", "teleworking", "telework",
+    "télétravail", "teletravail", "work from home", "fully remote",
+    "internship", "intern ", "stagiaire", "stage ", "trainee",
+    "roster", "consultancy - home", "desk officer", "hq-based", "hq based",
+]
+
+# Override POSITIF : un intitule qui evoque explicitement le terrain/la
+# securite est garde meme si un mot d'exclusion apparait par ailleurs.
+MOTS_SIGNAL_TERRAIN_RW = [
+    "field", "terrain", "deployment", "déploiement", "security",
+    "sûreté", "surete", "safety", "logistic", "logistique", "convoy",
+    "fleet", "movement", "access", "area coordinator", "head of office",
+    "chef de base", "coordinateur terrain", "field coordinator",
+]
 
 
-class _Bascule:
-    """Installe un faux modele et le retire proprement, meme si le test echoue."""
+# ===========================================================================
+# PARTIE 2 -- COLLECTE (API ReliefWeb v2, POST JSON)
+# ===========================================================================
 
-    def __init__(self, reponse, reparation=None):
-        self.faux = _ModeleFige(reponse)
-        self.reparation = reparation
+# Champs demandes a l'API. On demande des champs de HAUT NIVEAU (objets
+# complets), pas des sous-champs pointes : l'API jobs refuse (400) certains
+# sous-champs (ex: source.type, country.location, url_alias). Les extracteurs
+# defensifs du module lisent ensuite name/iso3 dans ces objets.
+_CHAMPS_RW = [
+    "title", "body", "date", "source", "country",
+    "city", "type", "career_categories", "how_to_apply", "url",
+]
 
-    def __enter__(self):
-        self._modele, self._reparer = ted.appeler_modele, ted.reparer_json
-        ted.appeler_modele = self.faux
-        if self.reparation is not None:
-            ted.reparer_json = lambda texte, modele=None: self.reparation
-        return self.faux
 
-    def __exit__(self, *a):
-        ted.appeler_modele, ted.reparer_json = self._modele, self._reparer
+def _payload_rw(offset, seuil_iso):
+    """Corps POST : offres creees depuis `seuil_iso`, les plus recentes
+    d'abord. On filtre par DATE cote serveur uniquement (robuste) ; le tri
+    par pays a risque se fait cote client (pertinent_reliefweb), car la
+    validite du filtre pays sur l'endpoint jobs n'est pas garantie."""
+    return {
+        "filter": {"field": "date.created", "value": {"from": seuil_iso}},
+        "fields": {"include": _CHAMPS_RW},
+        "sort": ["date.created:desc"],
+        "limit": ROWS_RW,
+        "offset": offset,
+    }
+
+
+def collecte_reliefweb(fetch=None, session=None):
+    """Pagine l'API jobs et renvoie (bruts, total_api).
+    `fetch` injectable pour tests : callable(url, payload_json) -> dict JSON.
+    En production, POST resiliente via la session du coeur TED."""
+    seuil = datetime.utcnow() - timedelta(days=NB_JOURS_FENETRE_RW)
+    seuil_iso = seuil.strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    url = RELIEFWEB_ENDPOINT + "?appname=" + APPNAME
+    session = session or ted.session_robuste()
+
+    def appeler(payload):
+        if fetch is not None:
+            return fetch(url, payload)
+        rep = session.post(url, json=payload, timeout=30)
+        if rep.status_code >= 400:
+            # L'API ReliefWeb renvoie un message JSON explicite : on le montre.
+            detail = ""
+            try:
+                detail = rep.json().get("error", {}).get("message") or rep.text[:300]
+            except Exception:
+                detail = rep.text[:300]
+            raise RuntimeError("HTTP {} -- {}".format(rep.status_code, detail))
+        return rep.json()
+
+    bruts, total_api = [], None
+    for page in range(MAX_PAGES_RW):
+        try:
+            charge = appeler(_payload_rw(page * ROWS_RW, seuil_iso))
+        except Exception as e:
+            print("  (info) API ReliefWeb indisponible (page {}) : {}.".format(page, e))
+            break
+        if total_api is None:
+            try:
+                total_api = int(charge.get("totalCount") or charge.get("count") or 0)
+            except (TypeError, ValueError):
+                total_api = None
+        lot = charge.get("data") or []
+        if not lot:
+            break
+        # On aplatit {id, fields:{...}} en un dict simple, id conserve.
+        for item in lot:
+            champs = dict(item.get("fields") or {})
+            champs["_id"] = item.get("id", "")
+            bruts.append(champs)
+        if len(lot) < ROWS_RW:
+            break   # derniere page
+        time.sleep(0.3)
+    else:
+        print("ATTENTION : plafond de {} pages ReliefWeb atteint. Augmenter "
+              "MAX_PAGES_RW si ce message revient.".format(MAX_PAGES_RW))
+    return bruts, total_api
+
+
+# ===========================================================================
+# PARTIE 3 -- EXTRACTION DE CHAMPS (defensive : formats variables)
+# ===========================================================================
+
+def _texte(v):
+    """Coerce un champ ReliefWeb (str, dict, liste de dicts) en chaine."""
+    if v is None:
+        return ""
+    if isinstance(v, str):
+        return v
+    if isinstance(v, (int, float)):
+        return str(v)
+    if isinstance(v, dict):
+        for cle in ("name", "value", "label", "title"):
+            if v.get(cle):
+                return _texte(v[cle])
+        return ""
+    if isinstance(v, list):
+        for x in v:
+            t = _texte(x)
+            if t:
+                return t
+        return ""
+    return str(v)
+
+
+def _liste_noms(v):
+    """Liste de libelles a partir d'un champ multi-valeur (country, career...)."""
+    if v is None:
+        return []
+    if isinstance(v, dict):
+        return [_texte(v)] if _texte(v) else []
+    if isinstance(v, list):
+        out = []
+        for x in v:
+            t = _texte(x)
+            if t:
+                out.append(t)
+        return out
+    t = _texte(v)
+    return [t] if t else []
+
+
+def _premier_pays_a_risque(record):
+    """Renvoie (nom_pays, iso3) du PREMIER pays a risque suivi trouve dans le
+    champ country (une offre peut lister plusieurs pays). '' si aucun."""
+    pays = record.get("country")
+    entrees = pays if isinstance(pays, list) else [pays] if pays else []
+    for p in entrees:
+        if not isinstance(p, dict):
+            continue
+        iso3 = (_texte(p.get("iso3")) or "").upper()
+        if iso3 in CODES_RISQUE:
+            return _texte(p.get("name")) or iso3, iso3
+    return "", ""
+
+
+def _date_iso(v):
+    """'2026-06-20T09:00:00+00:00' -> '2026-06-20'. Robuste."""
+    s = _texte(v)
+    return s[:10] if s else ""
+
+
+# ===========================================================================
+# PARTIE 4 -- PRE-FILTRE (equivalent du CPV / cible_amarante)
+# ===========================================================================
+
+def pertinent_reliefweb(record):
+    """Garde une offre seulement si (1) elle concerne un pays a risque suivi,
+    ET (2) elle n'est pas manifestement non deployee (distanciel, stage...),
+    l'override terrain sauvant les intitules explicitement terrain/securite.
+    But : ne payer le LLM que sur des signaux de deploiement plausibles."""
+    _, iso3 = _premier_pays_a_risque(record)
+    if not iso3:
+        return False
+    titre = (_texte(record.get("title")) + " " +
+             " ".join(_liste_noms(record.get("career_categories"))) + " " +
+             _texte(record.get("type"))).lower()
+    # (2a) Override positif terrain/securite -> on garde.
+    if any(sig in titre for sig in MOTS_SIGNAL_TERRAIN_RW):
+        return True
+    # (2b) Exclusion distanciel / non deploye.
+    if any(mot in titre for mot in MOTS_EXCLUSION_RW):
+        return False
+    return True
+
+
+# ===========================================================================
+# PARTIE 5 -- NORMALISATION (vers la forme d'avis commune au coeur TED)
+# ===========================================================================
+
+def facteur_fraicheur(date_iso, aujourd_hui=None):
+    """1.0 pour une offre du jour, decroissance lineaire jusqu'a 0.4 a 30
+    jours (la largeur de la fenetre ReliefWeb). Une date absente ou illisible
+    vaut 0.6 : ni favorisee, ni condamnee."""
+    from datetime import date as _date
+    if not date_iso:
+        return 0.6
+    try:
+        an, mois, jour = (int(x) for x in str(date_iso)[:10].split("-"))
+        age = ((aujourd_hui or _date.today()) - _date(an, mois, jour)).days
+    except Exception:
+        return 0.6
+    if age <= 0:
+        return 1.0
+    return max(0.4, 1.0 - 0.6 * min(age, 30) / 30.0)
+
+
+def priorite_analyse(avis, aujourd_hui=None):
+    """Ordre de passage a l'analyse : le risque pays domine, la fraicheur
+    departage. Utilise pour decider QUI passe sous le plafond d'appels LLM."""
+    tier = ted.MULTIPLICATEUR_ZONE.get(avis.get("pays_iso3", ""), 0.2)
+    return tier * facteur_fraicheur(avis.get("date_publication", ""), aujourd_hui)
+
+
+def normaliser_reliefweb(record):
+    """Construit l'avis normalise attendu par calculer_scores /
+    calculer_fenetre_action + champs propres ReliefWeb pour le Sheet.
+    L'ORGANISATION qui recrute est l'acheteur ET le deployeur (cible directe)."""
+    nom_pays, iso3 = _premier_pays_a_risque(record)
+    org = ""
+    src = record.get("source")
+    if isinstance(src, list) and src:
+        org = _texte(src[0].get("name")) or _texte(src[0].get("shortname"))
+    else:
+        org = _texte(src)
+
+    description = ted._nettoyer_html(_texte(record.get("body")))
+    if len(description) > ted.MAX_CARACTERES_DESCRIPTION:
+        description = description[:ted.MAX_CARACTERES_DESCRIPTION].rstrip() + " [...]"
+
+    rid = _texte(record.get("_id"))
+    lien = _texte(record.get("url")) or _texte(record.get("url_alias")) or \
+        (LIEN_RELIEFWEB.format(rid) if rid else "")
+
+    return {
+        "publication_number": "RW" + rid if rid else "",
+        "titre": _texte(record.get("title"))[:300],
+        "acheteur": org or "Organisation humanitaire (non precisee)",
+        "pays_acheteur": "",                 # organisation internationale
+        "pays_execution": nom_pays,          # NOM lisible (prompt + affichage + Sheet)
+        "pays_iso3": iso3,                   # CODE (scoring zone, usage interne)
+        "pays_execution_incertitude": False,
+        "cpv": "",                           # pas de CPV
+        "description": description,
+        "deadline": _date_iso(record.get("date", {}).get("closing")
+                              if isinstance(record.get("date"), dict) else record.get("date.closing")),
+        "date_publication": _date_iso(record.get("date", {}).get("created")
+                                      if isinstance(record.get("date"), dict) else record.get("date.created")),
+        "valeur_estimee": "inconnu",
+        "source_mode_b": False,
+        "lien_avis": lien,
+        # Champs propres ReliefWeb (Sheet)
+        "organisation": org,
+        "type_contrat": _texte(record.get("type")),
+        "categorie": ", ".join(_liste_noms(record.get("career_categories"))),
+        "how_to_apply": ted._nettoyer_html(_texte(record.get("how_to_apply")))[:300],
+        "ville": _texte(record.get("city")),
+    }
+
+
+def avis_pour_scoring_rw(avis):
+    """Copie ajustee pour calculer_scores UNIQUEMENT : pays_execution devient
+    l'ISO3 (multiplicateur de zone). Pas de CPV synthetique : une offre
+    d'emploi n'est pas un marche de travaux, on ne force pas de bonus infra."""
+    copie = dict(avis)
+    copie["pays_execution"] = avis.get("pays_iso3") or avis.get("pays_execution", "")
+    return copie
+
+
+def cible_commerciale_rw(avis, extraction):
+    """Qui demarcher. Sur une offre ReliefWeb, l'organisation qui recrute EST
+    le deployeur : elle expose directement du personnel sur le terrain, donc
+    c'est le contact commercial. Nuance ONU : la securite y est souvent geree
+    en interne (marche moins accessible), ce que le score commercial capte
+    deja via accessibilite_commerciale."""
+    org = avis.get("organisation") or "l'organisation qui recrute"
+    type_client = (extraction or {}).get("type_client", "")
+    if type_client == "institution_ue_onu":
+        return ("{} (deployeur direct). Securite souvent geree en interne cote "
+                "ONU : viser la direction surete/logistique, marche parfois "
+                "verrouille.".format(org))
+    return ("{} recrute et deploie directement ce personnel : contact commercial "
+            "direct (direction surete, logistique, RH terrain).".format(org))
+
+
+# ===========================================================================
+# PARTIE 6 -- PROMPT LLM (adapte a une offre d'emploi, meme SCHEMA que TED)
+# ===========================================================================
+# Le schema de sortie est IDENTIQUE a celui du prompt TED, pour que
+# ted.calculer_scores / calculer_action_recommandee fonctionnent SANS
+# modification. Seul le cadrage change : ici on lit une offre d'emploi, pas
+# un marche public.
+#
+# ALIGNEMENT DU 23/07/2026 : ce prompt etait reste sur l'ANCIEN champ booleen
+# `securite_existante_detectee`, alors que le coeur avait bascule sur l'enum
+# quatre valeurs. Consequence : le levier [DEPLACEMENT CONCURRENT] ne
+# s'appliquait pas a ReliefWeb, et un dispositif tiers y valait "ignorer" --
+# l'exact inverse de la doctrine ("logique commerciale, pas de kill-switch").
+# Le schema du Sheet, lui, n'a PAS bouge : COLONNES_RW ne porte que le booleen
+# derive, comme COLONNES_SHEET. Aucune migration d'onglet n'est donc requise.
+PROMPT_RELIEFWEB = """Tu es analyste sûreté pour une société française de protection de personnes en zones à risque (escorte, protection rapprochée CPO/CPD, chauffeur sécurité, véhicule sécurisé, sécurisation de déplacements terrain). Elle ne vend PAS de conseil voyage générique ni de simple briefing.
+
+On te donne une OFFRE D'EMPLOI humanitaire/développement publiée sur ReliefWeb pour un pays à risque. L'organisation qui recrute déploie ce personnel sur place. Détermine si ce poste implique une présence PHYSIQUE et RÉGULIÈRE sur le terrain à l'étranger, créant un besoin probable de prestations opérationnelles de sûreté.
+
+RÈGLE SUR LE PROFIL DÉPLOYÉ : un poste international/expatrié (chef de mission, coordinateur pays, expert international, logisticien mobile) expose davantage qu'un poste 100% national basé en capitale au bureau. Un poste "national staff" en exécution locale a un profil de risque plus faible pour Amarante.
+
+RÈGLE SUR LA MOBILITÉ TERRAIN (distincte de la durée) : classe le profil de mobilité dans UNE seule catégorie (la plus représentative) :
+- aucune : travail documentaire ou 100% à distance.
+- capitale : présence en capitale/grand centre urbain, déplacements limités.
+- multi_sites : déplacements entre plusieurs sites/provinces.
+- chantier : présence régulière sur une installation/base opérationnelle.
+- terrain_isole : zones rurales/isolées, accès difficile.
+- frontiere : zone frontalière ou de tension active.
+
+RÈGLE SUR LA SÉCURITÉ DÉJÀ EN PLACE (lis bien -- ça change la conclusion ET la nature de l'opportunité) :
+Détermine QUI assure déjà la sûreté, car cela distingue un marché fermé d'une opportunité de conquête. Renseigne "securite_existante" avec l'une des quatre valeurs :
+- "interne_client" : la sûreté est visiblement gérée EN INTERNE par l'organisation elle-même (poste de "security officer"/"safety and security manager" au sein de l'ONG, dispositif UNDSS, cellule sûreté intégrée, personnel de garde salarié). Là, il n'y a généralement PAS d'ouverture pour Amarante -> l'offre peut être écartée.
+- "prestataire_tiers" : la sûreté est déjà fournie par un PRESTATAIRE EXTERNE (société privée de sécurité, contrat de gardiennage, escorte sous-traitée, "security provider", "contracted guards"). Ce N'EST PAS une raison d'écarter : c'est au contraire une OPPORTUNITÉ DE DÉPLACEMENT concurrentiel -- un contrat existe, un concurrent est en place, il peut être disputé (renouvellement, extension, sous-traitance). À CONSERVER et signaler.
+- "aucune" : aucun dispositif de sûreté mentionné, besoin potentiellement ouvert.
+- "inconnu" : impossible à déterminer depuis l'offre.
+Attention au piège fréquent sur ReliefWeb : une offre QUI RECRUTE un poste de sûreté ("Security Officer", "Safety Advisor") indique un dispositif INTERNE, pas un prestataire. À l'inverse, une mention de "contracted security", "security company" ou "outsourced guarding" désigne un tiers.
+
+RÈGLE SUR LE TYPE DE CLIENT : agence ONU (UNDSS gère souvent la sûreté en interne -> marché moins accessible), ONG internationale, bailleur, ou entreprise privée. Une ONG internationale ou un acteur privé est souvent plus accessible commercialement qu'une agence ONU.
+
+RÈGLE SUR L'ACCESSIBILITÉ COMMERCIALE (distincte du besoin sûreté) : besoin élevé n'égale pas marché ouvert. UNDSS/dispositif interne -> difficile. ONG/privé sur déploiement classique -> plus facile.
+
+RÈGLE SUR LES PROFILS D'ACTEURS : ne cite JAMAIS de nom d'entreprise réelle, décris des PROFILS de type d'acteur.
+
+Le texte peut être dans n'importe quelle langue. Raisonne en anglais, cite les indices dans leur langue.
+
+Réponds UNIQUEMENT en JSON valide, sans texte ni Markdown autour, et SANS commentaire entre parenthèses dans les valeurs.
+
+Schéma de sortie :
+{{
+  "deploiement_terrain_reel": true | false,
+  "type_mobilite": "aucune | capitale | multi_sites | chantier | terrain_isole | frontiere",
+  "profil_personnes_exposees": "expert_international | executive | technicien | ouvrier_local | aucun",
+  "securite_existante": "aucune | interne_client | prestataire_tiers | inconnu",
+  "indices_deploiement": ["courtes citations textuelles"],
+  "type_activite": "assistance_technique | supervision_chantier | etude_terrain | fourniture_equipement | formation | autre",
+  "type_client": "bailleur_donateur | institution_ue_onu | etat_administration_locale | entreprise_privee | autre",
+  "duree_estimee": "courte_ponctuelle | longue_ou_residente | indetermine",
+  "accessibilite_commerciale": "facile | moyenne | difficile",
+  "profils_acteurs_probables": ["types de profils, JAMAIS de noms d'entreprises reelles"],
+  "besoin_securite_operationnel_probable": true | false,
+  "niveau_opportunite_amarante": "fort | moyen | faible",
+  "justification": "une à deux phrases, en lien avec un besoin opérationnel concret (escorte, CPO, véhicule sécurisé)",
+  "confiance": 0.0 à 1.0
+}}
+
+Offre à analyser :
+Organisation qui recrute : {acheteur}
+Pays de déploiement : {pays_execution}
+Intitulé du poste : {titre}
+Type / catégorie : {categorie}
+Description (peut être tronquée) : {description}
+"""
+
+
+def analyser_reliefweb(avis, modele=None):
+    """Extraction LLM d'une offre ReliefWeb. Meme echelle de recuperation JSON
+    que ted.appeler_llm (parse direct -> sous-chaine {..} -> reparation Sonnet),
+    mais avec le prompt propre a ReliefWeb. Reutilise ted.appeler_modele et
+    ted.reparer_json (aucune duplication de la logique reseau ni du parseur)."""
+    prompt = PROMPT_RELIEFWEB.format(
+        acheteur=avis.get("acheteur", ""),
+        pays_execution=avis.get("pays_execution", ""),
+        titre=avis.get("titre", ""),
+        categorie=avis.get("categorie", "") or "(non precise)",
+        description=avis.get("description", "") or "(non fournie par l'offre)",
+    )
+    texte = ted.appeler_modele(prompt, modele=modele)
+    if texte is None:
+        return None
+    # ted.normaliser_securite sur CHACUNE des trois sorties possibles, comme le
+    # fait ted.appeler_llm. C'est ce qui manquait jusqu'au 23/07/2026 : sans
+    # elle, `securite_existante_detectee` n'existait tout simplement pas dans
+    # l'extraction ReliefWeb, et `calculer_action_recommandee` traitait un
+    # dispositif tiers comme un marche ferme -> "ignorer". Les offres ou un
+    # CONCURRENT est deja en place, c'est-a-dire les meilleures cibles de
+    # conquete, etaient donc silencieusement jetees.
+    try:
+        return ted.normaliser_securite(json.loads(texte))
+    except json.JSONDecodeError:
+        pass
+    debut, fin = texte.find("{"), texte.rfind("}")
+    if debut != -1 and fin != -1 and fin > debut:
+        try:
+            return ted.normaliser_securite(json.loads(texte[debut:fin + 1]))
+        except json.JSONDecodeError:
+            pass
+    repare = ted.reparer_json(texte, modele=ted.MODELE_RAFFINEMENT)
+    if repare is None:
+        return None
+    try:
+        return ted.normaliser_securite(json.loads(repare))
+    except json.JSONDecodeError:
+        return None
+
+
+# ===========================================================================
+# PARTIE 7 -- SORTIE GOOGLE SHEET (onglet reliefweb_radar)
+# ===========================================================================
+# Schema aligne sur la logique du dashboard (ligne_vers_lead) : mets d'abord
+# les colonnes communes lues par le dashboard, puis les colonnes propres.
+COLONNES_RW = [
+    "date_maj", "score_final", "score_surete", "score_commercial",
+    "action_recommandee", "fenetre_action", "niveau_opportunite_amarante",
+    "titre", "acheteur", "pays_execution",
+    "type_client", "type_mobilite", "profil_personnes_exposees",
+    "duree_estimee", "accessibilite_commerciale", "securite_existante_detectee",
+    "profils_acteurs_probables", "cible_commerciale_reelle",
+    "justification", "confiance",
+    "modele", "raffine", "divergence",
+    "organisation", "type_contrat", "categorie", "ville", "how_to_apply",
+    "publication_number", "lien_avis", "deadline", "date_publication",
+]
+COLONNE_STATUT_SUIVI = "statut_suivi"
+COLONNE_DATE_DETECTION = "date_detection"
+TOUTES_COLONNES_RW = COLONNES_RW + [COLONNE_STATUT_SUIVI, COLONNE_DATE_DETECTION]
+
+
+def ouvrir_feuille_rw(sheet_id, fichier_compte_service):
+    import gspread
+    from google.oauth2.service_account import Credentials
+    portee = ["https://www.googleapis.com/auth/spreadsheets"]
+    creds = Credentials.from_service_account_file(fichier_compte_service, scopes=portee)
+    classeur = gspread.authorize(creds).open_by_key(sheet_id)
+    try:
+        feuille = classeur.worksheet(NOM_ONGLET_RW)
+    except gspread.WorksheetNotFound:
+        feuille = classeur.add_worksheet(
+            title=NOM_ONGLET_RW, rows=2000, cols=len(TOUTES_COLONNES_RW))
+        feuille.append_row(TOUTES_COLONNES_RW)
+        return feuille
+    entetes = feuille.row_values(1)
+    if COLONNE_DATE_DETECTION not in entetes:
+        feuille.update(values=[TOUTES_COLONNES_RW], range_name="A1")
+    return feuille
+
+
+def ligne_depuis_resultat_rw(r):
+    avis, extraction = r["avis"], r["extraction"]
+    modele_utilise = ted.MODELE_RAFFINEMENT if r["raffine"] else ted.MODELE
+    valeurs = {
+        "date_maj": date.today().isoformat(),
+        "score_final": r["score"],
+        "score_surete": r["surete"],
+        "score_commercial": r["commercial"],
+        "action_recommandee": ted.calculer_action_recommandee(r["score"], extraction, surete=r["surete"]),
+        "fenetre_action": ted.calculer_fenetre_action(avis),
+        "niveau_opportunite_amarante": extraction.get("niveau_opportunite_amarante") if extraction else "",
+        "titre": avis.get("titre", ""),
+        "acheteur": avis.get("acheteur", ""),
+        "pays_execution": avis.get("pays_execution", ""),
+        "type_client": extraction.get("type_client") if extraction else "",
+        "type_mobilite": extraction.get("type_mobilite") if extraction else "",
+        "profil_personnes_exposees": extraction.get("profil_personnes_exposees") if extraction else "",
+        "duree_estimee": extraction.get("duree_estimee") if extraction else "",
+        "accessibilite_commerciale": extraction.get("accessibilite_commerciale") if extraction else "",
+        "securite_existante_detectee": extraction.get("securite_existante_detectee") if extraction else "",
+        "profils_acteurs_probables": ", ".join(extraction.get("profils_acteurs_probables") or []) if extraction else "",
+        "cible_commerciale_reelle": cible_commerciale_rw(avis, extraction),
+        "justification": extraction.get("justification") if extraction else "",
+        "confiance": extraction.get("confiance") if extraction else "",
+        "modele": modele_utilise,
+        "raffine": r["raffine"],
+        "divergence": r["divergence"],
+        "organisation": avis.get("organisation", ""),
+        "type_contrat": avis.get("type_contrat", ""),
+        "categorie": avis.get("categorie", ""),
+        "ville": avis.get("ville", ""),
+        "how_to_apply": avis.get("how_to_apply", ""),
+        "publication_number": avis.get("publication_number", ""),
+        "lien_avis": avis.get("lien_avis", ""),
+        "deadline": avis.get("deadline", ""),
+        "date_publication": avis.get("date_publication", ""),
+    }
+    return [str(valeurs.get(c, "")) for c in COLONNES_RW]
+
+
+def ecrire_resultats_rw(feuille, resultats):
+    """Ecriture groupee (2 appels max). statut_suivi et date_detection (zone
+    preservee) jamais ecrases sur un re-run. Reutilise l'indexation par
+    publication_number du coeur TED."""
+    # Index construit en LECTURE POSITIONNELLE depuis le SCHEMA (regle 4) :
+    # la position de `publication_number` vient de COLONNES_RW, jamais de
+    # l'en-tete de la feuille. Immunise contre un en-tete desaligne, un en-tete
+    # duplique et la numerisation des identifiants. Voir ted.index_publications.
+    index = ted.charger_index_publication(feuille, COLONNES_RW)
+    derniere_lettre = ted.lettre_colonne(len(COLONNES_RW))
+    maj_groupees, nouvelles_lignes = [], []
+    nb_nouveaux, nb_maj = 0, 0
+    for r in resultats:
+        pub = r["avis"].get("publication_number", "")
+        ligne_valeurs = ligne_depuis_resultat_rw(r)
+        if pub and pub in index:
+            num = index[pub]
+            maj_groupees.append({
+                "range": "A{0}:{1}{0}".format(num, derniere_lettre),
+                "values": [ligne_valeurs],
+            })
+            nb_maj += 1
+        else:
+            nouvelles_lignes.append(ligne_valeurs + ["nouveau", date.today().isoformat()])
+            nb_nouveaux += 1
+    if maj_groupees:
+        feuille.batch_update(maj_groupees)
+    if nouvelles_lignes:
+        feuille.append_rows(nouvelles_lignes, value_input_option="RAW")
+    # Double ecriture (etape 2 du cap produit, 21/07/2026) : miroir Postgres
+    # best-effort, sous FORME PLATE (colonnes du Sheet) : la forme canonique
+    # que lit le dashboard. On passe TOUT (le miroir a sa propre memoire,
+    # ON CONFLICT DO NOTHING : remplissage retroactif inclus). Ne peut JAMAIS
+    # faire echouer le run. NB : en phase de double ecriture, le Sheet reste
+    # la reference ; les mises a jour de scores ne touchent que le Sheet.
+    try:
+        import radar_stockage
+        plates = [dict(zip(COLONNES_RW, ligne_depuis_resultat_rw(r))) for r in resultats]
+        print("  (pg) " + radar_stockage.ecrire_miroir(NOM_ONGLET_RW, plates))
+    except Exception as e:                     # module absent : run intact
+        print("  (pg) miroir indisponible ({})".format(e))
+    return nb_nouveaux, nb_maj
+
+
+# ===========================================================================
+# PARTIE 8 -- POINT D'ENTREE
+# ===========================================================================
+
+def main():
+    if not ACTIVER_RELIEFWEB:
+        print("(info) Collecteur ReliefWeb desactive (RADAR_RELIEFWEB=0).")
+        return
+    if not os.environ.get("ANTHROPIC_API_KEY") and not os.environ.get("RELIEFWEB_DRY_RUN"):
+        print("ERREUR : ANTHROPIC_API_KEY n'est pas definie. Definis-la avant "
+              "de lancer, ou utilise RELIEFWEB_DRY_RUN=1 pour regler sans cout.")
+        return
+
+    print("Etape 1/2 -- Collecte ReliefWeb (jobs, pays a risque, fenetre {} j)...".format(
+        NB_JOURS_FENETRE_RW))
+    bruts, total_api = collecte_reliefweb()
+
+    if not bruts:
+        print("\n/!\\ ALERTE : l'API ReliefWeb a renvoye 0 offre (total annonce = {}). "
+              "Causes possibles : rien de nouveau, ou changement d'API. "
+              "Verifier {} manuellement avant de conclure.".format(total_api, RELIEFWEB_ENDPOINT))
+        return
+
+    cibles = [r for r in bruts if pertinent_reliefweb(r)]
+    # Dedup par id.
+    vus, uniques = set(), []
+    for r in cibles:
+        rid = _texte(r.get("_id"))
+        if rid and rid not in vus:
+            vus.add(rid)
+            uniques.append(r)
+
+    # Tri par niveau de risque pays decroissant : si le plafond LLM est atteint,
+    # on garde les zones les plus exposees.
+    def _tier(r):
+        _, iso3 = _premier_pays_a_risque(r)
+        return ted.MULTIPLICATEUR_ZONE.get(iso3, 0.2)
+    uniques.sort(key=_tier, reverse=True)
+
+    avis_normalises = [normaliser_reliefweb(r) for r in uniques]
+    print("ReliefWeb -- Bruts : {} | cibles (risque + deploiement plausible) : {}".format(
+        len(bruts), len(avis_normalises)))
+
+    if not avis_normalises:
+        print("Aucune offre ReliefWeb a analyser.")
+        return
+
+    # Memoire inter-runs (tolerante : pas de Sheet -> on analyse tout).
+    # ORDRE CORRIGE LE 22/07/2026 : memoire AVANT plafond (cf. meme correction
+    # cote Banque Mondiale). Auparavant, 120 places retenues dont 116 deja
+    # connues ne laissaient que 4 analyses neuves par run, et les offres
+    # situees juste sous la barre n'avaient jamais leur tour.
+    sheet_id = os.environ.get("TED_SHEET_ID")
+    fichier = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
+    deja_vus = ted.numeros_publication_existants(
+        sheet_id, fichier, NOM_ONGLET_RW, COLONNES_RW)
+    if deja_vus:
+        avant = len(avis_normalises)
+        avis_normalises = [a for a in avis_normalises
+                           if str(a.get("publication_number", "")).strip() not in deja_vus]
+        print("Memoire : {} offre(s) deja analysee(s) ignoree(s), {} nouvelle(s).".format(
+            avant - len(avis_normalises), len(avis_normalises)))
+    if not avis_normalises:
+        print("Aucune NOUVELLE offre ReliefWeb a analyser (tout deja vu).")
+        return
+
+    # Plafond applique aux offres NEUVES : le reliquat passera au run suivant.
+    #
+    # TRI COMBINE RISQUE + FRAICHEUR (22/07/2026). Le tri par risque seul avait
+    # un defaut invisible tant que la file d'attente etait courte : la fenetre
+    # ReliefWeb couvre 30 jours, et avec 278 offres en attente sur plusieurs
+    # runs, une offre somalienne de 28 jours passait AVANT une offre
+    # ukrainienne publiee hier. Commercialement, une opportunite detectee trois
+    # semaines trop tard ne vaut rien : le poste est pourvu.
+    # Le risque reste dominant (facteur 0.3 a 1.0), la fraicheur module
+    # (facteur 0.4 a 1.0) : une zone tres exposee garde la priorite sur une
+    # zone calme, mais a risque egal le plus recent passe devant.
+    avis_normalises.sort(key=priorite_analyse, reverse=True)
+    if len(avis_normalises) > MAX_AVIS_LLM_RW:
+        en_attente = len(avis_normalises) - MAX_AVIS_LLM_RW
+        avis_normalises = avis_normalises[:MAX_AVIS_LLM_RW]
+        print("    (plafond de {} : {} nouvelle(s) offre(s) analysee(s) ce run, "
+              "{} en attente pour le prochain, les plus a risque d'abord.)".format(
+                  MAX_AVIS_LLM_RW, MAX_AVIS_LLM_RW, en_attente))
+
+    # Mode DRY-RUN : entonnoir sans aucun appel paye.
+    if os.environ.get("RELIEFWEB_DRY_RUN"):
+        print("\n=== MODE DRY-RUN : aucun appel LLM, aucun cout ===")
+        for i, a in enumerate(avis_normalises, start=1):
+            tier = ted.MULTIPLICATEUR_ZONE.get(a.get("pays_iso3", ""), 0.2)
+            print("  {:3}. [risque {}] {} | {} ({})".format(
+                i, tier, a["titre"][:60], a.get("organisation", "")[:30],
+                a.get("pays_execution", "")))
+        print("\nRetire RELIEFWEB_DRY_RUN pour lancer l'analyse reelle.")
+        return
+
+    print("\nEtape 2/2 -- Extraction LLM et score ({} offres, modele {})...\n".format(
+        len(avis_normalises), ted.MODELE))
+
+    resultats = []
+    for i, avis in enumerate(avis_normalises, start=1):
+        print("[{}/{}] {}...".format(i, len(avis_normalises), avis["titre"][:60]))
+        extraction = analyser_reliefweb(avis)
+        s, c, f = ted.calculer_scores(avis_pour_scoring_rw(avis), extraction)
+        resultats.append({
+            "avis": avis, "extraction": extraction,
+            "surete_haiku": s, "commercial_haiku": c, "final_haiku": f,
+            "surete": s, "commercial": c, "score": f,
+            "raffine": False, "divergence": False,
+        })
+        time.sleep(0.5)
+
+    # Escalade Sonnet, memes criteres que TED/BM.
+    def merite_escalade(r):
+        if r["extraction"] is None:
+            return False
+        if r["final_haiku"] >= 5:
+            return True
+        if r["extraction"].get("confiance", 1.0) < 0.7:
+            return True
+        # Securite deja en place : critere PARTAGE (ted.escalade_pour_securite).
+        # Couvre `interne_client` (on va ecarter : une erreur coute un marche)
+        # ET `prestataire_tiers` (on va pousser en conquete : jugement le plus
+        # fin du pipeline). La lecture directe de `securite_existante_detectee`
+        # avait cesse de couvrir le second depuis le passage a l'enum.
+        if ted.escalade_pour_securite(r["extraction"]):
+            return True
         return False
 
+    a_escalader = [r for r in resultats if merite_escalade(r)]
+    if a_escalader:
+        print("\n{} offre(s) escaladee(s) vers {}...\n".format(len(a_escalader), ted.MODELE_RAFFINEMENT))
+        for i, r in enumerate(a_escalader, start=1):
+            print("[{}/{}] Raffinement : {}...".format(i, len(a_escalader), r["avis"]["titre"][:60]))
+            raffinee = analyser_reliefweb(r["avis"], modele=ted.MODELE_RAFFINEMENT)
+            if raffinee is not None:
+                s, c, f = ted.calculer_scores(avis_pour_scoring_rw(r["avis"]), raffinee)
+                r["extraction"] = raffinee
+                r["surete"], r["commercial"], r["score"] = s, c, f
+                r["raffine"] = True
+                r["divergence"] = abs(f - r["final_haiku"]) >= 2.0
+            time.sleep(0.5)
 
-def _analyser(enum=None, booleen=None, brut=None, reparation=None):
-    """Fait tourner analyser_reliefweb sur une reponse modele controlee."""
-    if brut is None:
-        charge = dict(BASE)
-        if enum is not None:
-            charge["securite_existante"] = enum
-        if booleen is not None:
-            charge["securite_existante_detectee"] = booleen
-        brut = json.dumps(charge)
-    with _Bascule(brut, reparation=reparation):
-        return rw.analyser_reliefweb(AVIS)
+    resultats.sort(key=lambda r: r["score"], reverse=True)
 
+    if sheet_id and fichier:
+        print("\nEcriture dans l'onglet '{}' ({} offres)...".format(NOM_ONGLET_RW, len(resultats)))
+        try:
+            feuille = ouvrir_feuille_rw(sheet_id, fichier)
+            nb_nouveaux, nb_maj = ecrire_resultats_rw(feuille, resultats)
+            print("-> {} nouvelle(s) offre(s), {} mise(s) a jour (statut_suivi jamais touche).".format(
+                nb_nouveaux, nb_maj))
+        except Exception as e:
+            print("ERREUR ecriture Sheet : {}".format(e))
+    else:
+        print("\n(Pas de Sheet configure : definis TED_SHEET_ID et "
+              "GOOGLE_SERVICE_ACCOUNT_FILE pour activer l'ecriture.)")
 
-def _decision(extraction):
-    """(score final, action recommandee) pour une extraction donnee."""
-    surete, _commercial, final = ted.calculer_scores(
-        rw.avis_pour_scoring_rw(AVIS), extraction)
-    return final, ted.calculer_action_recommandee(final, extraction,
-                                                  surete=surete)
-
-
-# ===========================================================================
-# LE PROMPT DEMANDE BIEN L'ENUM
-# ===========================================================================
-
-class TestPromptAligneSurLEnum(unittest.TestCase):
-
-    def test_les_quatre_valeurs_sont_demandees(self):
-        for valeur in ("aucune", "interne_client", "prestataire_tiers",
-                       "inconnu"):
-            self.assertIn(valeur, rw.PROMPT_RELIEFWEB)
-
-    def test_le_schema_de_sortie_reclame_l_enum(self):
-        self.assertIn('"securite_existante": "aucune | interne_client'
-                      ' | prestataire_tiers | inconnu"', rw.PROMPT_RELIEFWEB)
-
-    def test_l_ancien_booleen_n_est_plus_demande(self):
-        """Le modele ne doit plus avoir le choix de repondre par un booleen :
-        c'est ce choix qui privait ReliefWeb du levier de deplacement."""
-        self.assertNotIn('"securite_existante_detectee": true | false',
-                         rw.PROMPT_RELIEFWEB)
-
-    def test_le_prestataire_tiers_est_presente_comme_une_opportunite(self):
-        """Sans cette consigne, le modele range spontanement "securite deja en
-        place" du cote des signaux negatifs."""
-        self.assertIn("OPPORTUNITÉ DE DÉPLACEMENT", rw.PROMPT_RELIEFWEB)
-        self.assertIn("À CONSERVER", rw.PROMPT_RELIEFWEB)
-
-    def test_meme_doctrine_que_le_coeur(self):
-        """Les deux prompts doivent proposer exactement le meme vocabulaire,
-        sinon les extractions ne sont pas comparables d'une source a l'autre."""
-        for valeur in ted._SECU_VALEURS:
-            self.assertIn(valeur, rw.PROMPT_RELIEFWEB)
-            self.assertIn(valeur, ted.PROMPT_TEMPLATE)
-
-
-# ===========================================================================
-# LA NORMALISATION EST APPLIQUEE SUR LES TROIS SORTIES POSSIBLES
-# ===========================================================================
-
-class TestNormalisationSystematique(unittest.TestCase):
-
-    def test_json_direct(self):
-        ex = _analyser(enum="prestataire_tiers")
-        self.assertEqual(ex["securite_existante"], "prestataire_tiers")
-        self.assertIn("securite_existante_detectee", ex)
-
-    def test_json_entoure_de_texte_parasite(self):
-        """Deuxieme etage de recuperation : sous-chaine entre { et }."""
-        charge = json.dumps({**BASE, "securite_existante": "prestataire_tiers"})
-        ex = _analyser(brut="Voici l'analyse :\n" + charge + "\nFin.")
-        self.assertEqual(ex["securite_existante"], "prestataire_tiers")
-        self.assertFalse(ex["securite_existante_detectee"])
-
-    def test_json_repare_par_le_modele(self):
-        """Troisieme etage : la reparation Sonnet. Elle passait elle aussi a
-        cote de la normalisation."""
-        charge = json.dumps({**BASE, "securite_existante": "prestataire_tiers"})
-        ex = _analyser(brut="{ ceci n'est pas du JSON", reparation=charge)
-        self.assertEqual(ex["securite_existante"], "prestataire_tiers")
-
-    def test_valeur_inconnue_repliee_sur_inconnu(self):
-        ex = _analyser(enum="n_importe_quoi")
-        self.assertEqual(ex["securite_existante"], "inconnu")
-        self.assertFalse(ex["securite_existante_detectee"])
-
-    def test_repli_sur_l_ancien_booleen(self):
-        """Tolerance de transition : si le modele repond encore a l'ancien
-        schema, la normalisation doit tenir. Elle interprete alors le booleen
-        au sens strict (securite interne)."""
-        ex = _analyser(booleen=True)
-        self.assertEqual(ex["securite_existante"], "interne_client")
-        self.assertTrue(ex["securite_existante_detectee"])
-
-    def test_modele_muet_renvoie_none(self):
-        with _Bascule(None):
-            self.assertIsNone(rw.analyser_reliefweb(AVIS))
-
-    def test_json_irrecuperable_renvoie_none(self):
-        ex = _analyser(brut="{ casse", reparation="toujours casse")
-        self.assertIsNone(ex)
-
-
-# ===========================================================================
-# LA CONSEQUENCE COMMERCIALE : LE LEVIER DE DEPLACEMENT
-# ===========================================================================
-
-class TestLevierDeplacementConcurrent(unittest.TestCase):
-    """Le coeur du correctif. Avant, TOUTE securite detectee valait
-    "ignorer" ; le prestataire tiers, qui est la meilleure cible de conquete,
-    etait donc jete avec le reste."""
-
-    def test_prestataire_tiers_conserve_et_pousse(self):
-        ex = _analyser(enum="prestataire_tiers")
-        final, action = _decision(ex)
-        self.assertFalse(ex["securite_existante_detectee"])
-        self.assertNotEqual(action, "ignorer")
-        self.assertGreater(final, 5.0)
-
-    def test_prestataire_tiers_marque_dans_la_justification(self):
-        ex = _analyser(enum="prestataire_tiers")
-        self.assertTrue(ex["justification"].startswith(ted.MARQUEUR_DEPLACEMENT))
-
-    def test_interne_client_reste_ecarte(self):
-        """Le kill-switch legitime, lui, doit survivre : quand l'organisation
-        gere sa surete en interne, le marche est reellement ferme."""
-        ex = _analyser(enum="interne_client")
-        self.assertTrue(ex["securite_existante_detectee"])
-        self.assertEqual(_decision(ex)[1], "ignorer")
-
-    def test_contraste_tiers_contre_interne(self):
-        """Meme offre, meme description, seule l'origine du dispositif change.
-        L'ecart doit etre net, sinon la distinction ne sert a rien."""
-        tiers = _analyser(enum="prestataire_tiers")
-        interne = _analyser(enum="interne_client")
-        self.assertGreater(_decision(tiers)[0], _decision(interne)[0])
-
-    def test_aucune_securite_reste_une_bonne_piste(self):
-        ex = _analyser(enum="aucune")
-        self.assertNotEqual(_decision(ex)[1], "ignorer")
-
-    def test_le_marqueur_arrive_jusqu_au_sheet(self):
-        """La colonne `justification` du Sheet porte le marqueur, c'est elle
-        que le dashboard lit pour afficher le badge de deplacement (il teste
-        le prefixe, sans rien savoir de la source)."""
-        ex = _analyser(enum="prestataire_tiers")
-        surete, commercial, final = ted.calculer_scores(
-            rw.avis_pour_scoring_rw(AVIS), ex)
-        ligne = rw.ligne_depuis_resultat_rw({
-            "avis": AVIS, "extraction": ex, "surete": surete,
-            "commercial": commercial, "score": final,
-            "raffine": False, "divergence": False})
-        justification = ligne[rw.COLONNES_RW.index("justification")]
-        self.assertTrue(justification.startswith(ted.MARQUEUR_DEPLACEMENT))
-
-
-# ===========================================================================
-# LE SCHEMA DU SHEET N'A PAS BOUGE
-# ===========================================================================
-
-class TestSchemaSheetInchange(unittest.TestCase):
-    """Verification volontairement severe : le schema est POSITIONNEL.
-    Inserer une colonne au milieu desalignerait toutes les lignes deja
-    ecrites, ce qui est exactement l'incident `bm_radar`. Le correctif ne doit
-    donc rien changer au schema, et ces tests l'attestent."""
-
-    COLONNES_ATTENDUES = [
-        "date_maj", "score_final", "score_surete", "score_commercial",
-        "action_recommandee", "fenetre_action", "niveau_opportunite_amarante",
-        "titre", "acheteur", "pays_execution",
-        "type_client", "type_mobilite", "profil_personnes_exposees",
-        "duree_estimee", "accessibilite_commerciale", "securite_existante_detectee",
-        "profils_acteurs_probables", "cible_commerciale_reelle",
-        "justification", "confiance",
-        "modele", "raffine", "divergence",
-        "organisation", "type_contrat", "categorie", "ville", "how_to_apply",
-        "publication_number", "lien_avis", "deadline", "date_publication",
-    ]
-
-    def test_colonnes_identiques_a_l_octet_pres(self):
-        self.assertEqual(list(rw.COLONNES_RW), self.COLONNES_ATTENDUES)
-
-    def test_l_enum_n_est_pas_persiste(self):
-        """Seul le booleen derive va au Sheet, comme cote TED. L'enum reste un
-        detail interne de l'extraction."""
-        self.assertNotIn("securite_existante", rw.COLONNES_RW)
-        self.assertIn("securite_existante_detectee", rw.COLONNES_RW)
-
-    def test_meme_choix_que_le_coeur(self):
-        self.assertNotIn("securite_existante", ted.COLONNES_SHEET)
-        self.assertIn("securite_existante_detectee", ted.COLONNES_SHEET)
-
-    def test_la_ligne_produite_a_la_bonne_longueur(self):
-        ex = _analyser(enum="aucune")
-        ligne = rw.ligne_depuis_resultat_rw({
-            "avis": AVIS, "extraction": ex, "surete": 6.0,
-            "commercial": 7.0, "score": 6.5,
-            "raffine": False, "divergence": False})
-        self.assertEqual(len(ligne), len(rw.COLONNES_RW))
-
-    def test_la_colonne_securite_recoit_un_booleen(self):
-        """Pas la chaine de l'enum : le dashboard lit cette colonne avec
-        `_vrai()`, qui attend un booleen ou sa representation textuelle."""
-        ex = _analyser(enum="prestataire_tiers")
-        ligne = rw.ligne_depuis_resultat_rw({
-            "avis": AVIS, "extraction": ex, "surete": 6.0,
-            "commercial": 7.0, "score": 6.5,
-            "raffine": False, "divergence": False})
-        valeur = ligne[rw.COLONNES_RW.index("securite_existante_detectee")]
-        self.assertIn(valeur, ("False", "True"))
+    # Affichage console
+    print("\n" + "=" * 70)
+    print("RESULTATS RELIEFWEB (score = surete x0.5 + commercial x0.5)")
+    nb_fort = sum(1 for r in resultats if r["score"] >= ted.SEUIL_ALERTE)
+    nb_surv = sum(1 for r in resultats
+                  if ted.SEUIL_SURVEILLANCE <= r["score"] < ted.SEUIL_ALERTE)
+    print("Bilan : {} FORT(S) | {} a surveiller | {} faible(s)".format(
+        nb_fort, nb_surv, len(resultats) - nb_fort - nb_surv))
+    print("=" * 70)
+    for r in resultats:
+        score, avis, extraction = r["score"], r["avis"], r["extraction"]
+        etiquette = ("[FORT]" if score >= ted.SEUIL_ALERTE
+                     else "[A SURVEILLER]" if score >= ted.SEUIL_SURVEILLANCE else "[faible]")
+        suffixe = ""
+        if r["raffine"]:
+            suffixe = " (relu par {} ; Haiku avait {:.1f})".format(ted.MODELE_RAFFINEMENT, r["final_haiku"])
+            if r["divergence"]:
+                suffixe += "  /!\\ ECART NOTABLE"
+        print("\n{} Score {:.1f}/10 (surete {:.1f} | commercial {:.1f}){}".format(
+            etiquette, score, r["surete"], r["commercial"], suffixe))
+        print("  {}".format(avis["titre"][:90]))
+        print("  Organisation : {} | Pays : {} | Ville : {}".format(
+            avis["acheteur"], avis["pays_execution"], avis.get("ville") or "n.c."))
+        if extraction:
+            print("  Mobilite : {} | Personnes exposees : {} | Accessibilite : {}".format(
+                extraction.get("type_mobilite"), extraction.get("profil_personnes_exposees"),
+                extraction.get("accessibilite_commerciale")))
+            print("  Qui demarcher : {}".format(cible_commerciale_rw(avis, extraction)))
+            print("  Justification : {}".format(extraction.get("justification")))
+        print("  Candidater/contact : {}".format(avis.get("how_to_apply") or "voir l'offre"))
+        print("  Lien : {}".format(avis["lien_avis"]))
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()
