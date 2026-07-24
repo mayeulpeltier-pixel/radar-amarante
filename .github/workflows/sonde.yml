@@ -38,9 +38,15 @@ jobs:
           python-version: "3.12"
 
       - name: Installer les dependances
-        # httpx[http2] : empreinte TLS et protocole differents de requests,
-        # l'une des variantes testees contre le pare-feu applicatif.
-        run: pip install requests "httpx[http2]"
+        # Versions FIGEES depuis le fichier commun (23/07/2026), comme les
+        # quatre autres workflows : une seule source de verite.
+        #
+        # NOTE : l'extra `http2` a disparu. Il servait a tester une empreinte
+        # TLS differente de requests contre le pare-feu applicatif de l'IDB ;
+        # la variante retenue au final n'utilise pas httpx, et plus aucune
+        # sonde ne l'importe. httpx reste installe (la suite de tests en a
+        # besoin pour fastapi.testclient), mais sans l'extra.
+        run: pip install -r requirements-radar.txt
 
       - name: Sonder l'IDB (autopsie du blocage et contournements)
         run: python sonde_idb.py
