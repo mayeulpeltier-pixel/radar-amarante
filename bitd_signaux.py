@@ -247,6 +247,27 @@ Réponds UNIQUEMENT par un objet JSON strict :
 
 
 def _appel_llm(prompt, modele=None, temperature=0.0):
+    """Appel modele du moteur de signaux prives.
+
+    ALIGNEMENT DU 23/07/2026 -- deux corrections
+    --------------------------------------------
+    1. LECTURE. La derniere ligne etait `rep.json()["content"][0]["text"]`,
+       qui suppose que le corps est du JSON, que `content` n'est pas vide et
+       que son PREMIER bloc est du texte. L'API insere un bloc `thinking`
+       AVANT le texte des qu'un modele a raisonnement est utilise. On passe
+       donc par `ted.texte_des_blocs`, qui concatene les blocs `text` et
+       ignore le reste.
+
+    2. COMPTABILITE. Les appelants (`analyser_signal_llm`,
+       `verifier_signal_sonnet`) enveloppent tout dans `except Exception` et se
+       contentent d'un "(info) Analyse LLM echouee". Rien n'atteignait
+       `ted.STATS_LLM` : un run ou 100 % des analyses de signaux prives
+       echouaient etait declare EN BONNE SANTE, puisque `sante_llm()` ne
+       comptait que les appels du coeur. Chaque appel est desormais compte,
+       succes comme echec, ce qui rend le ratio honnete.
+
+    Le contrat ne change pas : la fonction leve toujours en cas de probleme,
+    les appelants continuent de rattraper et de degrader proprement."""
     cle = os.environ.get("ANTHROPIC_API_KEY", "")
     if not cle:
         raise RuntimeError("ANTHROPIC_API_KEY absente")
@@ -256,9 +277,30 @@ def _appel_llm(prompt, modele=None, temperature=0.0):
     corps = {"model": modele or ted.MODELE, "max_tokens": 400,
              "temperature": temperature,
              "messages": [{"role": "user", "content": prompt}]}
-    rep = session.post(ted.ANTHROPIC_ENDPOINT, headers=entetes, json=corps, timeout=40)
-    rep.raise_for_status()
-    return rep.json()["content"][0]["text"]
+    ted.STATS_LLM["appels"] += 1
+    try:
+        rep = session.post(ted.ANTHROPIC_ENDPOINT, headers=entetes,
+                           json=corps, timeout=40)
+        rep.raise_for_status()
+    except Exception as e:
+        detail = ""
+        try:
+            detail = rep.text[:300]
+        except (NameError, AttributeError):
+            pass
+        ted._marquer_echec_llm(detail or str(e))
+        raise
+    try:
+        charge = rep.json()
+    except ValueError:
+        apercu = (rep.text or "")[:300]
+        ted._marquer_echec_llm("corps non JSON : " + apercu)
+        raise RuntimeError("reponse API illisible (corps non JSON)")
+    texte, motif = ted.texte_des_blocs(charge)
+    if texte is None:
+        ted._marquer_echec_llm(motif)
+        raise RuntimeError("reponse API inexploitable : " + motif)
+    return texte
 
 
 def analyser_signal_llm(entreprise, article, appel=None):
