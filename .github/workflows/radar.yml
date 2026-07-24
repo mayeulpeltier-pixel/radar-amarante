@@ -69,8 +69,31 @@ jobs:
       - name: Lancer les tests
         run: python -m unittest discover -p "test_*.py" -v
       # 2) Reconstituer la cle de service Google a partir du secret.
+      #    `id: cle` : toutes les etapes qui ecrivent dans le Sheet s'y
+      #    referent (voir la note VERROU CREDENTIALS plus bas).
+      #    La verification qui suit evite un mode de panne desagreable : un
+      #    secret absent ou tronque produisait un service_account.json vide,
+      #    et chaque collecteur echouait ensuite avec une erreur d'analyse
+      #    JSON, loin de la cause. Autant echouer ici, avec le bon message.
       - name: Reconstituer la cle de service Google
-        run: echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > service_account.json
+        id: cle
+        run: |
+          echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > service_account.json
+          python - <<'PY'
+          import json, sys
+          try:
+              with open("service_account.json", encoding="utf-8") as f:
+                  cle = json.load(f)
+          except Exception as e:
+              sys.exit("Secret GOOGLE_SERVICE_ACCOUNT_JSON absent ou illisible : "
+                       "{}".format(e))
+          manquants = [c for c in ("type", "project_id", "private_key", "client_email")
+                       if not cle.get(c)]
+          if manquants:
+              sys.exit("Cle de service incomplete, champs manquants : "
+                       + ", ".join(manquants))
+          print("cle de service valide ->", cle["client_email"])
+          PY
       # 3) Lancer le radar (TED, BM, AfDB, ADB, EBRD, ReliefWeb, signaux prives).
       #    ADB_URL / EBRD_URL : optionnels. Non definis => les collecteurs
       #    utilisent leur URL par defaut (garde-fou si la page revient vide).
@@ -105,12 +128,30 @@ jobs:
           git commit -m "chore(radar): etat inter-runs [skip ci]"
           git pull --rebase origin "${GITHUB_REF_NAME}"
           git push origin "HEAD:${GITHUB_REF_NAME}"
+      # ---------------------------------------------------------------------
+      # VERROU CREDENTIALS (23/07/2026) -- pourquoi `steps.cle.outcome`
+      # ---------------------------------------------------------------------
+      # Les etapes ci-dessous portent `if: always()` pour une bonne raison :
+      # un collecteur qui tombe ne doit pas empecher les suivants. Mais
+      # `always()` veut dire TOUJOURS, y compris quand l'etape 2 a ete SAUTEE
+      # parce que les tests avaient echoue. Constate le 23/07/2026 : un test
+      # rouge a fait sauter la reconstitution de la cle, et sept etapes ont
+      # quand meme demarre. IDB a lu 64 pages et 23 730 contrats avant de
+      # mourir sur `FileNotFoundError: service_account.json`. Reseau, temps et
+      # budget d'appels au modele depenses pour rien, et sept echecs en
+      # cascade qui masquent la vraie cause en tete de journal.
+      #
+      # `steps.cle.outcome == 'success'` conserve l'isolation entre
+      # collecteurs, et ajoute la seule condition qui manquait : ne rien
+      # tenter d'ecrire sans credentials. Si les tests echouent, la cle est
+      # sautee, son `outcome` vaut 'skipped', et aucune collecte ne demarre.
+      # Le job reste rouge : c'est bien un echec, pas un run silencieux.
       # 4a) Attributions Banque Mondiale : titulaires nommes, en mobilisation.
       #     Ecrit dans le MEME onglet que les attributions TED, donc remonte
       #     automatiquement dans la lentille Titulaires et la fiche 360.
       #     Isole : un echec ici n'empeche ni le dashboard ni la publication.
       - name: Collecter les attributions Banque Mondiale
-        if: always()
+        if: always() && steps.cle.outcome == 'success'
         env:
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
@@ -124,7 +165,7 @@ jobs:
       #     ici n'empeche ni le dashboard ni la publication.
       #     RADAR_UNGM_DEBUG=1 pour verifier le parsing sans rien ecrire.
       - name: Collecter les avis UNGM
-        if: always()
+        if: always() && steps.cle.outcome == 'success'
         env:
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
@@ -141,7 +182,7 @@ jobs:
       #     sans rien ecrire. Enrichissement par fiche detaillee ETEINT : la
       #     fiche UNGM ne porte ni montant ni pays du fournisseur (verifie).
       - name: Collecter les attributions UNGM
-        if: always()
+        if: always() && steps.cle.outcome == 'success'
         env:
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
@@ -161,7 +202,7 @@ jobs:
       # donnees reelles. Meme prudence que pour IsDB, qui avait revele un bug
       # de filtre pays avant toute ecriture.
       - name: Collecter les avis IDB (Amerique latine)
-        if: always()
+        if: always() && steps.cle.outcome == 'success'
         env:
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
@@ -175,7 +216,7 @@ jobs:
         run: python idb_radar.py
 
       - name: Collecter les attributions IsDB
-        if: always()
+        if: always() && steps.cle.outcome == 'success'
         env:
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
@@ -188,7 +229,7 @@ jobs:
       #    un souci, en lisant le dernier etat du Sheet. L'echec reste visible
       #    (job en echec, alerte mail) mais la page reste a jour.
       - name: Generer le tableau de bord
-        if: always()
+        if: always() && steps.cle.outcome == 'success'
         env:
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
@@ -203,7 +244,7 @@ jobs:
       #     contacte"). Best-effort et isole : sans SUIVI_* il ne fait rien, et
       #     un echec ici n'affecte ni le radar ni la publication du dashboard.
       - name: Envoyer le digest hebdo
-        if: always()
+        if: always() && steps.cle.outcome == 'success'
         env:
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
@@ -212,7 +253,7 @@ jobs:
         run: python radar_digest.py
       # 7) Publier la page sur Cloudflare Pages (hebergement statique gratuit).
       - name: Publier sur Cloudflare Pages
-        if: always()
+        if: always() && steps.cle.outcome == 'success'
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
