@@ -423,7 +423,12 @@ def merite_escalade(r):
         return True
     if e.get("confiance", 1.0) < 0.7:
         return True
-    if e.get("securite_existante_detectee"):
+    # Securite deja en place : critere PARTAGE (ted.escalade_pour_securite).
+    # Couvre `interne_client` (on va ecarter : une erreur coute un marche)
+    # ET `prestataire_tiers` (on va pousser en conquete : jugement le plus
+    # fin du pipeline). La lecture directe de `securite_existante_detectee`
+    # avait cesse de couvrir le second depuis le passage a l'enum.
+    if ted.escalade_pour_securite(e):
         return True
     return False
 
