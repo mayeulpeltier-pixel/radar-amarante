@@ -31,7 +31,14 @@ jobs:
           python-version: "3.12"
 
       - name: Installer les dependances
-        run: pip install gspread google-auth "psycopg[binary]"
+        # Versions FIGEES depuis un fichier unique (23/07/2026). Avant, chaque
+        # run installait la derniere version publiee le matin meme : une
+        # majeure cassante de gspread, psycopg ou pydantic un dimanche soir
+        # suffisait a arreter la collecte du lundi, sans qu'une ligne du depot
+        # ait bouge. Une seule source de verite pour les cinq workflows : un
+        # paquet de plus installe ici coute quelques secondes, une version qui
+        # derive coute un run.
+        run: pip install -r requirements-radar.txt
 
       - name: Reconstituer la cle de service Google
         run: echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > service_account.json
