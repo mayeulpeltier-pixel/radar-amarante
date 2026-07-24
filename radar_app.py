@@ -44,6 +44,7 @@ import time
 from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 import radar_dashboard as dash
@@ -65,9 +66,37 @@ import radar_stockage as st
 #      du gaspillage pur. TTL court malgre tout, et invalidation immediate des
 #      qu'un statut est pose, pour que l'utilisateur voie toujours son action.
 #
-# NOTE MULTI-CLIENT (a traiter le jour venu) : ce cache est GLOBAL au processus.
-# Des lors que l'application servira plusieurs clients, la cle de cache devra
-# inclure l'identite du client, sinon fuite de donnees entre comptes.
+# ---------------------------------------------------------------------------
+# NOTE MULTI-CLIENT (revue le 23/07/2026)
+# ---------------------------------------------------------------------------
+# La note precedente disait : "ce cache est GLOBAL au processus ; des lors que
+# l'application servira plusieurs clients, la cle de cache devra inclure
+# l'identite du client, sinon fuite de donnees entre comptes."
+#
+# C'est vrai, mais incomplet au point d'etre trompeur, et ca merite d'etre
+# ecrit noir sur blanc plutot que corrige a moitie le jour de la bascule.
+#
+# LE CACHE N'EST PAS LA VULNERABILITE. Aujourd'hui `lire_onglets_pg` lit
+# TOUTES les lignes de `radar_lignes`, sans aucune notion de client. Le jour ou
+# deux comptes existeraient, ils verraient les memes donnees meme avec des
+# caches parfaitement separes : la page generee pour l'un est identique a celle
+# de l'autre. Cloisonner le cache reglerait donc un symptome et donnerait le
+# sentiment que le sujet est traite, ce qui est pire que de ne rien faire.
+#
+# CE QU'UN VRAI MULTI-CLIENT EXIGE, dans cet ordre :
+#   1. une dimension `client` dans le modele de donnees (colonne sur
+#      `radar_lignes` et `radar_statuts`, ou une base par client) ;
+#   2. le filtrage de CETTE dimension dans `lire_onglets_pg` et
+#      `superposer_statuts` -- c'est la que se joue la confidentialite ;
+#   3. des identifiants par client, la ou il n'y a aujourd'hui qu'un couple
+#      RADAR_APP_UTILISATEUR / RADAR_APP_MOT_DE_PASSE ;
+#   4. ALORS SEULEMENT, une cle de cache incluant l'identite (`_verifier`
+#      renvoie deja l'identifiant authentifie, precisement pour cela).
+#
+# Tant que 1 a 3 ne sont pas tranches -- ce sont des decisions produit, pas
+# techniques -- cacher la page une seule fois est CORRECT et economise de la
+# memoire sur un plan gratuit. Le point 4 est un quart d'heure de travail le
+# jour venu ; les trois premiers sont le vrai chantier.
 CACHE_S = int(os.environ.get("RADAR_APP_CACHE_S", "600"))
 # Delai minimal entre deux verifications de fraicheur en base. Sans cela, on
 # interrogerait Postgres a chaque rafraichissement de page.
@@ -231,6 +260,37 @@ def generer_page(conn):
 # APPLICATION
 # ===========================================================================
 
+# ===========================================================================
+# EN-TETES DE CONFIDENTIALITE
+# ===========================================================================
+# Constat du 23/07/2026 : la page servie ne portait AUCUNE directive de cache
+# ni de confidentialite. Les seuls en-tetes etaient content-type,
+# content-encoding et vary.
+#
+# Or cette page contient l'integralite des opportunites commerciales, soit
+# ~2 500 leads et 2,6 Mo de renseignement concurrentiel. Sans `Cache-Control`,
+# le navigateur la conserve dans son cache disque : sur un portable partage ou
+# emprunte, la liste reste consultable APRES la session, sans avoir a se
+# reauthentifier. C'est le contraire de ce que protege l'authentification
+# Basic placee devant.
+#
+# Detail des quatre en-tetes :
+#   - Cache-Control  : rien ne persiste, ni sur disque ni chez un intermediaire.
+#   - Referrer-Policy: les fiches contiennent des liens vers les sources
+#     (TED, UNGM, ReliefWeb...). Sans cette directive, chaque clic transmet
+#     l'URL de l'application au site tiers.
+#   - X-Frame-Options: le bouton "Je contacte" declenche un POST authentifie.
+#     Une page tierce qui encadrerait le dashboard pourrait le faire cliquer a
+#     l'insu de l'utilisateur (clickjacking).
+#   - X-Content-Type-Options : pas d'interpretation devinee du type de contenu.
+EN_TETES_PRIVES = {
+    "Cache-Control": "private, no-store, max-age=0",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+}
+
+
 class Statut(BaseModel):
     onglet: str
     publication_number: str
@@ -242,17 +302,41 @@ _basic = HTTPBasic()
 
 def _verifier(identifiants: HTTPBasicCredentials = Depends(_basic)):
     """Ferme par defaut : sans mot de passe configure, on refuse de servir.
-    Comparaisons a temps constant (compare_digest) contre le timing."""
+
+    DEUX DURCISSEMENTS (23/07/2026)
+    -------------------------------
+    1. COMPARAISON SUR OCTETS. `compare_digest` sur des `str` LEVE une
+       TypeError des qu'un caractere n'est pas ASCII. Aujourd'hui starlette
+       decode l'en-tete Basic et rejette le non-ASCII avant d'arriver ici, si
+       bien que le defaut ne se voit pas -- mais on depend alors d'un detail
+       d'implementation d'une dependance. Le jour ou starlette suivrait la
+       RFC 7617 (qui autorise UTF-8), un mot de passe accentue deviendrait
+       inutilisable et produirait des 500 au lieu de 401. On encode donc en
+       UTF-8 avant de comparer : plus aucune hypothese sur la couche du dessus.
+
+    2. PAS DE COURT-CIRCUIT. La version precedente ecrivait
+       `compare_digest(user) and compare_digest(mdp)` : quand l'identifiant
+       etait faux, la comparaison du mot de passe n'avait pas lieu. L'ecart de
+       temps mesurable indiquait donc si un identifiant existe -- exactement ce
+       que `compare_digest` sert a eviter, annule par le `and`. Les deux
+       comparaisons sont desormais toujours evaluees.
+
+    Renvoie l'identifiant authentifie : les routes en ont besoin, et c'est lui
+    qui servira de portee le jour d'un vrai multi-client (voir la note en tete
+    de la section CACHE)."""
     attendu_mdp = os.environ.get("RADAR_APP_MOT_DE_PASSE", "")
     if not attendu_mdp:
         raise HTTPException(503, "RADAR_APP_MOT_DE_PASSE non configure : "
                                  "application verrouillee par defaut.")
     attendu_util = os.environ.get("RADAR_APP_UTILISATEUR", "radar")
-    ok = (_secrets.compare_digest(identifiants.username, attendu_util) and
-          _secrets.compare_digest(identifiants.password, attendu_mdp))
-    if not ok:
+    util_ok = _secrets.compare_digest(identifiants.username.encode("utf-8"),
+                                      attendu_util.encode("utf-8"))
+    mdp_ok = _secrets.compare_digest(identifiants.password.encode("utf-8"),
+                                     attendu_mdp.encode("utf-8"))
+    if not (util_ok and mdp_ok):
         raise HTTPException(401, "Identifiants invalides.",
                             headers={"WWW-Authenticate": "Basic"})
+    return identifiants.username
 
 
 def creer_application():
@@ -276,7 +360,8 @@ def creer_application():
         if not st.actif():
             raise HTTPException(503, "DATABASE_URL absent ou pilote manquant.")
         html, _cache_utilise = page_en_cache(frais=bool(frais))
-        return Response(content=html, media_type="text/html; charset=utf-8")
+        return Response(content=html, media_type="text/html; charset=utf-8",
+                        headers=EN_TETES_PRIVES)
 
     @app.post("/api/statut")
     def poser_statut(s: Statut, _: None = Depends(_verifier)):
@@ -290,7 +375,7 @@ def creer_application():
                               s.statut.strip())
         # L'utilisateur doit VOIR son action au rafraichissement suivant.
         invalider_cache()
-        return {"ok": True}
+        return JSONResponse({"ok": True}, headers=EN_TETES_PRIVES)
 
     return app
 
