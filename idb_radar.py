@@ -704,9 +704,14 @@ def merite_escalade(r):
         confiance = float(e.get("confiance") or 0)
     except (TypeError, ValueError):
         confiance = 0.0
+    # CLAUSE MORTE CORRIGEE (23/07/2026) : la version precedente comparait
+    # `securite_existante_detectee` -- un BOOLEEN -- a des valeurs d'ENUM.
+    # `str(False).lower()` vaut "false", qui n'est evidemment jamais dans
+    # ("prestataire_tiers", "aucune") : la clause ne pouvait donc JAMAIS etre
+    # vraie. La bonne cle etait `securite_existante`, que le critere partage
+    # lit correctement.
     return (r["score"] >= 5.0 or r["surete"] >= 6.0 or confiance < 0.55
-            or str(e.get("securite_existante_detectee", "")).lower()
-            in ("prestataire_tiers", "aucune"))
+            or ted.escalade_pour_securite(e))
 
 
 def id_ressource(session=None, fetch=None):
