@@ -224,6 +224,23 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python isdb_radar.py
 
+      # 4e) Analyse LLM des attributions (attributions_analyse.py).
+      #     Doit tourner APRES les cinq collecteurs d'attributions (leurs lignes
+      #     brutes sont sa source) et AVANT le dashboard (qui joint le resultat).
+      #     Table separee `attributions_analyse` : ne touche jamais l'onglet
+      #     partage. Memoire inter-runs => ne repaie jamais une analyse connue.
+      #     Sort en code 1 si le solde LLM est vide (cf. disjoncteur), ce qui
+      #     empeche un dashboard construit sur une analyse a moitie faite.
+      - name: Analyser les attributions
+        if: always() && steps.cle.outcome == 'success'
+        env:
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          RADAR_ATTRIB_BUDGET: "150"
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python attributions_analyse.py
+
       # 5) Generer le tableau de bord depuis le Sheet (public/index.html).
       #    if: always() => le dashboard se rafraichit meme si un collecteur a eu
       #    un souci, en lisant le dernier etat du Sheet. L'echec reste visible
