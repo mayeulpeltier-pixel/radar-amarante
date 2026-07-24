@@ -918,9 +918,65 @@ def dedupliquer_quasi_doublons(avis_normalises):
 # PARTIE 4 -- EXTRACTION LLM ET SCORE (Sprint 2)
 # ===========================================================================
 
+def texte_des_blocs(charge):
+    """Texte utile d'une reponse Messages API. (texte, motif_echec).
+
+    Fonction PURE : aucun reseau, entierement testable.
+
+    POURQUOI ELLE EXISTE (23/07/2026)
+    ---------------------------------
+    `appeler_modele` faisait, HORS du bloc try :
+
+        texte = reponse.json()["content"][0]["text"].strip()
+
+    Cette ligne suppose trois choses a la fois : que le corps est du JSON, que
+    `content` existe et n'est pas vide, et que son PREMIER bloc est du texte.
+    Chacune peut etre fausse, et aucune n'etait rattrapee :
+
+      - corps non JSON (page d'erreur d'un proxy, 200 vide)  -> ValueError ;
+      - `content` absent (charge d'erreur)                   -> KeyError ;
+      - `content` vide (refus, arret immediat)               -> IndexError ;
+      - premier bloc non textuel                             -> KeyError.
+
+    Le dernier cas n'est pas theorique : l'API renvoie des blocs `thinking`
+    AVANT le texte des qu'un modele a raisonnement est utilise. Le jour ou
+    RADAR_MODELE_RAFFINEMENT pointerait vers un tel modele, le collecteur
+    leverait une exception non rattrapee au lieu de degrader proprement.
+    `lancer_collecteur` isole la casse, mais la source entiere serait perdue
+    pour le run, silencieusement.
+
+    On concatene donc TOUS les blocs de type "text" et on ignore le reste
+    (`thinking`, `redacted_thinking`, `tool_use`), plutot que de parier sur la
+    position d'un bloc."""
+    if not isinstance(charge, dict):
+        return None, "reponse inattendue ({})".format(type(charge).__name__)
+    blocs = charge.get("content")
+    if not isinstance(blocs, list):
+        # Charge d'erreur d'Anthropic : {"type": "error", "error": {...}}
+        erreur = charge.get("error")
+        if isinstance(erreur, dict):
+            # Le TYPE est repris dans le motif : c'est lui que
+            # `_marquer_echec_llm` cherche pour distinguer un modele retire
+            # (`not_found_error`, qui exige une action) d'un incident passager.
+            return None, "erreur API {} : {}".format(
+                erreur.get("type") or "inconnue",
+                str(erreur.get("message") or erreur)[:300])
+        return None, "champ 'content' absent ou inattendu"
+    morceaux = [b.get("text", "") for b in blocs
+                if isinstance(b, dict) and b.get("type") == "text"]
+    texte = "".join(morceaux).strip()
+    if not texte:
+        types = ", ".join(sorted({str(b.get("type")) for b in blocs
+                                  if isinstance(b, dict)})) or "aucun"
+        return None, ("aucun bloc de texte dans la reponse "
+                      "(types recus : {}, arret : {})".format(
+                          types, charge.get("stop_reason") or "n.c."))
+    return texte, ""
+
+
 def appeler_modele(prompt, modele=None):
     """Appel brut au modele. Renvoie le texte de la reponse, ou None
-    (avec message d'erreur affiche) en cas d'echec reseau/auth."""
+    (avec message d'erreur affiche) en cas d'echec reseau/auth/lecture."""
     cle_api = os.environ.get("ANTHROPIC_API_KEY")
     if not cle_api:
         print("ERREUR : la variable d'environnement ANTHROPIC_API_KEY n'est pas definie.")
@@ -964,7 +1020,31 @@ def appeler_modele(prompt, modele=None):
         _marquer_echec_llm(detail or str(e))
         return None
 
-    texte = reponse.json()["content"][0]["text"].strip()
+    # Lecture de la reponse : elle aussi peut echouer, et l'echec doit etre
+    # COMPTABILISE. Sans cela, une API qui repond 200 avec un corps inattendu
+    # ferait planter le collecteur (avant) ou passerait pour un simple avis
+    # sans interet (si on se contentait de renvoyer None) : sante_llm ne
+    # verrait rien et le run serait declare bon.
+    try:
+        charge = reponse.json()
+    except ValueError:
+        apercu = (reponse.text or "")[:300]
+        print("  Reponse API illisible (corps non JSON) : {}".format(apercu))
+        _marquer_echec_llm("corps non JSON : " + apercu)
+        return None
+
+    texte, motif = texte_des_blocs(charge)
+    if texte is None:
+        print("  Reponse API inexploitable : {}".format(motif))
+        _marquer_echec_llm(motif)
+        return None
+
+    # Diagnostic : une reponse tronquee produit du JSON invalide, qui declenche
+    # ensuite une reparation payante. Autant dire pourquoi.
+    if charge.get("stop_reason") == "max_tokens":
+        print("  Reponse tronquee (max_tokens atteint) : le JSON sera "
+              "probablement invalide, une reparation suivra.")
+
     if texte.startswith("```"):
         texte = texte.split("```")[1]
         if texte.startswith("json"):
