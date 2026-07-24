@@ -1,0 +1,59 @@
+# Dependabot : mises a jour de dependances proposees en PR, jamais imposees.
+#
+# POURQUOI CE FICHIER (23/07/2026)
+# --------------------------------
+# Figer les versions supprime le risque qu'une publication cassante arrete la
+# collecte un lundi matin. Mais un depot fige indefiniment finit par accumuler
+# des versions vulnerables, et personne ne se souvient de les relever a la
+# main. Dependabot repond exactement a cette objection, et il ne devient sur
+# QUE maintenant :
+#
+#   - la suite compte 571 tests, dont 25 d'integration Postgres qui tournent
+#     desormais reellement en CI (service postgres:16 dans stockage.yml) ;
+#   - la suite est immunisee au passage du temps, verifie jusqu'a J+5000 :
+#     une PR rouge signale un vrai probleme, pas un fixture perime.
+#
+# Autrement dit, une PR verte est une information fiable. Sans cette base,
+# Dependabot n'aurait produit que du bruit a fusionner en aveugle.
+#
+# CE QUE CA CHANGE CONCRETEMENT
+# ------------------------------
+# Le lundi, s'il y a des mises a jour, une PR apparait avec la CI deja jouee.
+# Verte -> fusionner. Rouge -> la montee de version casse quelque chose, et on
+# l'apprend AVANT la production plutot qu'en pleine collecte.
+#
+# SI C'EST TROP DE BRUIT : passer `interval` a "monthly", ou supprimer ce
+# fichier. Les versions figees restent valides sans lui, elles vieillissent
+# simplement en silence.
+
+version: 2
+updates:
+  # --- Dependances Python (les deux fichiers requirements) ------------------
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "05:00"
+      timezone: "Europe/Paris"
+    # Une PR par semaine au maximum, groupee : plus lisible qu'une PR par
+    # paquet, et une seule execution de CI a lire.
+    open-pull-requests-limit: 3
+    groups:
+      dependances-radar:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(deps)"
+    labels: ["dependances"]
+
+  # --- Actions GitHub (checkout, setup-python, upload-artifact...) ----------
+  # Elles aussi vieillissent : une action archivee finit par ne plus tourner
+  # sur les runners recents, et l'echec est alors difficile a relier a sa
+  # cause. Mensuel suffit, elles bougent peu.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    commit-message:
+      prefix: "chore(ci)"
+    labels: ["dependances"]

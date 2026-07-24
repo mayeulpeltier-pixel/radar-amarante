@@ -1,0 +1,63 @@
+# Dependances des COLLECTEURS et de la SUITE DE TESTS (GitHub Actions).
+#
+# L'application web, elle, a sa propre liste dans requirements.txt : deux
+# mondes, deux listes, pas de dependance croisee inutile. Les versions sont
+# volontairement dupliquees entre les deux fichiers pour les paquets communs
+# (psycopg, fastapi, pydantic) plutot que chainees par un `-r`, afin que
+# Render n'installe jamais gspread ni pypdf.
+#
+# ---------------------------------------------------------------------------
+# POURQUOI DES VERSIONS FIGEES (23/07/2026)
+# ---------------------------------------------------------------------------
+# Les cinq workflows installaient leurs dependances a la main, sans aucune
+# contrainte de version :
+#
+#     pip install requests gspread google-auth python-dateutil pypdf ...
+#
+# Autrement dit, chaque run installait la DERNIERE version publiee le matin
+# meme. Une publication cassante de gspread, psycopg ou pydantic un dimanche
+# soir suffisait a faire tomber le run du lundi 06h00, sans qu'une seule ligne
+# du depot ait bouge. Le meme scenario que la bombe a retardement du 23/07,
+# mais sur un calendrier que nous ne controlons pas du tout.
+#
+# Ce risque n'est pas theorique pour ce projet : gspread 6 a change le
+# comportement de `get_all_records` (exception sur en-tete duplique), et
+# pydantic 2 a reecrit son API. Une majeure de plus, et la collecte s'arrete.
+#
+# Ces versions sont celles contre lesquelles la suite complete (571 tests,
+# integration Postgres comprise) a ete verifiee dans un environnement vierge.
+#
+# ---------------------------------------------------------------------------
+# COMMENT METTRE A JOUR
+# ---------------------------------------------------------------------------
+# Ne pas modifier une version a la main sans relancer la suite. La bonne voie :
+#   1. laisser Dependabot ouvrir une PR (.github/dependabot.yml) ;
+#   2. la CI joue les 571 tests sur la version proposee ;
+#   3. si c'est vert, fusionner ; si c'est rouge, on a appris quelque chose
+#      AVANT la production, ce qui est exactement le but.
+# Sans epinglage, cette montee de version se serait produite en silence, un
+# lundi matin, en pleine collecte.
+#
+# Python : 3.12 (workflows) et 3.12.6 (Render, python-version.txt).
+
+# --- Reseau ----------------------------------------------------------------
+requests==2.33.1
+
+# --- Google Sheets ---------------------------------------------------------
+gspread==6.2.1
+google-auth==2.56.2
+
+# --- Analyse de donnees sources --------------------------------------------
+python-dateutil==2.9.0.post0    # ted_complet_bm : dates de la Banque Mondiale
+pypdf==5.9.0                    # ted_complet_attributions : PDF des titulaires
+
+# --- Postgres (memoire inter-runs, miroir) ---------------------------------
+psycopg[binary]==3.3.4
+
+# --- Necessaires a la SUITE DE TESTS uniquement ----------------------------
+# test_app.py exerce l'application FastAPI via fastapi.testclient, qui repose
+# sur httpx. radar_app importe directement pydantic : on le declare donc
+# explicitement plutot que de dependre de ce que fastapi tire avec lui.
+fastapi==0.139.2
+pydantic==2.13.4
+httpx==0.28.1
