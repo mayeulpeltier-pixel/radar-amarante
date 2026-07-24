@@ -1033,6 +1033,45 @@ def normaliser_securite(extraction):
     return extraction
 
 
+def escalade_pour_securite(extraction):
+    """Faut-il une relecture Sonnet a cause de la securite deja en place ?
+
+    POURQUOI CETTE FONCTION EXISTE (23/07/2026)
+    -------------------------------------------
+    Les sept collecteurs portaient chacun leur copie du critere, ecrite ainsi :
+
+        if e.get("securite_existante_detectee"): return True
+
+    Tant que ce champ etait le booleen BRUT du modele, il valait True des
+    qu'une securite quelconque etait reperee, et l'escalade se declenchait.
+    Depuis le passage a l'enum, `securite_existante_detectee` ne vaut plus True
+    que pour `interne_client`. Le critere a donc silencieusement cesse de
+    couvrir `prestataire_tiers` : les leads de DEPLACEMENT CONCURRENTIEL, les
+    plus interessants commercialement et les plus delicats a juger, ont perdu
+    leur relecture Sonnet sans que rien ne le signale.
+
+    Les DEUX cas meritent la relecture, pour des raisons opposees :
+      - `interne_client`    : on s'apprete a ECARTER le lead. Une erreur ici
+                              coute un marche entier, donc on paie la relecture.
+      - `prestataire_tiers` : on s'apprete a le POUSSER comme opportunite de
+                              conquete. C'est le jugement le plus fin du
+                              pipeline (un contrat existe, un concurrent est en
+                              place), donc on paie aussi.
+    `aucune` et `inconnu` ne disent rien de particulier : les autres criteres
+    (score, confiance) suffisent.
+
+    Fonction PURE et tolerante : accepte None, un dict sans la cle, ou l'ancien
+    schema booleen (repli de transition, meme logique que normaliser_securite).
+    Elle ne MODIFIE PAS l'extraction : elle ne fait que la lire."""
+    if not isinstance(extraction, dict):
+        return False
+    brut = extraction.get("securite_existante")
+    if isinstance(brut, str) and brut.strip():
+        return brut.strip().lower() in ("interne_client", "prestataire_tiers")
+    # Repli transition : seul l'ancien booleen est disponible.
+    return bool(extraction.get("securite_existante_detectee"))
+
+
 def appeler_llm(avis, modele=None):
     """Appelle le modele pour extraire les faits structures d'un avis.
     Renvoie le dict JSON parse, ou None en cas d'echec definitif.
@@ -1766,7 +1805,12 @@ def main():
             return True
         if r["extraction"].get("confiance", 1.0) < 0.7:
             return True
-        if r["extraction"].get("securite_existante_detectee"):
+        # Securite deja en place : critere PARTAGE (ted.escalade_pour_securite).
+        # Couvre `interne_client` (on va ecarter : une erreur coute un marche)
+        # ET `prestataire_tiers` (on va pousser en conquete : jugement le plus
+        # fin du pipeline). La lecture directe de `securite_existante_detectee`
+        # avait cesse de couvrir le second depuis le passage a l'enum.
+        if escalade_pour_securite(r["extraction"]):
             return True
         return False
 
