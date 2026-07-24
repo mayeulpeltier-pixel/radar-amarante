@@ -709,7 +709,12 @@ def main():
             return True
         if r["extraction"].get("confiance", 1.0) < 0.7:
             return True
-        if r["extraction"].get("securite_existante_detectee"):
+        # Securite deja en place : critere PARTAGE (ted.escalade_pour_securite).
+        # Couvre `interne_client` (on va ecarter : une erreur coute un marche)
+        # ET `prestataire_tiers` (on va pousser en conquete : jugement le plus
+        # fin du pipeline). La lecture directe de `securite_existante_detectee`
+        # avait cesse de couvrir le second depuis le passage a l'enum.
+        if ted.escalade_pour_securite(r["extraction"]):
             return True
         return False
 
