@@ -475,10 +475,69 @@ def _attacher_enrichissement(lead, enrichissement, cle_entreprise):
     lead["ca"] = _txt(info.get("chiffre_affaires"))
 
 
+def superposer_analyse_attribution(lead, analyse):
+    """Remplace le score DETERMINISTE d'un lead ATTRIB par la vraie analyse
+    du modele (attributions_analyse.py), quand elle existe pour ce
+    publication_number.
+
+    POURQUOI (23/07/2026)
+    ---------------------
+    `attribution_vers_lead` fabrique un score deterministe zone x secteur x
+    valeur, recopie a l'identique dans surete, commercial et final, avec une
+    justification en gabarit fixe. C'etait la seule information disponible :
+    aucun collecteur d'attributions n'appelait le modele. Depuis
+    `attributions_analyse.py`, une table `attributions_analyse` porte une vraie
+    analyse (origine du titulaire, nature du deploiement, interlocuteur a
+    viser). On la JOINT ici sur publication_number, exactement comme le
+    dashboard joint deja l'enrichissement firmographique.
+
+    Superposition NON DESTRUCTIVE : si l'analyse manque (pas encore produite,
+    solde LLM epuise, publication_number absent), le lead garde son score
+    deterministe. La page reste donc complete, jamais trouee -- le meme
+    principe que l'enrichissement, qui est un no-op quand rien ne matche."""
+    if not analyse:
+        return lead
+    def num(cle, defaut):
+        try:
+            return float(analyse.get(cle))
+        except (TypeError, ValueError):
+            return defaut
+    lead["final"] = num("score_final", lead["final"])
+    lead["surete"] = num("score_surete", lead["surete"])
+    lead["comm"] = num("score_commercial", lead["comm"])
+    action = _txt(analyse.get("action_recommandee"))
+    if action:
+        lead["action"] = action
+    justif = _txt(analyse.get("justification"))
+    if justif:
+        # On PREFIXE le pays d'origine : c'est le signal que le score
+        # deterministe ne pouvait pas porter, et le premier que l'oeil doit
+        # voir sur la fiche.
+        origine = _txt(analyse.get("pays_origine_titulaire"))
+        etranger = _txt(analyse.get("titulaire_etranger")).lower() in ("true", "1", "vrai")
+        prefixe = ""
+        if origine:
+            prefixe = "Titulaire {} ({}). ".format(
+                origine, "ETRANGER au pays d'execution" if etranger else "local")
+        lead["justif"] = prefixe + justif
+    interlocuteur = _txt(analyse.get("interlocuteur_vise"))
+    if interlocuteur:
+        lead["cible"] = "Contacter : {}. {}".format(interlocuteur, lead["cible"])
+    # Champs exposes a la lentille Titulaires (badges, filtres).
+    lead["origine"] = _txt(analyse.get("pays_origine_titulaire"))
+    lead["etranger_titulaire"] = _txt(analyse.get("titulaire_etranger")).lower() \
+        in ("true", "1", "vrai")
+    lead["nature_deploiement"] = _txt(analyse.get("nature_deploiement"))
+    lead["besoin_surete"] = _txt(analyse.get("besoin_surete_probable"))
+    lead["interlocuteur"] = interlocuteur
+    lead["analysee"] = True
+    return lead
+
+
 def construire_leads(lignes_ted, lignes_bm, lignes_prive=None,
                      enrichissement=None, lignes_attrib=None, lignes_rw=None,
                      lignes_afdb=None, lignes_adb=None, lignes_ebrd=None,
-                     lignes_ungm=None):
+                     lignes_ungm=None, analyses_attrib=None):
     """Fusionne les onglets (TED, Banque Mondiale, AfDB, ADB, EBRD, ReliefWeb,
     PRIVÉ/BITD), deduplique, trie. Pour les leads PRIVÉ, remonte le dirigeant
     (enrichissement) comme contact.
@@ -512,7 +571,15 @@ def construire_leads(lignes_ted, lignes_bm, lignes_prive=None,
     # pour que la fiche entreprise ait un contact si le titulaire est francais.
     attribs = [attribution_vers_lead(r) for r in (lignes_attrib or [])
                if _txt(r.get("gagnant")) and "non publie" not in _txt(r.get("gagnant")).lower()]
+    # Index des analyses LLM par publication_number (attributions_analyse.py).
+    # Absent = pas encore analyse : le lead garde alors son score deterministe.
+    analyses = {}
+    for a in (analyses_attrib or []):
+        pub = _txt(a.get("publication_number"))
+        if pub:
+            analyses[pub] = a
     for l in attribs:
+        superposer_analyse_attribution(l, analyses.get(_txt(l.get("pub"))))
         _attacher_enrichissement(l, enrichissement, l["entreprise"])
     leads += attribs
 
@@ -712,9 +779,27 @@ def lire_onglets(sheet_id, fichier_cs):
         if nom and email:
             enrichissement.setdefault(nom, {})["email_pro"] = email
 
+    # Analyse LLM des attributions (attributions_analyse.py), table SEPAREE
+    # jointe sur publication_number dans construire_leads. Repli silencieux si
+    # le module ou l'onglet manque : les leads ATTRIB gardent alors leur score
+    # deterministe, la page reste complete.
+    try:
+        import attributions_analyse as aa
+        colonnes_aa = aa.COLONNES
+        onglet_aa = aa.NOM_ONGLET
+    except Exception:
+        onglet_aa = "attributions_analyse"
+        colonnes_aa = [
+            "publication_number", "date_analyse", "score_final", "score_surete",
+            "score_commercial", "action_recommandee", "pays_origine_titulaire",
+            "titulaire_etranger", "nature_deploiement", "profils_deployes",
+            "duree_chantier", "exposition_terrain", "besoin_surete_probable",
+            "interlocuteur_vise", "justification", "confiance", "modele"]
+    analyses_attrib = _lignes_vers_dicts(valeurs(onglet_aa), colonnes_aa)
+
     return (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
             lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
-            lignes_ungm)
+            lignes_ungm, analyses_attrib)
 
 
 def generer_html(leads, watchlist=None, api_statut=False):
@@ -799,10 +884,10 @@ def main():
     print("Lecture des onglets du Sheet...")
     (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
      lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
-     lignes_ungm) = lire_onglets(sheet_id, fichier_cs)
+     lignes_ungm, analyses_attrib) = lire_onglets(sheet_id, fichier_cs)
     leads = construire_leads(lignes_ted, lignes_bm, lignes_prive, enrichissement,
                              lignes_attrib, lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd,
-                             lignes_ungm)
+                             lignes_ungm, analyses_attrib)
     print("  TED : {} | BM : {} | AfDB : {} | ADB : {} | EBRD : {} | UNGM : {} | "
           "ReliefWeb : {} | total exploitable : {}".format(
               len(lignes_ted), len(lignes_bm), len(lignes_afdb), len(lignes_adb),
