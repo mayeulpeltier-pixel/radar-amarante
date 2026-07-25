@@ -77,6 +77,12 @@ COLONNES = [
     "date_maj", "gagnant", "secteur", "pays_execution", "valeur_attribuee",
     "acheteur", "titre", "cpv", "sous_traitance",
     "date_publication", "publication_number", "lien", "a_demarcher",
+    # Socle DETERMINISTE du titulaire, calcule a la collecte sans LLM (23/07/2026).
+    # Ajoute en FIN de schema, AVANT les colonnes humaines : l'ordre des colonnes
+    # existantes ne bouge pas, donc aucune ligne deja ecrite n'est desalignee.
+    # attributions_analyse.py affinera l'origine ; ces deux champs donnent une
+    # reponse immediate meme quand l'analyse LLM n'a pas encore tourne.
+    "pays_titulaire", "titulaire_etranger",
 ]
 COL_STATUT = "statut_prospection"
 COL_DETECTION = "date_detection"
@@ -492,6 +498,9 @@ def normaliser(record):
         "_duree": duree,
         "_origine": origine,
         "_etranger": etranger,
+        # Persistes (sans prefixe _) : alimentent les colonnes du meme nom.
+        "pays_titulaire": origine or "",
+        "titulaire_etranger": "oui" if etranger else "non",
     }
 
 
@@ -634,7 +643,26 @@ def ouvrir_feuille(sheet_id, fichier):
                                    cols=len(TOUTES_COLONNES))
         f.append_row(TOUTES_COLONNES)
         return f
-    if COL_DETECTION not in f.row_values(1):
+    entete_actuel = f.row_values(1)
+    # MIGRATION MANUELLE (chantier B, 23/07/2026) -- lire avant de paniquer.
+    # Deux colonnes ont ete ajoutees au schema : `pays_titulaire` et
+    # `titulaire_etranger`, en FIN de schema (avant les colonnes humaines).
+    # On NE reecrit PAS l'en-tete automatiquement et on ne decale AUCUNE ligne
+    # existante : sur un onglet de prospection reel, une reecriture massive qui
+    # s'interromprait laisserait les statuts humains dans un etat mixte. La
+    # migration se fait a la main, UNE fois : inserer deux colonnes vides entre
+    # `a_demarcher` et `statut_prospection`, intitulees comme ci-dessus.
+    #
+    # Tant que ce n'est pas fait, on AVERTIT bruyamment (le run continue : les
+    # nouvelles lignes s'ecrivent correctement, seules les anciennes lignes
+    # s'affichent decalees jusqu'a l'insertion).
+    if entete_actuel and "pays_titulaire" not in entete_actuel:
+        print("  (!) MIGRATION REQUISE sur l'onglet '{}' : inserer deux "
+              "colonnes vides 'pays_titulaire' et 'titulaire_etranger' entre "
+              "'a_demarcher' et 'statut_prospection'. Les anciennes lignes "
+              "s'afficheront decalees tant que ce n'est pas fait.".format(
+                  NOM_ONGLET))
+    elif not entete_actuel:
         f.update(values=[TOUTES_COLONNES], range_name="A1")
     return f
 
