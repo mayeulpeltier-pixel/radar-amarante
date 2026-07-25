@@ -346,12 +346,15 @@ class TestLignePourSheet(unittest.TestCase):
                             ligne[i("score_commercial")])
 
     def test_schema_disjoint_de_l_onglet_source(self):
-        """Table SEPAREE : le seul champ commun est la clef de jointure.
-        Si les deux schemas se recouvraient, l'interet de la separation
-        (ne pas toucher a l'onglet partage) disparaitrait."""
+        """Table SEPAREE : les seuls champs communs avec l'onglet source sont
+        la clef de jointure et le drapeau `titulaire_etranger`, que le socle
+        deterministe (chantier B) pose a la collecte et que l'analyse LLM
+        affine ensuite. Tout le reste de l'analyse (scores, interlocuteur,
+        nature du deploiement) est propre a la table d'analyse : si ce
+        recouvrement grossissait, l'interet de la table separee disparaitrait."""
         import bm_attributions as bma
         communs = set(aa.COLONNES) & set(bma.COLONNES)
-        self.assertEqual(communs, {"publication_number"})
+        self.assertEqual(communs, {"publication_number", "titulaire_etranger"})
 
 
 # ===========================================================================
