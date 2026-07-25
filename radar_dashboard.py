@@ -1138,6 +1138,8 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .modal .mscore{display:flex;gap:18px;margin-top:12px;align-items:baseline}
   .modal .mscore .big{font-size:30px;font-weight:700;color:var(--bone)}
   .modal .mscore .sub{font-size:12px;color:var(--bone-dim)}
+  .modal .mscore .sub-echelle{font-family:var(--mono);font-size:0.56rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--bone-faint);margin-top:2px}
+  .modal .tlrow .tlech{display:block;font-family:var(--mono);font-size:0.5rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--bone-faint);font-weight:400}
   .modal .mbody{padding:16px 22px}
   .modal .frow{display:flex;gap:12px;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.05);font-size:13px}
   .modal .fk{flex:0 0 130px;color:var(--bone-dim)}
@@ -1324,13 +1326,22 @@ function marquerContacte(idx,btn){
 const ORDRE_ZONES = ["Afrique de l'Ouest","Sahel","Afrique centrale","Afrique de l'Est","Afrique australe","Afrique du Nord","Proche-Orient","Péninsule arabique","Asie centrale","Asie du Sud","Asie du Sud-Est","Caucase","Balkans","Europe de l'Est","Caraïbes","Amérique latine","Europe de l'Ouest","Outre-mer","Non classé"];
 const winLabel={immediate:'Fenêtre immédiate',court_terme:'Court terme',indetermine:'Fenêtre indéterminée'};
 const SRC_LABEL={BM:'Banque Mondiale',TED:'TED',AFDB:'AfDB',ADB:'ADB',EBRD:'EBRD',UNGM:'UNGM · ONU',RW:'ReliefWeb','PRIVÉ':'Privé · BITD',ATTRIB:'Titulaire'};
-// Etiquette d'echelle de score. Les scores marche (TED/BM, barème
-// additif) et les scores signal (privé, barème multiplicatif) NE sont PAS sur
-// la même échelle : un 6 marché ne vaut pas un 6 signal. On l'affiche pour
-// éviter toute comparaison directe trompeuse.
-function echelleLabel(src){
+// Etiquette d'echelle de score. TROIS familles NON comparables entre elles :
+//   - AVIS (TED/BM/bailleurs, bareme additif) : « echelle avis » ;
+//   - SIGNAL PRIVE (bareme multiplicatif)      : « echelle signal » ;
+//   - TITULAIRE (ATTRIB)                        : DEUX cas distincts.
+// Un 6 avis ne vaut pas un 6 signal ni un 6 titulaire : l'etiquette empeche la
+// comparaison directe trompeuse, source de la confusion « c'est mal trie ».
+//
+// Pour un TITULAIRE, on distingue en plus l'origine du score, sinon un
+// titulaire analyse par le modele (vrais scores surete/commercial) porterait
+// la meme etiquette « indicatif » qu'un titulaire jamais analyse (score
+// deterministe zone+secteur+valeur recopie). C'est precisement le cas qui
+// donnait l'impression que les attributions « ne veulent rien dire ».
+function echelleLabel(l){
+  const src=(typeof l==='string')?l:(l&&l.src);   // tolere l'ancien appel(src)
   if(src==='PRIVÉ') return 'échelle signal';
-  if(src==='ATTRIB') return 'score indicatif';
+  if(src==='ATTRIB') return (l&&l.analysee)?'sûreté analysée':'indice titulaire';
   return 'échelle avis';
 }
 let AFFICHES=[];
@@ -1422,8 +1433,12 @@ function finaliserFiche(f){
   const repr=f.signaux.find(s=>s.email&&s.email!=='n.c.')||f.signaux[0]||null;
   const meilleur=f.signaux.length?f.signaux.reduce((a,b)=>b.final>a.final?b:a):null;
   const dernier=f.signaux.length?(f.signaux.reduce((a,b)=>((b.date_det||'')>(a.date_det||'')?b:a)).date_det||''):'';
+  // analysee : au moins un signal de la fiche porte une vraie analyse LLM
+  // (attribution passee par attributions_analyse). Sert a faire remonter les
+  // titulaires qualifies devant ceux encore sur le score deterministe.
+  const analysee=f.signaux.some(s=>s.analysee);
   return Object.assign(f,{zones:[...f.zones],secteurs:[...f.secteurs],
-    prio,enr,repr,meilleur,dernier,n:f.signaux.length});
+    prio,enr,repr,meilleur,dernier,analysee,n:f.signaux.length});
 }
 function _triFiches(a,b){
   return (RANG_ACTION[b.prio]-RANG_ACTION[a.prio])
@@ -1461,7 +1476,12 @@ function agregerTitulaires(){
     if(l.grp&&l.grp!=='signal'&&l.grp!=='AT') f.secteurs.add(l.grp.replace(/_/g,' '));
   });
   return Object.values(parCle).map(finaliserFiche)
-    .sort((a,b)=>((b.meilleur?b.meilleur.final:0)-(a.meilleur?a.meilleur.final:0)));
+    // Les titulaires ANALYSES (vrais scores surete/commercial) remontent
+    // devant ceux encore sur l'indice deterministe : sinon un indice gonfle
+    // par la zone et le montant pouvait passer devant un prospect qualifie.
+    // A analyse egale, tri par score. C'est la reponse au « mal trie ».
+    .sort((a,b)=>((b.analysee?1:0)-(a.analysee?1:0))
+      || ((b.meilleur?b.meilleur.final:0)-(a.meilleur?a.meilleur.final:0)));
 }
 // --- Lentille ENTREPRISES (360) : fiche UNIFIEE par entreprise ---------------
 // Fusionne les trois univers sur la meme cle normalisee : la watchlist curee,
@@ -1917,7 +1937,7 @@ function render(){
           <div class="row"><span class="k">Tél</span><span class="v">${tel}</span></div>` : '';
     return `<article class="lead" data-tier="${tier}" data-idx="${i}"><span class="spine"></span><div class="body">
       <div class="lhead"><div class="lmeta"><span class="src ${l.src.toLowerCase()}">${SRC_LABEL[l.src]||l.src}</span><span class="pays">${esc(l.pays)}</span><span>· ${esc(l.zone)}</span></div>
-      <div class="scorebox"><div class="sf">${l.final.toFixed(1)}</div><div class="sd">sûreté ${l.surete.toFixed(1)} · com ${l.comm.toFixed(1)}</div><div class="se">${echelleLabel(l.src)}</div></div></div>
+      <div class="scorebox"><div class="sf">${l.final.toFixed(1)}</div><div class="sd">sûreté ${l.surete.toFixed(1)} · com ${l.comm.toFixed(1)}</div><div class="se">${echelleLabel(l)}</div></div></div>
       <h3 class="ltitle">${esc(l.titre)}</h3>
       <div class="badges">${(l.justif||'').indexOf('[DÉPLACEMENT CONCURRENT]')===0?'<span class="badge deplacement">⚔ Déplacement concurrent</span>':''}<span class="badge win-${win}">${winLabel[win]}</span>${badgeDeadline(l)}${ecart}${statut}${dateChip}</div>
       <div class="contact"><div class="row"><span class="k">Agence</span><span class="v">${esc(l.agence)}</span></div>${contactRows}</div>
@@ -1987,7 +2007,11 @@ function openFicheEnt(i){
   const tl=sigs.map(s=>{
     const typ=s.src==='ATTRIB'?'attribution':'signal';
     const lien=s.lien?` <a class="fsl" href="${esc(s.lien)}" target="_blank" rel="noopener">${s.src==='ATTRIB'?'avis':'article'} ↗</a>`:'';
-    return `<div class="tlrow"><span class="tld">${esc(s.date_det||'—')}</span><span>${esc(s.pays)}${lien}</span><span>${esc(typ)}</span><span class="tls">${s.final.toFixed(1)}</span></div>`;
+    // Etiquette d'echelle par ligne : un score 6 attribution-indicatif ne se
+    // lit pas comme un 6 sûreté-analysée. Sans elle, la timeline melangeait
+    // des chiffres non comparables.
+    const ech=`<span class="tlech">${esc(echelleLabel(s))}</span>`;
+    return `<div class="tlrow"><span class="tld">${esc(s.date_det||'—')}</span><span>${esc(s.pays)}${lien}</span><span>${esc(typ)}</span><span class="tls">${s.final.toFixed(1)}${ech}</span></div>`;
   }).join('');
   const prioLabel={contacter:'à contacter',surveiller:'à surveiller',ignorer:'faible',aucun:'sans signal'}[f.prio]||f.prio;
   const manque=!f.enr.nom&&!f.enr.email;
@@ -2027,7 +2051,7 @@ function ficheHtml(l){
    <div class="mhead"><button class="mclose" type="button" onclick="closeFiche()" aria-label="Fermer">×</button>
      <div class="msrc">${SRC_LABEL[l.src]||l.src}</div>
      <h2>${esc(l.titre)}</h2>
-     <div class="mscore"><span class="big">${l.final.toFixed(1)}</span><span class="sub">sûreté ${l.surete.toFixed(1)} · commercial ${l.comm.toFixed(1)}</span></div>
+     <div class="mscore"><span class="big">${l.final.toFixed(1)}</span><span class="sub">sûreté ${l.surete.toFixed(1)} · commercial ${l.comm.toFixed(1)}</span><span class="sub sub-echelle">${echelleLabel(l)}</span></div>
    </div>
    <div class="mbody">
      ${row('Pays',esc(l.pays))}
