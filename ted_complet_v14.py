@@ -35,6 +35,7 @@ Dependances : pip install requests
 """
 
 import json
+import sys
 import os
 import time
 import html
@@ -284,7 +285,31 @@ MODELE_RAFFINEMENT = os.environ.get("RADAR_MODELE_RAFFINEMENT") or "claude-sonne
 # depreciations : haiku-4-5-20251001 pas avant le 15/10/2026, sonnet-4-6 pas
 # avant le 17/02/2027. Les deux se surchargent sans toucher au code, via
 # RADAR_MODELE et RADAR_MODELE_RAFFINEMENT.
-STATS_LLM = {"appels": 0, "echecs": 0, "modele_invalide": 0, "detail": ""}
+STATS_LLM = {"appels": 0, "echecs": 0, "modele_invalide": 0, "detail": "",
+             "arret": "", "ignores": 0}
+
+# DISJONCTEUR (23/07/2026) -- pourquoi il existe
+# ---------------------------------------------------------------------------
+# Run du 23/07 sur UNGM : le solde de credits Anthropic etait epuise. Les 60
+# avis prevus ont donc produit 60 appels, 60 erreurs 400 identiques et 60 blocs
+# d'erreur dans le journal. Aucun n'avait la moindre chance d'aboutir : un
+# solde vide ne se repare pas en reessayant.
+#
+# Trois couts, tous evitables : le temps du run, le bruit qui enterre la cause
+# reelle sous des dizaines de lignes identiques, et -- le jour ou ce sera une
+# cle revoquee plutot qu'un solde -- autant d'appels authentifies inutiles.
+#
+# On ne coupe QUE sur des erreurs definitives, jamais sur un incident
+# passager. En particulier, `invalid_request_error` n'est PAS un motif d'arret
+# en soi : il couvre aussi la requete mal formee (prompt trop long), qui ne
+# concerne qu'UN avis. Seul le message de solde epuise, lui, est sans appel.
+MOTIFS_ARRET_LLM = (
+    "authentication_error",     # cle absente, invalide ou revoquee
+    "permission_error",         # cle valide mais sans droit sur ce modele
+    "credit balance",           # solde epuise (message exact d'Anthropic)
+    "billing",                  # variantes de facturation
+)
+_ARRET_ANNONCE = False
 
 # Proportion d'echecs au-dela de laquelle on considere l'API cassee (et non
 # quelques avis malchanceux). Sous ce seuil, le pipeline degrade en silence
@@ -294,10 +319,16 @@ MINI_APPELS_LLM = int(os.environ.get("RADAR_MINI_APPELS_LLM", "10"))
 
 
 def _marquer_echec_llm(detail):
-    """Enregistre un echec d'appel et repere les erreurs de MODELE (retrait,
-    nom invalide), qui exigent une action et non une simple patience."""
+    """Enregistre un echec d'appel et repere les erreurs qui exigent une
+    ACTION plutot que de la patience : modele retire, et desormais motifs
+    definitifs (solde epuise, cle revoquee) qui ouvrent le disjoncteur."""
     STATS_LLM["echecs"] += 1
     bas = str(detail or "").lower()
+    if not STATS_LLM["arret"]:
+        for motif in MOTIFS_ARRET_LLM:
+            if motif in bas:
+                STATS_LLM["arret"] = str(detail)[:300]
+                break
     if ("not_found_error" in bas or "model" in bas and
             ("not found" in bas or "invalid" in bas or "does not exist" in bas)):
         STATS_LLM["modele_invalide"] += 1
@@ -311,6 +342,16 @@ def sante_llm():
     des appels a echoue. Dans les deux cas le run n'a rien produit d'utile et
     doit etre signale bruyamment plutot que passer pour un succes."""
     appels, echecs = STATS_LLM["appels"], STATS_LLM["echecs"]
+    if STATS_LLM["arret"]:
+        # Traite AVANT le ratio : un solde epuise a la deuxieme requete ne
+        # produit que deux echecs sur deux appels, donc trop peu pour franchir
+        # MINI_APPELS_LLM. Le run passerait pour sain alors qu'il n'a rien
+        # analyse. Le motif est definitif : il ne se dilue pas dans un ratio.
+        return False, (
+            "APPELS AU MODELE INTERROMPUS, motif definitif. {} appel(s) tente(s), "
+            "{} avis non analyse(s). Verifie le solde de credits Anthropic et la "
+            "validite de la cle. Detail : {}".format(
+                appels, STATS_LLM["ignores"], STATS_LLM["arret"]))
     if STATS_LLM["modele_invalide"]:
         return False, (
             "MODELE REFUSE PAR L'API ({} fois). Modeles configures : {} (volume) "
@@ -977,6 +1018,20 @@ def texte_des_blocs(charge):
 def appeler_modele(prompt, modele=None):
     """Appel brut au modele. Renvoie le texte de la reponse, ou None
     (avec message d'erreur affiche) en cas d'echec reseau/auth/lecture."""
+    global _ARRET_ANNONCE
+    if STATS_LLM["arret"]:
+        # Disjoncteur ouvert : un motif definitif a deja ete rencontre. On
+        # n'appelle plus, on ne journalise plus qu'une fois. Les avis restants
+        # ne sont pas perdus : ils ne sont simplement pas analyses ce run, et
+        # la memoire inter-runs les representera au suivant.
+        STATS_LLM["ignores"] += 1
+        if not _ARRET_ANNONCE:
+            _ARRET_ANNONCE = True
+            print("  APPELS AU MODELE INTERROMPUS (motif definitif) : {}".format(
+                STATS_LLM["arret"]))
+            print("  Les avis restants ne seront pas analyses ce run.")
+        return None
+
     cle_api = os.environ.get("ANTHROPIC_API_KEY")
     if not cle_api:
         print("ERREUR : la variable d'environnement ANTHROPIC_API_KEY n'est pas definie.")
@@ -1111,6 +1166,33 @@ def normaliser_securite(extraction):
         if not just.startswith(MARQUEUR_DEPLACEMENT):
             extraction["justification"] = (MARQUEUR_DEPLACEMENT + " " + just).strip()
     return extraction
+
+
+def sortie_selon_sante_llm(nom_collecteur=""):
+    """Journalise la sante des appels au modele et sort en code 1 si le run
+    n'a rien pu produire. A appeler en fin de collecteur AUTONOME.
+
+    POURQUOI (23/07/2026)
+    ---------------------
+    `radar_run.py` verifie deja `sante_llm()` et sort en code 1 le cas
+    echeant. Mais les collecteurs lances DIRECTEMENT par le workflow
+    (`python ungm_radar.py`, `python idb_radar.py`) ne le faisaient pas : le
+    23/07, UNGM a vu ses 60 appels echouer sur un solde de credits epuise,
+    n'a analyse aucun avis, ecrit aucune ligne... et le processus s'est
+    termine en code 0. L'etape GitHub etait donc VERTE. Le seul moyen de
+    l'apprendre etait de lire le journal ligne a ligne.
+
+    Un run qui ne produit rien doit le DIRE. Avec le verrou d'isolation de
+    `radar.yml` (`if: always() && steps.cle...`), un collecteur en echec
+    n'empeche toujours pas les suivants : seul le job vire au rouge, ce qui
+    est exactement l'information recherchee."""
+    ok, message = sante_llm()
+    prefixe = "({}) ".format(nom_collecteur) if nom_collecteur else ""
+    print("  {}sante modele : {}".format(prefixe, message))
+    if not ok:
+        print("  {}Le run n'a rien pu analyser : sortie en echec pour que "
+              "l'ordonnanceur alerte.".format(prefixe))
+        sys.exit(1)
 
 
 def escalade_pour_securite(extraction):
