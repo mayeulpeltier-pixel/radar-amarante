@@ -959,3 +959,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+    # Un run qui n'a rien pu analyser doit sortir en echec : sans cela,
+    # l'etape GitHub reste VERTE alors que zero avis a ete traite.
+    # Constate le 23/07/2026 sur UNGM (solde de credits epuise).
+    ted.sortie_selon_sante_llm("ungm")
