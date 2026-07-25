@@ -83,6 +83,12 @@ COLONNES = [
     "date_maj", "gagnant", "secteur", "pays_execution", "valeur_attribuee",
     "acheteur", "titre", "cpv", "sous_traitance",
     "date_publication", "publication_number", "lien", "a_demarcher",
+    # Socle DETERMINISTE du titulaire, calcule a la collecte sans LLM (23/07/2026).
+    # Ajoute en FIN de schema, AVANT les colonnes humaines : l'ordre des colonnes
+    # existantes ne bouge pas, donc aucune ligne deja ecrite n'est desalignee.
+    # attributions_analyse.py affinera l'origine ; ces deux champs donnent une
+    # reponse immediate meme quand l'analyse LLM n'a pas encore tourne.
+    "pays_titulaire", "titulaire_etranger",
 ]
 COL_STATUT = "statut_prospection"
 COL_DETECTION = "date_detection"
@@ -751,6 +757,9 @@ def enrichir(attributions, session=None, fetch=None):
             # Meme logique commerciale que les attributions BM : une entreprise
             # etrangere expatrie du personnel, un local non.
             a["_etranger"] = bma.titulaire_etranger(pays, a.get("_pays_nom", ""))
+            # Persistes (sans prefixe _) : alimentent les colonnes du meme nom.
+            a["pays_titulaire"] = pays
+            a["titulaire_etranger"] = "oui" if a["_etranger"] else "non"
             stats["pays"] += 1
         if montant:
             a["valeur_attribuee"] = montant
