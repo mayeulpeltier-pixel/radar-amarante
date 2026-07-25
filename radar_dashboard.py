@@ -425,6 +425,19 @@ def attribution_vers_lead(row):
               "Prospect à démarcher (déploie du personnel). "
               "Score = risque zone + secteur + valeur (indicatif, pas une analyse sûreté).").format(
         nom_pays, " · " + valeur if valeur else "", marche or "n.c.")
+    # Socle DETERMINISTE du titulaire, calcule a la collecte (chantier B,
+    # 23/07/2026). Present meme quand l'analyse LLM n'a pas encore tourne :
+    # une attribution non analysee affiche deja son origine et le drapeau
+    # etranger. superposer_analyse_attribution ecrasera par la valeur du
+    # modele quand elle existe.
+    origine_det = _txt(row.get("pays_titulaire"))
+    etranger_det = _txt(row.get("titulaire_etranger")).lower() in ("oui", "true", "1", "vrai")
+    justif_socle = justif
+    if origine_det:
+        justif_socle = "Titulaire {} ({}). {}".format(
+            origine_det,
+            "ETRANGER au pays d'exécution" if etranger_det else "local",
+            justif)
     return {
         "src": "ATTRIB", "pays": nom_pays, "zone": zone,
         "titre": (gagnant or "Titulaire") + (" · " + secteur if secteur else ""),
@@ -434,8 +447,13 @@ def attribution_vers_lead(row):
         "nom": "n.c.", "email": "n.c.", "tel": "n.c.",
         "cible": ("Titulaire du marché : entreprise qui déploie du personnel en "
                   "zone à risque. À démarcher (direction sûreté / opérations)."),
-        "justif": justif, "grp": secteur, "lien": _txt(row.get("lien")),
+        "justif": justif_socle, "grp": secteur, "lien": _txt(row.get("lien")),
         "valeur": valeur,
+        # Champs exposes a la lentille Titulaires (badge etranger, filtre),
+        # renseignes des la collecte. L'analyse LLM les affinera si elle existe.
+        "origine": origine_det, "etranger_titulaire": etranger_det,
+        "nature_deploiement": "", "besoin_surete": "", "interlocuteur": "",
+        "analysee": False,
         "ecart": False, "secu": False, "mois": mois_cle, "mois_label": mois_label,
         "date_det": date_det, "statut": _txt(row.get("statut_prospection")) or "nouveau",
         "deadline": "", "conf": "", "modele": "",
@@ -674,8 +692,9 @@ def lire_onglets(sheet_id, fichier_cs):
         colonnes_attrib = [
             "date_maj", "gagnant", "secteur", "pays_execution", "valeur_attribuee",
             "acheteur", "titre", "cpv", "sous_traitance", "date_publication",
-            "publication_number", "lien", "a_demarcher", "statut_prospection",
-            "date_detection"]
+            "publication_number", "lien", "a_demarcher",
+            "pays_titulaire", "titulaire_etranger",       # socle B (23/07/2026)
+            "statut_prospection", "date_detection"]
     lignes_attrib = _lignes_vers_dicts(valeurs(onglet_attrib), colonnes_attrib)
 
     # Onglet ReliefWeb (offres terrain = signaux de déploiement humanitaire).
