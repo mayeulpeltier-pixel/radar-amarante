@@ -93,6 +93,12 @@ COLONNES = [
     "date_maj", "gagnant", "secteur", "pays_execution", "valeur_attribuee",
     "acheteur", "titre", "cpv", "sous_traitance",
     "date_publication", "publication_number", "lien", "a_demarcher",
+    # Socle DETERMINISTE du titulaire, calcule a la collecte sans LLM (23/07/2026).
+    # Ajoute en FIN de schema, AVANT les colonnes humaines : l'ordre des colonnes
+    # existantes ne bouge pas, donc aucune ligne deja ecrite n'est desalignee.
+    # attributions_analyse.py affinera l'origine ; ces deux champs donnent une
+    # reponse immediate meme quand l'analyse LLM n'a pas encore tourne.
+    "pays_titulaire", "titulaire_etranger",
 ]
 COL_STATUT = "statut_prospection"
 COL_DETECTION = "date_detection"
@@ -316,6 +322,9 @@ def normaliser(chemin, html):
         "a_demarcher": "oui",
         "_pays_titulaire": pays_societe,
         "_etranger": etranger,
+        # Persistes (sans prefixe _) : alimentent les colonnes du meme nom.
+        "pays_titulaire": pays_societe or "",
+        "titulaire_etranger": "oui" if etranger else "non",
     }
 
 
