@@ -420,6 +420,12 @@ COLONNES = [
     "date_maj", "gagnant", "secteur", "pays_execution", "valeur_attribuee",
     "acheteur", "titre", "cpv", "sous_traitance",
     "date_publication", "publication_number", "lien", "a_demarcher",
+    # Socle DETERMINISTE du titulaire, calcule a la collecte sans LLM (23/07/2026).
+    # Ajoute en FIN de schema, AVANT les colonnes humaines : l'ordre des colonnes
+    # existantes ne bouge pas, donc aucune ligne deja ecrite n'est desalignee.
+    # attributions_analyse.py affinera l'origine ; ces deux champs donnent une
+    # reponse immediate meme quand l'analyse LLM n'a pas encore tourne.
+    "pays_titulaire", "titulaire_etranger",
 ]
 COL_STATUT = "statut_prospection"     # zone preservee (saisie humaine)
 COL_DETECTION = "date_detection"
@@ -438,7 +444,17 @@ def ouvrir_feuille(sheet_id, fichier):
         f = classeur.add_worksheet(title=NOM_ONGLET, rows=3000, cols=len(TOUTES_COLONNES))
         f.append_row(TOUTES_COLONNES)
         return f
-    if COL_DETECTION not in f.row_values(1):
+    entete_actuel = f.row_values(1)
+    # MIGRATION MANUELLE (chantier B, 23/07/2026) : deux colonnes ajoutees au
+    # schema partage (`pays_titulaire`, `titulaire_etranger`). On NE reecrit
+    # PAS l'en-tete et on ne decale AUCUNE ligne existante -- la migration se
+    # fait a la main, une fois (voir bm_attributions.ouvrir_feuille pour le
+    # detail). On avertit tant que ce n'est pas fait.
+    if entete_actuel and "pays_titulaire" not in entete_actuel:
+        print("  (!) MIGRATION REQUISE sur l'onglet '{}' : inserer deux "
+              "colonnes vides 'pays_titulaire' et 'titulaire_etranger' entre "
+              "'a_demarcher' et 'statut_prospection'.".format(NOM_ONGLET))
+    elif not entete_actuel:
         f.update(values=[TOUTES_COLONNES], range_name="A1")
     return f
 
