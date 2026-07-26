@@ -171,6 +171,11 @@ class TestSchemaSheet(unittest.TestCase):
         # generee doit avoir exactement len(COLONNES) cellules (regle 4).
         self.assertIn("publication_number", pz.COLONNES)
 
+        # Remplace appeler_modele par une reponse figee, PUIS restaure l'original
+        # en fin de test : la suite radar tourne en barriere (300+ tests), aucune
+        # contamination croisee ne doit subsister selon l'ordre d'execution.
+        original = ted.appeler_modele
+        self.addCleanup(setattr, ted, "appeler_modele", original)
         ted.appeler_modele = lambda prompt, modele=None: json.dumps({
             "deploiement_terrain_reel": True, "type_mobilite": "chantier",
             "profil_personnes_exposees": "technicien", "securite_existante": "aucune",
