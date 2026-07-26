@@ -254,6 +254,20 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python alertes_voyageurs.py
 
+      # 4g) Evenements geopolitiques (niveau 10). Meme bandeau "contexte pays"
+      #     que les alertes voyageurs (onglet alertes_radar partage). Utilise le
+      #     LLM (tri Haiku des articles Google News), donc ANTHROPIC_API_KEY.
+      #     Le disjoncteur coupe proprement si le solde est vide.
+      - name: Collecter les evenements geopolitiques
+        if: always() && steps.cle.outcome == 'success'
+        env:
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          RADAR_GEO_BUDGET: "60"
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python evenements_geo.py
+
       # 5) Generer le tableau de bord depuis le Sheet (public/index.html).
       #    if: always() => le dashboard se rafraichit meme si un collecteur a eu
       #    un souci, en lisant le dernier etat du Sheet. L'echec reste visible
