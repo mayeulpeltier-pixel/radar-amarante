@@ -241,6 +241,19 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python attributions_analyse.py
 
+      # 4f) Alertes voyageurs FCDO (signaux faibles). Ne touche pas au LLM :
+      #     lit l'API GOV.UK, detecte les CHANGEMENTS de niveau d'alerte sur les
+      #     123 pays du perimetre, ecrit dans alertes_radar. Premier run
+      #     silencieux (amorce la memoire), signaux des le run suivant. Doit
+      #     tourner AVANT le dashboard, qui joindra ses lignes.
+      - name: Collecter les alertes voyageurs FCDO
+        if: always() && steps.cle.outcome == 'success'
+        env:
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python alertes_voyageurs.py
+
       # 5) Generer le tableau de bord depuis le Sheet (public/index.html).
       #    if: always() => le dashboard se rafraichit meme si un collecteur a eu
       #    un souci, en lisant le dernier etat du Sheet. L'echec reste visible
