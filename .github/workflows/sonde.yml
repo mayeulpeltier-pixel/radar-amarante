@@ -2,28 +2,26 @@ name: Sonde sources
 
 # Diagnostic ponctuel, DECLENCHEMENT MANUEL UNIQUEMENT (workflow_dispatch).
 # Ne touche a rien : ni Google Sheet, ni Postgres, ni etat, ni dashboard, ni
-# publication. Son unique role est de repondre a la question "cette source
-# est-elle accessible depuis l'infra GitHub Actions ?" AVANT d'ecrire un
+# publication. Son role est de valider une source AVANT d'ecrire/activer un
 # collecteur. Precedents qui justifient cette discipline :
 #   - ADB  : 403 puis portail rendu en JavaScript, collecteur inutile ;
-#   - UNGM : deux tours perdus faute d'avoir dumpe le HTML/JSON brut d'emblee.
+#   - UNGM : deux tours perdus faute d'avoir dumpe le brut d'emblee.
 #
-# CIBLE ACTUELLE (26/07/2026) : PROZORRO, l'e-procurement public ukrainien.
-# Zone COEUR du radar (reconstruction, deploiements massifs). Profil nouveau
-# pour nous : gros volume, langue ukrainienne, flux de changements plutot que
-# recherche plein-texte. On valide la forme du brut AVANT d'ecrire le
-# collecteur. API publique confirmee : https://public-api.prozorro.gov.ua/api/2.5
+# CIBLE ACTUELLE (26/07/2026) : MESURE DE L'ENTONNOIR PROZORRO (Option A).
+# La forme du brut a deja ete validee par sonde_prozorro.py (flux OK, detail
+# exploitable, CPV standard, 100% cyrillique). Cette etape mesure maintenant le
+# ROI : sur un echantillon d'1 JOUR, combien de details telecharges, combien
+# survivent aux 3 cribles (methode, valeur, CPV), quel partage avis/attribution,
+# quel temps par detail. On lance prozorro_radar.py en PROZORRO_DRY_RUN : aucun
+# LLM, aucune ecriture, aucune memoire touchee. Lire l'ENTONNOIR PROZORRO dans
+# le journal. Une fois le ROI valide, on retire le dry-run et on cable le
+# collecteur dans le workflow radar principal.
 #
-# IsDB : etape retiree, diagnostic termine (filtre pays corrige, source
-# integree). FCDO (alertes voyageurs) : conservee tant que cette veille n'est
-# pas finalisee ; la retirer une fois le collecteur alertes ecrit.
+# sonde_prozorro.py a fait son travail : il peut etre supprime du depot.
+# FCDO (alertes voyageurs) : conservee tant que cette veille n'est pas
+# finalisee ; la retirer une fois le collecteur alertes ecrit.
 #
 # UTILISATION : onglet Actions > "Sonde sources" > Run workflow.
-# Puis lire le journal de chaque etape, notamment la SYNTHESE finale de chacune.
-#
-# Une sonde est JETABLE : une fois le verdict obtenu et le collecteur ecrit
-# (ou la source abandonnee), le fichier sonde_*.py correspondant peut etre
-# supprime du depot. Aucun autre fichier n'en depend.
 
 on:
   workflow_dispatch:
@@ -31,7 +29,7 @@ on:
 jobs:
   sonder:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     steps:
       - name: Recuperer le code
@@ -43,21 +41,25 @@ jobs:
           python-version: "3.12"
 
       - name: Installer les dependances
-        # Versions FIGEES depuis le fichier commun, comme les autres workflows :
-        # une seule source de verite. La sonde Prozorro ne depend que de
-        # `requests`, deja present dans requirements-radar.txt.
+        # Versions FIGEES depuis le fichier commun : une seule source de verite.
+        # Le collecteur Prozorro ne depend que de `requests` (deja present).
         run: pip install -r requirements-radar.txt
 
-      # CIBLE 26/07/2026 : Prozorro (Ukraine). La sonde tranche, sans rien
-      # ecrire ni appeler de LLM : (A) le flux repond et sa fraicheur/debit,
-      # (B) le detail d'un avis -- champs exploitables, CPV au format qu'on sait
-      # deja filtrer, part de titres cyrilliques, (C) si le mode OCDS simplifie
-      # le parsing. Lire la SYNTHESE finale.
-      - name: Sonder Prozorro (forme du brut avant collecteur)
-        run: python sonde_prozorro.py
+      # CIBLE 26/07/2026 : mesure de l'entonnoir Prozorro (Option A).
+      # Echantillon borne a 1 jour pour un retour rapide sous le timeout :
+      #   - PROZORRO_DRY_RUN  : aucun LLM, aucune ecriture, aucune memoire ;
+      #   - PROZORRO_JOURS=1  : ne regarde que les avis modifies dans les 24 h ;
+      #   - garde-fous temps/details pour rester dans l'enveloppe du job.
+      # Extrapoler ensuite le volume d'un vrai run (lundi+jeudi ~ 3-4 j).
+      - name: Mesurer l'entonnoir Prozorro (dry-run, Option A)
+        env:
+          PROZORRO_DRY_RUN: "1"
+          PROZORRO_JOURS: "1"
+          PROZORRO_MINUTES_MAX: "12"
+          PROZORRO_MAX_DETAILS: "3000"
+        run: python prozorro_radar.py
 
       # Veille "signaux faibles" alertes voyageurs FCDO (UK). API GOV.UK
-      # Content, JSON public, sans cle. A retirer une fois le collecteur
-      # alertes ecrit.
+      # Content, JSON public, sans cle. A retirer une fois le collecteur ecrit.
       - name: Sonder les alertes voyageurs FCDO
         run: python sonde_alertes.py
