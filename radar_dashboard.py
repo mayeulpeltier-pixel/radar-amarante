@@ -816,12 +816,62 @@ def lire_onglets(sheet_id, fichier_cs):
             "interlocuteur_vise", "justification", "confiance", "modele"]
     analyses_attrib = _lignes_vers_dicts(valeurs(onglet_aa), colonnes_aa)
 
+    # Alertes voyageurs (alertes_voyageurs.py). Bandeau de contexte, option A.
+    try:
+        import alertes_voyageurs as av
+        colonnes_al = av.COLONNES
+        onglet_al = av.NOM_ONGLET
+    except Exception:
+        onglet_al = "alertes_radar"
+        colonnes_al = ["date_maj", "pays_execution", "pays_nom", "zone",
+                       "niveau_avant", "niveau_apres", "sens", "severite",
+                       "motif", "publication_number", "lien"]
+    lignes_alertes = _lignes_vers_dicts(valeurs(onglet_al), colonnes_al)
+
     return (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
             lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
-            lignes_ungm, analyses_attrib)
+            lignes_ungm, analyses_attrib, lignes_alertes)
 
 
-def generer_html(leads, watchlist=None, api_statut=False):
+def preparer_alertes(lignes_alertes):
+    """Lignes brutes de `alertes_radar` -> liste d'affichage pour le bandeau.
+
+    Ne garde que les changements RECENTS (30 jours) et les trie par severite
+    puis date. Une alerte est un CONTEXTE, pas un lead : aucun score, aucune
+    action « je contacte ». Fonction pure (hors date du jour)."""
+    from datetime import date, timedelta
+    limite = (date.today() - timedelta(days=30)).isoformat()
+    prets = []
+    for l in (lignes_alertes or []):
+        maj = _txt(l.get("date_maj"))
+        if maj and maj < limite:
+            continue
+        try:
+            sev = int(float(l.get("severite") or 0))
+        except (TypeError, ValueError):
+            sev = 0
+        prets.append({
+            "pays": _txt(l.get("pays_nom")) or _txt(l.get("pays_execution")),
+            "iso3": _txt(l.get("pays_execution")),
+            "zone": _txt(l.get("zone")),
+            "sens": _txt(l.get("sens")),          # aggravation / allegement / lateral
+            "avant": _txt(l.get("niveau_avant")),
+            "apres": _txt(l.get("niveau_apres")),
+            "motif": _txt(l.get("motif")),
+            "severite": sev,
+            "date": maj,
+            "lien": _txt(l.get("lien")),
+        })
+    # Une aggravation prime a severite egale : c'est le signal le plus chaud.
+    poids_sens = {"aggravation": 2, "lateral": 1, "allegement": 0}
+    prets.sort(key=lambda a: (-a["severite"], -poids_sens.get(a["sens"], 1),
+                              a["date"]), reverse=False)
+    prets.sort(key=lambda a: (a["severite"], poids_sens.get(a["sens"], 1)),
+               reverse=True)
+    return prets
+
+
+def generer_html(leads, watchlist=None, api_statut=False, alertes=None):
     """Produit la page HTML autonome (situation board) a partir des leads.
 
     api_statut : True uniquement quand la page est servie par l'APPLICATION
@@ -850,6 +900,11 @@ def generer_html(leads, watchlist=None, api_statut=False):
             labels[l["mois"]] = l["mois_label"]
     meta["mois"] = [{"cle": c, "label": labels[c]} for c in sorted(labels, reverse=True)]
     leads_json = json.dumps(leads, ensure_ascii=False)
+    # Section "Alertes pays" (option A) : bandeau de contexte en tete, SEPARE
+    # des leads. Une alerte n'est pas un prospect a contacter mais une info qui
+    # rend les autres leads de ce pays plus chauds. On ne la melange donc pas au
+    # scoring des leads (ce serait le defaut qu'on a corrige au chantier C).
+    alertes_json = json.dumps(preparer_alertes(alertes or []), ensure_ascii=False)
     meta_json = json.dumps(meta, ensure_ascii=False)
     # Watchlist normalisee pour le JS : nom + secteur (detection dynamique de la
     # colonne secteur, quel que soit son intitule exact).
@@ -883,6 +938,7 @@ def generer_html(leads, watchlist=None, api_statut=False):
             pass
     return (GABARIT_HTML
             .replace("__LEADS_JSON__", leads_json)
+            .replace("__ALERTES_JSON__", alertes_json)
             .replace("__META_JSON__", meta_json)
             .replace("__WATCHLIST_JSON__", watchlist_json)
             .replace("__CONVERSION_JSON__", conversion_json)
@@ -903,7 +959,7 @@ def main():
     print("Lecture des onglets du Sheet...")
     (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
      lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
-     lignes_ungm, analyses_attrib) = lire_onglets(sheet_id, fichier_cs)
+     lignes_ungm, analyses_attrib, lignes_alertes) = lire_onglets(sheet_id, fichier_cs)
     leads = construire_leads(lignes_ted, lignes_bm, lignes_prive, enrichissement,
                              lignes_attrib, lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd,
                              lignes_ungm, analyses_attrib)
@@ -912,7 +968,7 @@ def main():
               len(lignes_ted), len(lignes_bm), len(lignes_afdb), len(lignes_adb),
               len(lignes_ebrd), len(lignes_ungm), len(lignes_rw), len(leads)))
 
-    html = generer_html(leads, lignes_watchlist)
+    html = generer_html(leads, lignes_watchlist, alertes=lignes_alertes)
     dossier = os.path.dirname(sortie)
     if dossier:
         os.makedirs(dossier, exist_ok=True)
@@ -1005,6 +1061,22 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .export{font-family:var(--mono);font-size:0.66rem;letter-spacing:0.08em;color:var(--bone-dim);background:none;border:1px solid var(--line);border-radius:3px;padding:4px 9px;cursor:pointer;margin-left:auto}
   .export:hover{color:var(--bone);border-color:var(--bone-dim)}
   .count{font-family:var(--mono);font-size:0.7rem;color:var(--bone-dim);letter-spacing:0.06em;margin-bottom:14px}
+  .alertes-pays{margin-bottom:18px}
+  .alertes-pays:empty{display:none}
+  .al-titre{font-family:var(--mono);font-size:0.62rem;letter-spacing:0.16em;text-transform:uppercase;color:var(--bone-dim);margin-bottom:8px}
+  .al-liste{display:flex;flex-direction:column;gap:6px}
+  .al-item{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:8px;text-decoration:none;color:var(--bone);background:rgba(255,255,255,0.02);border-left:3px solid var(--bone-faint);font-size:0.8rem}
+  .al-item:hover{background:rgba(255,255,255,0.05)}
+  .al-item.al-agg{border-left-color:#c0392b}
+  .al-item.al-alleg{border-left-color:#27812f}
+  .al-item.al-lat{border-left-color:var(--bone-faint)}
+  .al-sens{font-weight:700;width:14px;text-align:center}
+  .al-agg .al-sens{color:#e74c3c}
+  .al-alleg .al-sens{color:#2ecc71}
+  .al-pays{font-weight:600}
+  .al-zone{font-family:var(--mono);font-size:0.6rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--bone-faint)}
+  .al-niv{color:var(--bone-dim);font-size:0.74rem}
+  .al-motif{color:var(--bone-faint);font-size:0.7rem;margin-left:auto;max-width:38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   /* Onglets periode (mois) */
   .period{display:flex;gap:7px;flex-wrap:wrap;margin:22px 0 4px;align-items:center}
   .period .chip{background:var(--ink-2);border:1px solid var(--line);border-radius:20px;padding:7px 14px;cursor:pointer;color:var(--bone-dim);font-family:var(--mono);font-size:0.66rem;letter-spacing:0.06em;transition:.15s;white-space:nowrap}
@@ -1273,6 +1345,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
     <button class="export" id="export" title="Exporter la sélection courante en CSV (ouvrable dans Excel)">Exporter</button>
   </div>
   <div class="count" id="count"></div>
+  <div class="alertes-pays" id="alertesPays"></div>
   <div class="leads" id="leads"></div>
   <footer id="foot"></footer>
 </div>
@@ -1281,6 +1354,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
 </div>
 <script>
 const LEADS = __LEADS_JSON__;
+const ALERTES = __ALERTES_JSON__;
 const META = __META_JSON__;
 const WATCHLIST = __WATCHLIST_JSON__;
 const CONVERSION = __CONVERSION_JSON__;
@@ -2166,7 +2240,30 @@ initMap();
 buildStats();
 buildPeriod();
 buildComptes();
+renderAlertes();
 render();
+
+// Section "Alertes pays" (option A) : bandeau de CONTEXTE, separe des leads.
+// Un changement d'alerte voyageur n'est pas un prospect a contacter : c'est
+// une info qui rend les autres leads de ce pays plus chauds. Pas de score,
+// pas de bouton d'action. Repli silencieux si aucune alerte.
+function renderAlertes(){
+  const box=document.getElementById('alertesPays');
+  if(!box) return;
+  if(!ALERTES || !ALERTES.length){ box.innerHTML=''; return; }
+  const cls=a=>a.sens==='aggravation'?'al-agg':(a.sens==='allegement'?'al-alleg':'al-lat');
+  const fleche=a=>a.sens==='aggravation'?'▲':(a.sens==='allegement'?'▼':'≈');
+  const items=ALERTES.map(a=>`
+    <a class="al-item ${cls(a)}" ${a.lien?`href="${esc(a.lien)}" target="_blank" rel="noopener"`:''}>
+      <span class="al-sens">${fleche(a)}</span>
+      <span class="al-pays">${esc(a.pays)}</span>
+      <span class="al-zone">${esc(a.zone||'')}</span>
+      <span class="al-niv">${esc(a.avant)} → ${esc(a.apres)}</span>
+      ${a.motif?`<span class="al-motif">${esc(a.motif)}</span>`:''}
+    </a>`).join('');
+  box.innerHTML=`<div class="al-titre">Alertes pays récentes (${ALERTES.length})</div>
+    <div class="al-liste">${items}</div>`;
+}
 </script>
 </body>
 </html>"""
