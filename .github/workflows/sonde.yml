@@ -45,21 +45,19 @@ jobs:
         # Le collecteur Prozorro ne depend que de `requests` (deja present).
         run: pip install -r requirements-radar.txt
 
-      # CIBLE 26/07/2026 : re-mesure de l'entonnoir Prozorro apres calibrage.
-      # Cribles ajustes suite a la 1re mesure : ajout du crible categorie
-      # (works,services -- on ecarte goods/livraison) et seuil releve a 3M UAH.
-      # Echantillon borne a 1 jour pour un retour rapide sous le timeout :
-      #   - PROZORRO_DRY_RUN  : aucun LLM, aucune ecriture, aucune memoire ;
-      #   - PROZORRO_JOURS=1  : ne regarde que les avis modifies dans les 24 h ;
-      #   - garde-fous temps/details pour rester dans l'enveloppe du job.
-      # Comparer le nouvel entonnoir (rejet_categorie, densite) a la 1re mesure.
-      - name: Mesurer l'entonnoir Prozorro (dry-run, cribles calibres)
+      # CIBLE 26/07/2026 : nationalite des gagnants Prozorro (attributions).
+      # Le 1er run reel des avis a montre qu'ils sont hors cible (marche public
+      # domestique). Seul gisement ICP plausible : les attributions dont le
+      # gagnant est ETRANGER (deploiement d'expatries). Cette sonde reutilise le
+      # scan teste de prozorro_radar, dumpe awards[].suppliers[] et tranche : la
+      # nationalite est-elle detectable, et quelle part d'etrangers ? Aucun LLM,
+      # aucune ecriture. Lire la SYNTHESE.
+      - name: Sonder les attributions Prozorro (nationalite du gagnant)
         env:
-          PROZORRO_DRY_RUN: "1"
-          PROZORRO_JOURS: "1"
-          PROZORRO_MINUTES_MAX: "12"
-          PROZORRO_MAX_DETAILS: "3000"
-        run: python prozorro_radar.py
+          PROZORRO_JOURS: "3"
+          PROZORRO_MINUTES_MAX: "20"
+          PROZORRO_MAX_DETAILS: "6000"
+        run: python sonde_prozorro_attributions.py
 
       # Veille "signaux faibles" alertes voyageurs FCDO (UK). API GOV.UK
       # Content, JSON public, sans cle. A retirer une fois le collecteur ecrit.
