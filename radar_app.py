@@ -218,10 +218,11 @@ def lire_onglets_pg(conn):
     # Absente = attribution pas encore analysee : le lead garde son score
     # deterministe, la page reste complete.
     analyses_attrib = _onglet(conn, "attributions_analyse")
+    lignes_alertes = _onglet(conn, "alertes_radar")
 
     return (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
             lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
-            lignes_ungm, analyses_attrib)
+            lignes_ungm, analyses_attrib, lignes_alertes)
 
 
 # Quel champ humain pour quel onglet (avis = statut_suivi ; attributions =
@@ -247,7 +248,7 @@ def generer_page(conn):
     """Postgres -> HTML, en reutilisant le moteur du dashboard tel quel."""
     (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
      lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
-     lignes_ungm, analyses_attrib) = lire_onglets_pg(conn)
+     lignes_ungm, analyses_attrib, lignes_alertes) = lire_onglets_pg(conn)
     superposer_statuts(conn, [
         ("ted_radar", lignes_ted), ("bm_radar", lignes_bm),
         ("prive_radar", lignes_prive), ("attributions_radar", lignes_attrib),
@@ -259,7 +260,8 @@ def generer_page(conn):
         lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_ungm,
         analyses_attrib)
     # api_statut=True : sur l'application, le bouton ecrit aussi en base.
-    return dash.generer_html(leads, lignes_watchlist, api_statut=True)
+    return dash.generer_html(leads, lignes_watchlist, api_statut=True,
+                             alertes=lignes_alertes)
 
 
 # ===========================================================================
