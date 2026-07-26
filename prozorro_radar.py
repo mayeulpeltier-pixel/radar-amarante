@@ -80,16 +80,27 @@ TAILLE_PAGE = 100
 # Fenetre glissante : on ne regarde que les avis modifies dans les N derniers
 # jours (defaut ~ l'ecart entre deux runs). Empeche de rejouer tout l'historique.
 PROZORRO_JOURS = float(os.environ.get("PROZORRO_JOURS", "4"))
-# Crible valeur. 1 000 000 UAH ~ 22 000 EUR. Surchargeable.
-SEUIL_UAH = float(os.environ.get("PROZORRO_SEUIL_UAH", "1000000"))
-# Garde-fous de cout (une source lourde : on borne tout).
+# Crible valeur. Releve de 1M a 3M UAH (~66 kEUR) apres la mesure du 26/07 :
+# a 1M, les reparations municipales de routine (1,1-1,6M) passaient ; la vraie
+# reconstruction commence vers 3M. Principal bouton de reglage. Surchargeable.
+SEUIL_UAH = float(os.environ.get("PROZORRO_SEUIL_UAH", "3000000"))
+# Crible categorie (mesure du 26/07) : Prozorro classe en works/services/goods.
+# Pour la these "personnel sur site = besoin surete", works = equipes sur
+# chantier (signal), goods = simple livraison (bruit : combustible, equipement).
+# On ecarte ce qui est EXPLICITEMENT hors liste ; categorie absente = conserve
+# (on ne perd pas un works mal etiquete). Surchargeable.
+CATEGORIES_ADMISES = set(filter(None, (
+    x.strip().lower() for x in
+    os.environ.get("PROZORRO_CATEGORIES", "works,services").split(","))))
+# Garde-fous de cout (une source lourde : on borne tout). MINUTES_MAX releve a
+# 25 apres mesure : un run de 3,5 j ~ 16 min de fetch, 18 coupait trop court.
 MAX_PAGES = int(os.environ.get("PROZORRO_MAX_PAGES", "400"))
 MAX_DETAILS = int(os.environ.get("PROZORRO_MAX_DETAILS", "8000"))
-MINUTES_MAX = float(os.environ.get("PROZORRO_MINUTES_MAX", "18"))
+MINUTES_MAX = float(os.environ.get("PROZORRO_MINUTES_MAX", "25"))
 # Plafond d'analyses LLM par run (les autres attendent le run suivant).
 MAX_AVIS_LLM = int(os.environ.get("PROZORRO_MAX_LLM", "120"))
 # Politesse reseau entre deux details.
-PAUSE_DETAIL = float(os.environ.get("PROZORRO_PAUSE", "0.05"))
+PAUSE_DETAIL = float(os.environ.get("PROZORRO_PAUSE", "0.03"))
 
 # Methodes = bruit connu (petits achats directs / sous-seuil). Liste NOIRE
 # (plus robuste qu'une liste blanche face a l'ajout de nouveaux types).
@@ -152,6 +163,15 @@ def _cpv_admissible(codes):
     return bool(divisions & ted.DIVISIONS_CPV_LARGEMENT_ADMISES)
 
 
+def _categorie_admise(detail):
+    """Crible categorie : on ecarte ce qui est EXPLICITEMENT hors liste (goods).
+    Categorie absente -> conserve (ne pas perdre un works mal etiquete)."""
+    cat = (detail.get("mainProcurementCategory") or "").strip().lower()
+    if not cat:
+        return True
+    return cat in CATEGORIES_ADMISES
+
+
 def _est_attribution(detail):
     """Vrai si un gagnant existe (award actif avec fournisseurs)."""
     for a in (detail.get("awards") or []):
@@ -210,7 +230,7 @@ def collecte(session=None, fetch_liste=None, fetch_detail=None, deja_vus=None):
 
     compteurs = {
         "vus_flux": 0, "deja_connus": 0, "details_lus": 0,
-        "rejet_methode": 0, "rejet_valeur": 0, "rejet_cpv": 0,
+        "rejet_methode": 0, "rejet_categorie": 0, "rejet_valeur": 0, "rejet_cpv": 0,
         "survivants_avis": 0, "survivants_attribution": 0,
         "details_illisibles": 0, "arret": "fin_fenetre",
     }
@@ -263,12 +283,16 @@ def collecte(session=None, fetch_liste=None, fetch_detail=None, deja_vus=None):
             if (detail.get("procurementMethodType") or "") in METHODES_BRUIT:
                 compteurs["rejet_methode"] += 1
                 continue
-            # Crible 2 : valeur.
+            # Crible 2 : categorie (goods = simple livraison, ecarte).
+            if not _categorie_admise(detail):
+                compteurs["rejet_categorie"] += 1
+                continue
+            # Crible 3 : valeur.
             montant_uah, _txt = _valeur_uah(detail)
             if montant_uah is not None and montant_uah < SEUIL_UAH:
                 compteurs["rejet_valeur"] += 1
                 continue
-            # Crible 3 : CPV.
+            # Crible 4 : CPV.
             if not _cpv_admissible(_codes_cpv(detail)):
                 compteurs["rejet_cpv"] += 1
                 continue
@@ -595,6 +619,7 @@ def _afficher_entonnoir(compteurs):
     print("  Details telecharges        : {}".format(c["details_lus"]))
     print("  Details illisibles         : {}".format(c["details_illisibles"]))
     print("  Rejetes -- methode (bruit) : {}".format(c["rejet_methode"]))
+    print("  Rejetes -- categorie goods : {}".format(c["rejet_categorie"]))
     print("  Rejetes -- valeur < seuil  : {}".format(c["rejet_valeur"]))
     print("  Rejetes -- CPV hors cible  : {}".format(c["rejet_cpv"]))
     print("  SURVIVANTS avis (ouverts)  : {}".format(c["survivants_avis"]))
