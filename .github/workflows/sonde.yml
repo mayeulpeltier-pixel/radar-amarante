@@ -45,13 +45,15 @@ jobs:
         # Le collecteur Prozorro ne depend que de `requests` (deja present).
         run: pip install -r requirements-radar.txt
 
-      # CIBLE 26/07/2026 : mesure de l'entonnoir Prozorro (Option A).
+      # CIBLE 26/07/2026 : re-mesure de l'entonnoir Prozorro apres calibrage.
+      # Cribles ajustes suite a la 1re mesure : ajout du crible categorie
+      # (works,services -- on ecarte goods/livraison) et seuil releve a 3M UAH.
       # Echantillon borne a 1 jour pour un retour rapide sous le timeout :
       #   - PROZORRO_DRY_RUN  : aucun LLM, aucune ecriture, aucune memoire ;
       #   - PROZORRO_JOURS=1  : ne regarde que les avis modifies dans les 24 h ;
       #   - garde-fous temps/details pour rester dans l'enveloppe du job.
-      # Extrapoler ensuite le volume d'un vrai run (lundi+jeudi ~ 3-4 j).
-      - name: Mesurer l'entonnoir Prozorro (dry-run, Option A)
+      # Comparer le nouvel entonnoir (rejet_categorie, densite) a la 1re mesure.
+      - name: Mesurer l'entonnoir Prozorro (dry-run, cribles calibres)
         env:
           PROZORRO_DRY_RUN: "1"
           PROZORRO_JOURS: "1"
