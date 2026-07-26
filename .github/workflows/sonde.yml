@@ -50,3 +50,12 @@ jobs:
 
       - name: Sonder l'IDB (autopsie du blocage et contournements)
         run: python sonde_idb.py
+
+      # CIBLE 23/07/2026 : alertes voyageurs FCDO (UK). Premiere brique de la
+      # veille "signaux faibles" (avant ACLED et projets industriels). API
+      # GOV.UK Content, JSON public, sans cle, Open Government Licence v3.0.
+      # La sonde derive la liste des pays du perimetre radar (option A) et
+      # revele : ou vit alert_status, sous quelle forme, et quels pays du
+      # perimetre ont un slug FCDO. Aucune ecriture. Lire la SYNTHESE finale.
+      - name: Sonder les alertes voyageurs FCDO
+        run: python sonde_alertes.py
