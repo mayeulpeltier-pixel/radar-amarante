@@ -37,9 +37,10 @@ DETAILS = {
            "procurementMethodType": "aboveThreshold",
            "value": {"amount": 5000000, "currency": "UAH"},
            "items": [{"classification": {"scheme": "ДК021", "id": "80000000-4"}}]},
-    # Survivant AVIS ouvert (division 45 admise).
+    # Survivant AVIS ouvert (division 45 admise, categorie works).
     "t4": {"id": "t4", "tenderID": "UA-4", "status": "active.tendering",
            "procurementMethodType": "aboveThreshold",
+           "mainProcurementCategory": "works",
            "title": "Реконструкція мосту",
            "value": {"amount": 5000000, "currency": "UAH"},
            "procuringEntity": {"name": "Служба відновлення",
@@ -55,6 +56,13 @@ DETAILS = {
            "value": {"amount": 10000000, "currency": "UAH"},
            "items": [{"classification": {"scheme": "ДК021", "id": "09210000-4"}}],
            "awards": [{"status": "active", "suppliers": [{"name": "ТОВ Приклад"}]}]},
+    # Crible categorie : goods (livraison) -> rejet_categorie, meme au-dessus du
+    # seuil et sur une division admise (le combustible passait avant ce crible).
+    "t6": {"id": "t6", "tenderID": "UA-6", "status": "active.tendering",
+           "procurementMethodType": "aboveThreshold",
+           "mainProcurementCategory": "goods",
+           "value": {"amount": 9000000, "currency": "UAH"},
+           "items": [{"classification": {"scheme": "ДК021", "id": "09110000-3"}}]},
 }
 
 
@@ -63,7 +71,7 @@ def _feed(url):
     if "offset=PAGE2" in url:
         return {"data": [{"id": "vieux", "dateModified": _iso(30)}]}
     return {
-        "data": [{"id": k, "dateModified": _iso(1)} for k in ("t1", "t2", "t3", "t4", "t5")],
+        "data": [{"id": k, "dateModified": _iso(1)} for k in ("t1", "t2", "t3", "t4", "t5", "t6")],
         "next_page": {"uri": pz.ENDPOINT_LISTE + "?descending=1&limit=100&offset=PAGE2"},
     }
 
@@ -108,6 +116,11 @@ class TestCribles(unittest.TestCase):
         self.assertTrue(pz._est_attribution(DETAILS["t5"]))
         self.assertFalse(pz._est_attribution(DETAILS["t4"]))
 
+    def test_categorie_admise(self):
+        self.assertTrue(pz._categorie_admise(DETAILS["t4"]))    # works
+        self.assertFalse(pz._categorie_admise(DETAILS["t6"]))   # goods
+        self.assertTrue(pz._categorie_admise(DETAILS["t2"]))    # absente -> conserve
+
 
 class TestEntonnoir(unittest.TestCase):
     def test_collecte_complet(self):
@@ -116,9 +129,10 @@ class TestEntonnoir(unittest.TestCase):
         # Un seul avis ouvert survivant (t4), une seule attribution (t5).
         self.assertEqual(c["survivants_avis"], 1)
         self.assertEqual(c["survivants_attribution"], 1)
-        self.assertEqual(c["rejet_methode"], 1)   # t1
-        self.assertEqual(c["rejet_valeur"], 1)     # t2
-        self.assertEqual(c["rejet_cpv"], 1)        # t3
+        self.assertEqual(c["rejet_methode"], 1)      # t1
+        self.assertEqual(c["rejet_categorie"], 1)    # t6 (goods)
+        self.assertEqual(c["rejet_valeur"], 1)       # t2
+        self.assertEqual(c["rejet_cpv"], 1)          # t3
         self.assertEqual(len(avis), 1)
         self.assertEqual(len(attributions), 1)
         self.assertEqual(c["arret"], "fin_fenetre")   # stoppe sur l'entree vieille
