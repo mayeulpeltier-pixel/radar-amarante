@@ -224,6 +224,30 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python isdb_radar.py
 
+      # 4d-bis) Avis PROZORRO (Ukraine) : e-procurement public ukrainien, zone
+      #     COEUR (reconstruction, deploiements massifs). Ecrit dans son propre
+      #     onglet prozorro_radar : aucun cablage dashboard partage. Isole : un
+      #     echec ici n'empeche ni le dashboard ni la publication.
+      #     Entonnoir valide DEUX FOIS en dry-run (densite ~3% apres le crible
+      #     categorie works/services + seuil 3M UAH). Le seul inconnu restant est
+      #     la qualite du LLM sur du texte ukrainien et le chemin d'ecriture.
+      #     DEMARRE DONC BRIDE : PROZORRO_MAX_LLM bas au premier run reel, pour
+      #     inspecter quelques lignes avant d'ouvrir en grand. Relever a 120 (ou
+      #     retirer la ligne) apres verification du premier run. PROZORRO_DRY_RUN=1
+      #     re-mesure l'entonnoir sans rien ecrire. Meme prudence que IDB/IsDB.
+      #     Les ATTRIBUTIONS Prozorro (titulaires nommes) = tranche suivante.
+      - name: Collecter les avis Prozorro (Ukraine)
+        if: always() && steps.cle.outcome == 'success'
+        env:
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          # Premier run reel BRIDE : quelques analyses suffisent pour juger la
+          # qualite ukrainienne et l'ecriture. Relever a 120 (ou retirer) ensuite.
+          PROZORRO_MAX_LLM: "15"
+        run: python prozorro_radar.py
+
       # 4e) Analyse LLM des attributions (attributions_analyse.py).
       #     Doit tourner APRES les cinq collecteurs d'attributions (leurs lignes
       #     brutes sont sa source) et AVANT le dashboard (qui joint le resultat).
