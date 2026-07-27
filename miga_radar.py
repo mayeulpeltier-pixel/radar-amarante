@@ -150,23 +150,53 @@ def _liens_projets(html):
     return [(l, (titres.get(l) or "").strip()) for l in liens]
 
 
-def _champ(html, label):
-    """Valeur d'un champ Drupal <div class="field__label">LABEL</div> ... item."""
-    m = re.search(
-        r'field__label">\s*' + re.escape(label) + r'\s*</div>.{0,600}?'
-        r'field[_-]+item[^>]*>\s*(.*?)\s*</div>', html, re.S)
-    if not m:
-        return ""
-    return re.sub(r"<[^>]+>", " ", m.group(1)).strip()
+def _champ(html, *labels):
+    """Valeur d'un champ, en essayant plusieurs libelles (alias). Deux motifs :
+    1) MIGA precis (field__label / field__item) ;
+    2) tolerant au balisage (libelle puis prochain texte), pour les fiches
+       EXTERNES (ex. IFC : "Company Name" au lieu de "Guarantee Holder").
+    Le 1er alias qui donne une valeur non vide gagne."""
+    for label in labels:
+        m = re.search(
+            r'field__label">\s*' + re.escape(label) + r'\s*</div>.{0,600}?'
+            r'field[_-]+item[^>]*>\s*(.*?)\s*</div>', html, re.S)
+        if not m:
+            m = re.search(
+                re.escape(label) + r'\s*</[a-zA-Z0-9]+>\s*(?:<[^>]+>\s*)*([^<>]{2,200}?)\s*<',
+                html)
+        if m:
+            valeur = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", m.group(1))).strip()
+            if valeur:
+                return valeur
+    return ""
+
+
+def _est_fiche_externe(html):
+    """La fiche MIGA redirige parfois vers un ESRS d'une autre institution
+    (IFC surtout), au balisage different. On le detecte pour basculer en mode
+    extraction texte."""
+    marqueurs = ("Environmental &amp; Social Review Summary",
+                 "Environmental & Social Review Summary",
+                 "disclosures.ifc.org", "Company Name")
+    a_gh_miga = 'field__label">Guarantee Holder' in html
+    return (not a_gh_miga) and any(m in html for m in marqueurs)
 
 
 def _description(html):
-    """Texte riche apres 'Project Description'."""
+    """Texte riche du projet. MIGA : le <p> apres 'Project Description'.
+    Fiche externe (IFC) : tout le texte apres le titre 'Project Description'
+    (balisage inconnu -> on prend le bloc suivant et on retire les balises).
+    Ce texte suffit au LLM pour scorer meme sans champs structures."""
     m = re.search(r"Project Description\s*</strong>\s*</p>\s*<p>(.*?)</p>", html, re.S)
-    if not m:
-        m = re.search(r'class="lead">(.*?)</div>', html, re.S)
-    texte = re.sub(r"<[^>]+>", " ", m.group(1)) if m else ""
-    texte = re.sub(r"\s+", " ", texte).strip()
+    if m:
+        brut = m.group(1)
+    else:
+        i = html.find("Project Description")
+        brut = html[i + len("Project Description"): i + 6000] if i != -1 else ""
+        if not brut:
+            m2 = re.search(r'class="lead">(.*?)</div>', html, re.S)
+            brut = m2.group(1) if m2 else ""
+    texte = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", brut)).strip()
     if len(texte) > ted.MAX_CARACTERES_DESCRIPTION:
         texte = texte[:ted.MAX_CARACTERES_DESCRIPTION].rstrip() + " [...]"
     return texte
@@ -183,43 +213,47 @@ def _type_document(description, html):
 
 
 def parser_fiche(slug, titre_liste, html):
-    """Fiche detail -> avis normalise (forme commune au coeur TED)."""
-    gh = _champ(html, "Guarantee Holder")
+    """Fiche detail -> avis normalise (forme commune au coeur TED). Gere les
+    fiches MIGA ET les fiches EXTERNES (IFC) vers lesquelles MIGA redirige."""
+    externe = _est_fiche_externe(html)
+    # Alias : MIGA "Guarantee Holder" / IFC "Company Name" ; MIGA "Host Country"
+    # / IFC "Country". Le pays a un repli titre de toute facon.
+    gh = _champ(html, "Guarantee Holder", "Company Name")
     ic = _champ(html, "Investor Country")
-    hc = _champ(html, "Host Country")
+    hc = _champ(html, "Host Country", "Country")
     cat = _champ(html, "Environmental Category")
-    statut = _champ(html, "Project Status")
+    statut = _champ(html, "Project Status", "Status")
     fy = _champ(html, "Fiscal Year")
-    ptype = _champ(html, "Project Type")
+    ptype = _champ(html, "Project Type", "Sector")
     desc = _description(html)
 
     titre = titre_liste or slug.rsplit("/", 1)[-1].replace("-", " ").strip().title()
-    # Resolution pays hote : champ Host Country, sinon repli sur le titre puis le
-    # slug (certaines fiches ne parsent pas le champ ; le pays est souvent dans
-    # le titre, ex. "Setrag Gabon", "Timor Leste Solar").
+    # Resolution pays hote : champ, sinon repli sur le titre puis le slug
+    # (ex. "Setrag Gabon", "Timor Leste Solar").
     iso3 = _iso3_pays(hc) or _iso3_pays(titre) or _iso3_pays(slug.replace("-", " "))
-    # publication_number NORMALISE : on retire le suffixe Drupal -\d+ pour que
-    # les doublons (SPG puis Brief du meme projet) partagent une seule ligne,
-    # qui evolue au lieu de se dupliquer.
+    # publication_number NORMALISE (suffixe Drupal -\d+ retire) : les doublons
+    # SPG/Brief d'un meme projet partagent une ligne, qui evolue.
     tail = re.sub(r"-\d+$", "", slug.rsplit("/", 1)[-1])
 
-    contexte = ("Investisseur (Guarantee Holder) : {} ({}). Pays hote : {}. "
-                "Categorie E&S : {}. Annee fiscale : {}. {}").format(
-        gh or "n.c.", ic or "n.c.", hc or "n.c.", cat or "n.c.", fy or "n.c.", desc)
+    origine = "fiche IFC co-financee" if externe else "fiche MIGA"
+    contexte = ("Source : {}. Acteur (Guarantee Holder / Company Name) : {} ({}). "
+                "Pays hote : {}. Categorie E&S : {}. {}").format(
+        origine, gh or "n.c.", ic or "n.c.", hc or iso3 or "n.c.", cat or "n.c.", desc)
 
     return {
         "publication_number": "MIGA:" + tail,
         "titre": titre[:300],
-        "acheteur": gh or "Investisseur MIGA (non precise)",
+        "acheteur": gh or ("Projet co-finance IFC (voir description)" if externe
+                           else "Investisseur MIGA (non precise)"),
         "investisseur_pays": ic,
         "pays_acheteur": iso3 or ic,
-        "pays_execution": hc or iso3 or "n.c.",  # nom lisible, sinon ISO3 resolu
-        "pays_iso3": iso3,                     # code (scoring zone)
+        "pays_execution": hc or iso3 or "n.c.",
+        "pays_iso3": iso3,
         "pays_execution_incertitude": not bool(iso3),
-        "cpv": "",                             # MIGA n'a pas de CPV (comme ReliefWeb)
+        "cpv": "",
         "description": contexte,
         "categorie_es": cat,
-        "type_document": _type_document(desc, html),
+        "type_document": ("fiche IFC (ESRS)" if externe else _type_document(desc, html)),
         "annee_fiscale": fy,
         "project_type": ptype,
         "statut": statut,
@@ -291,7 +325,8 @@ def collecte(session=None, fetch_liste=None, fetch_fiche=None, deja_vus=None):
             if PAUSE and fetch_fiche is None:
                 time.sleep(PAUSE)
             a = parser_fiche(slug, titre, fiche_html)
-            if (a.get("categorie_es") or "").upper() in CATEGORIES_EXCLUES:
+            cat = (a.get("categorie_es") or "").upper().strip()
+            if cat and any(cat.startswith(x) for x in CATEGORIES_EXCLUES):
                 compteurs["rejet_categorie_fi"] += 1
                 continue
             avis.append(a)
