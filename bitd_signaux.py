@@ -33,6 +33,7 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 
 import ted_complet_v14 as ted
+import radar_resilience
 
 try:
     import radar_dashboard as _dash
@@ -136,7 +137,7 @@ def lire_whitelist(sheet_id, fichier_cs):
         from google.oauth2.service_account import Credentials
         portee = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
         creds = Credentials.from_service_account_file(fichier_cs, scopes=portee)
-        classeur = gspread.authorize(creds).open_by_key(sheet_id)
+        classeur = radar_resilience.avec_retry(lambda: gspread.authorize(creds).open_by_key(sheet_id), "ouverture classeur")
         valeurs = classeur.worksheet(NOM_ONGLET_WHITELIST).get_all_values()
     except Exception as e:
         print("  (info) Whitelist illisible ({}). Moteur prive inactif.".format(e))
@@ -393,7 +394,7 @@ def cles_evenements_existantes(sheet_id, fichier_cs):
         from google.oauth2.service_account import Credentials
         portee = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
         creds = Credentials.from_service_account_file(fichier_cs, scopes=portee)
-        classeur = gspread.authorize(creds).open_by_key(sheet_id)
+        classeur = radar_resilience.avec_retry(lambda: gspread.authorize(creds).open_by_key(sheet_id), "ouverture classeur")
         valeurs = classeur.worksheet(NOM_ONGLET_PRIVE).get_all_values()
     except Exception:
         return set()
@@ -430,7 +431,7 @@ def ecrire_resultats(feuille, resultats):
         return 0
     aujourd = datetime.date.today().isoformat()
     lignes = [r["ligne"] + ["nouveau", aujourd] for r in resultats]
-    feuille.append_rows(lignes, value_input_option="RAW")
+    radar_resilience.avec_retry(lambda: feuille.append_rows(lignes, value_input_option="RAW"), "ecriture append_rows")
     return len(lignes)
 
 
@@ -446,7 +447,7 @@ def charger_vus(sheet_id, fichier_cs):
         from google.oauth2.service_account import Credentials
         portee = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
         creds = Credentials.from_service_account_file(fichier_cs, scopes=portee)
-        classeur = gspread.authorize(creds).open_by_key(sheet_id)
+        classeur = radar_resilience.avec_retry(lambda: gspread.authorize(creds).open_by_key(sheet_id), "ouverture classeur")
         valeurs = classeur.worksheet(NOM_ONGLET_VUS).get_all_values()
     except Exception:
         return set()
@@ -468,7 +469,7 @@ def persister_vus(classeur, nouveaux):
         feuille = classeur.add_worksheet(title=NOM_ONGLET_VUS, rows=MAX_VUS_MEMOIRE + 100, cols=2)
         feuille.update([["article_hash", "date_vu"]])
     aujourd = datetime.date.today().isoformat()
-    feuille.append_rows([[h, aujourd] for h in nouveaux], value_input_option="RAW")
+    radar_resilience.avec_retry(lambda: feuille.append_rows([[h, aujourd] for h in nouveaux], value_input_option="RAW"), "ecriture append_rows")
     # Plafonnement : on ne garde que les MAX_VUS_MEMOIRE plus recents.
     valeurs = feuille.get_all_values()
     corps = [r for r in valeurs if r and r[0] != "article_hash"]
@@ -487,7 +488,7 @@ def lire_curseur(sheet_id, fichier_cs):
         from google.oauth2.service_account import Credentials
         portee = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
         creds = Credentials.from_service_account_file(fichier_cs, scopes=portee)
-        classeur = gspread.authorize(creds).open_by_key(sheet_id)
+        classeur = radar_resilience.avec_retry(lambda: gspread.authorize(creds).open_by_key(sheet_id), "ouverture classeur")
         for row in classeur.worksheet(NOM_ONGLET_ETAT).get_all_values():
             if row and str(row[0]).strip() == "bitd_curseur":
                 return int(str(row[1]).strip())
