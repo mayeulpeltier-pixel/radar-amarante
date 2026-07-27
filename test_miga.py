@@ -106,6 +106,36 @@ class TestResolutionPays(unittest.TestCase):
         self.assertEqual(a["pays_iso3"], "NGA")
         self.assertEqual(mg.avis_pour_scoring(a)["pays_execution"], "NGA")
 
+    def test_fallback_pays_par_titre(self):
+        # Fiche sans champ Host Country parsable : le pays vient du titre.
+        fiche = ('<div class="field__label">Guarantee Holder</div>'
+                 '<div class="field__item">SETRAG</div>'
+                 '<div class="field__label">Environmental Category</div>'
+                 '<div class="field__item">B</div>'
+                 '<p><strong>Project Description</strong></p><p>Railway concession.</p>')
+        a = mg.parser_fiche("/project/setrag-gabon-3", "Setrag Gabon 3", fiche)
+        self.assertEqual(a["pays_iso3"], "GAB")
+
+
+class TestDedup(unittest.TestCase):
+    def test_dedup_slug_normalise(self):
+        # gccia-transmission-line et gccia-transmission-line-0 = meme projet.
+        liste = ('<div class="title"><a href="/project/gccia-transmission-line">GCCIA</a></div>'
+                 '<div class="title"><a href="/project/gccia-transmission-line-0">GCCIA</a></div>')
+        fiche_gccia = ('<div class="field__label">Host Country </div>'
+                       '<div class="field--items"><div class="field--item">Iraq</div></div>'
+                       '<div class="field__label">Environmental Category</div>'
+                       '<div class="field__item">A</div>'
+                       '<p><strong>Project Description</strong></p><p>Transmission line, application.</p>')
+        avis, c = mg.collecte(
+            session=object(),
+            fetch_liste=lambda p: liste if p == 0 else "",
+            fetch_fiche=lambda slug: fiche_gccia)
+        self.assertEqual(c["fiches_lues"], 1)       # le doublon -0 est saute avant fetch
+        self.assertEqual(len(avis), 1)
+        self.assertEqual(avis[0]["publication_number"], "MIGA:gccia-transmission-line")
+        self.assertEqual(avis[0]["pays_iso3"], "IRQ")
+
 
 class TestTypeDocument(unittest.TestCase):
     def test_detection(self):
