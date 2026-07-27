@@ -68,6 +68,7 @@ import urllib.error
 from datetime import date, datetime, timezone
 
 import ted_complet_v14 as ted
+import radar_resilience
 
 
 # ===========================================================================
@@ -342,9 +343,8 @@ def ecrire_signaux(leads):
         try:
             import gspread
             from google.oauth2.service_account import Credentials
-            creds = Credentials.from_service_account_file(
-                fichier, scopes=["https://www.googleapis.com/auth/spreadsheets"])
-            classeur = gspread.authorize(creds).open_by_key(sheet_id)
+            # Ouverture protegee par retry (503/429).
+            classeur = radar_resilience.ouvrir_classeur(sheet_id, fichier)
             try:
                 f = classeur.worksheet(NOM_ONGLET)
             except Exception:
