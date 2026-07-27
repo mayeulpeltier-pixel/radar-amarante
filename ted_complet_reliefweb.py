@@ -583,9 +583,9 @@ def ecrire_resultats_rw(feuille, resultats):
             nouvelles_lignes.append(ligne_valeurs + ["nouveau", date.today().isoformat()])
             nb_nouveaux += 1
     if maj_groupees:
-        feuille.batch_update(maj_groupees)
+        radar_resilience.avec_retry(lambda: feuille.batch_update(maj_groupees), "ecriture batch_update")
     if nouvelles_lignes:
-        feuille.append_rows(nouvelles_lignes, value_input_option="RAW")
+        radar_resilience.avec_retry(lambda: feuille.append_rows(nouvelles_lignes, value_input_option="RAW"), "ecriture append_rows")
     # Double ecriture (etape 2 du cap produit, 21/07/2026) : miroir Postgres
     # best-effort, sous FORME PLATE (colonnes du Sheet) : la forme canonique
     # que lit le dashboard. On passe TOUT (le miroir a sa propre memoire,
