@@ -246,6 +246,26 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python prozorro_radar.py
 
+      # 4d-ter) MIGA (garanties risque politique, Groupe BM) -- Vague 2.
+      #     Investissements prives ETRANGERS assures contre le risque politique :
+      #     par statut, le Guarantee Holder est un acteur etranger qui deploie
+      #     capital et equipes dans un pays hote a risque = coeur de cible. Les
+      #     SPG (proposes) sont un signal PRECOCE (30-60 j avant board). Ecrit
+      #     dans son propre onglet miga_radar (aucun cablage dashboard partage).
+      #     Isole : un echec ici n'empeche ni le dashboard ni la publication.
+      #     Entonnoir valide en debug (crible categorie FI retire ~48% du bruit
+      #     financier ; resolution pays hote -> multiplicateur de zone reel).
+      #     Volume faible : pas de bridage. RADAR_MIGA_DEBUG=1 pour revalider
+      #     l'entonnoir sans LLM ni ecriture ; RADAR_MIGA=0 pour couper.
+      - name: Collecter les projets MIGA (garanties risque politique)
+        if: always() && steps.cle.outcome == 'success'
+        env:
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python miga_radar.py
+
       # 4e) Analyse LLM des attributions (attributions_analyse.py).
       #     Doit tourner APRES les cinq collecteurs d'attributions (leurs lignes
       #     brutes sont sa source) et AVANT le dashboard (qui joint le resultat).
