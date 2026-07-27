@@ -56,6 +56,12 @@ jobs:
       # sonde_miga.py supprimee (jetable). Prochaine cible a sonder : brancher
       # ici le sonde_<source>.py voulu.
 
+      # CIBLE 27/07/2026 : valider le fix MIGA/IFC sur Setrag/Timor (re-parse en
+      # ignorant la memoire) et dumper le balisage brut d'une fiche IFC (recon
+      # pour un futur collecteur IFC dedie). Aucun LLM, aucune ecriture.
+      - name: Valider le fix MIGA/IFC + balisage IFC
+        run: python sonde_miga_ifc.py
+
       # Veille "signaux faibles" alertes voyageurs FCDO (UK). API GOV.UK
       # Content, JSON public, sans cle. A retirer une fois le collecteur ecrit.
       - name: Sonder les alertes voyageurs FCDO
