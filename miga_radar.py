@@ -213,7 +213,7 @@ def parser_fiche(slug, titre_liste, html):
         "acheteur": gh or "Investisseur MIGA (non precise)",
         "investisseur_pays": ic,
         "pays_acheteur": iso3 or ic,
-        "pays_execution": hc or "n.c.",       # nom lisible (affichage + prompt)
+        "pays_execution": hc or iso3 or "n.c.",  # nom lisible, sinon ISO3 resolu
         "pays_iso3": iso3,                     # code (scoring zone)
         "pays_execution_incertitude": not bool(iso3),
         "cpv": "",                             # MIGA n'a pas de CPV (comme ReliefWeb)
