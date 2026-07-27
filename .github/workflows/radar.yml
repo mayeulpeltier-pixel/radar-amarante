@@ -224,28 +224,6 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python isdb_radar.py
 
-      # 4d-bis) Avis PROZORRO (Ukraine) -- DESACTIVE le 26/07/2026 apres verdict.
-      #     Trois sondes ont tranche : (1) entonnoir sain (~3%), (2) le LLM lit
-      #     l'ukrainien, MAIS (3) les avis sont du marche public DOMESTIQUE
-      #     (acheteur toujours public) et les 38 attributions ICP-pertinentes
-      #     examinees etaient gagnees a 38/38 par des entreprises UKRAINIENNES
-      #     (0 etranger, 100% UA-EDR). Or le seul prospect Amarante serait un
-      #     titulaire ETRANGER (expatries a proteger). Les contractants etrangers
-      #     de la reconstruction passent par les BAILLEURS (BM/EBRD/IFC), deja
-      #     captes -- pas par Prozorro. Conclusion : Prozorro dedouble du deja-vu
-      #     et ajoute du domestique hors cible.
-      #     Code garde DORMANT (pipeline cyrillique reutilisable si un jour on
-      #     vise la reconstruction domestique). REACTIVER = RADAR_PROZORRO="1".
-      - name: Collecter les avis Prozorro (Ukraine)
-        if: always() && steps.cle.outcome == 'success'
-        env:
-          RADAR_PROZORRO: "1"          # coupe : le collecteur sort avant tout fetch
-          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
-          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: python prozorro_radar.py
-
       # 4d-ter) MIGA (garanties risque politique, Groupe BM) -- Vague 2.
       #     Investissements prives ETRANGERS assures contre le risque politique :
       #     par statut, le Guarantee Holder est un acteur etranger qui deploie
