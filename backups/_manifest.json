@@ -1,5 +1,5 @@
 {
-  "genere_le": "2026-07-26T22:59:11+00:00",
+  "genere_le": "2026-07-27T23:02:34+00:00",
   "onglets": [
     {
       "onglet": "Feuille 1",
@@ -25,14 +25,14 @@
     {
       "onglet": "ted_radar",
       "fichier": "ted_radar.csv",
-      "lignes": 70,
+      "lignes": 72,
       "colonnes": 32,
       "erreur": null
     },
     {
       "onglet": "bm_radar",
       "fichier": "bm_radar.csv",
-      "lignes": 612,
+      "lignes": 613,
       "colonnes": 35,
       "erreur": null
     },
@@ -81,7 +81,7 @@
     {
       "onglet": "attributions_radar",
       "fichier": "attributions_radar.csv",
-      "lignes": 981,
+      "lignes": 986,
       "colonnes": 17,
       "erreur": null
     },
@@ -95,7 +95,7 @@
     {
       "onglet": "afdb_radar",
       "fichier": "afdb_radar.csv",
-      "lignes": 120,
+      "lignes": 125,
       "colonnes": 32,
       "erreur": null
     },
@@ -109,36 +109,43 @@
     {
       "onglet": "reliefweb_radar",
       "fichier": "reliefweb_radar.csv",
-      "lignes": 783,
+      "lignes": 833,
       "colonnes": 34,
       "erreur": null
     },
     {
       "onglet": "ungm_radar",
       "fichier": "ungm_radar.csv",
-      "lignes": 571,
+      "lignes": 608,
       "colonnes": 32,
       "erreur": null
     },
     {
       "onglet": "attributions_analyse",
       "fichier": "attributions_analyse.csv",
-      "lignes": 751,
+      "lignes": 986,
       "colonnes": 17,
       "erreur": null
     },
     {
       "onglet": "alertes_radar",
       "fichier": "alertes_radar.csv",
-      "lignes": 45,
+      "lignes": 59,
       "colonnes": 11,
       "erreur": null
     },
     {
       "onglet": "prozorro_radar",
       "fichier": "prozorro_radar.csv",
-      "lignes": 16,
+      "lignes": 76,
       "colonnes": 35,
+      "erreur": null
+    },
+    {
+      "onglet": "miga_radar",
+      "fichier": "miga_radar.csv",
+      "lignes": 22,
+      "colonnes": 33,
       "erreur": null
     }
   ]
