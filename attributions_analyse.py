@@ -74,6 +74,7 @@ import sys
 from datetime import date
 
 import ted_complet_v14 as ted
+import radar_resilience
 import bm_attributions as bma
 
 
@@ -420,9 +421,8 @@ def ouvrir_feuille(sheet_id, fichier, nom_onglet=NOM_ONGLET, colonnes=None):
     import gspread
     from google.oauth2.service_account import Credentials
     colonnes = colonnes or COLONNES
-    creds = Credentials.from_service_account_file(
-        fichier, scopes=["https://www.googleapis.com/auth/spreadsheets"])
-    classeur = gspread.authorize(creds).open_by_key(sheet_id)
+    # Ouverture protegee par retry (503/429).
+    classeur = radar_resilience.ouvrir_classeur(sheet_id, fichier)
     try:
         return classeur.worksheet(nom_onglet)
     except Exception:
