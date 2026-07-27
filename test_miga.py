@@ -192,5 +192,48 @@ class TestSchemaSheet(unittest.TestCase):
         self.assertEqual(len(mg.ligne_depuis_resultat(r)), len(mg.COLONNES))
 
 
+class TestFicheExterne(unittest.TestCase):
+    # Fiche IFC (redirection MIGA -> disclosures.ifc.org), balisage different :
+    # "Company Name" au lieu de "Guarantee Holder", pas de field__item.
+    FICHE_IFC = (
+        '<h2>Environmental &amp; Social Review Summary</h2>'
+        '<strong>Project Number</strong> <div>49419</div>'
+        "<strong>Company Name</strong> <div>SOCIETE D'EXPLOITATION DU TRANSGABONAIS</div>"
+        '<strong>Country</strong> <div>Gabon</div>'
+        '<strong>Environmental Category</strong> <div>A - Significant</div>'
+        '<strong>Status</strong> <div>Pending Disbursement</div>'
+        '<strong>Sector</strong> <div>Rail Transportation</div>'
+        '<h2>Project Description</h2>'
+        '<p>SETRAG operates a 648 km railway in Gabon, 40% owned by Meridiam and '
+        'part of the Eramet Group. Phase III comprises EUR 704 million of works. '
+        'Contractors will deploy 150 to 200 persons across sites. SETRAG employs '
+        'over 190 security agents from private security providers.</p>')
+
+    def test_detection_externe(self):
+        self.assertTrue(mg._est_fiche_externe(self.FICHE_IFC))
+        self.assertFalse(mg._est_fiche_externe(FICHE_FI))     # vraie fiche MIGA
+
+    def test_parsing_ifc_recupere_le_fort(self):
+        a = mg.parser_fiche("/project/setrag-gabon-3", "Setrag Gabon 3", self.FICHE_IFC)
+        self.assertEqual(a["pays_iso3"], "GAB")               # via Country ou titre
+        self.assertIn("SOCIETE", a["acheteur"])                # Company Name recupere
+        self.assertTrue(a["categorie_es"].upper().startswith("A"))
+        self.assertEqual(a["type_document"], "fiche IFC (ESRS)")
+        # Le texte riche part au LLM : sponsors et securite existante presents.
+        self.assertIn("Meridiam", a["description"])
+        self.assertIn("security agents", a["description"])
+
+    def test_ifc_non_ecarte_par_crible_fi(self):
+        # Categorie "A - Significant" ne doit PAS tomber sur le crible FI.
+        avis, c = mg.collecte(
+            session=object(),
+            fetch_liste=lambda p: ('<div class="title"><a href="/project/setrag-gabon-3">'
+                                   'Setrag Gabon 3</a></div>') if p == 0 else "",
+            fetch_fiche=lambda slug: self.FICHE_IFC)
+        self.assertEqual(c["rejet_categorie_fi"], 0)
+        self.assertEqual(c["retenus"], 1)
+        self.assertEqual(avis[0]["pays_iso3"], "GAB")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
