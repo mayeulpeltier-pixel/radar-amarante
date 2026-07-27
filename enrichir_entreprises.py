@@ -38,6 +38,7 @@ import datetime
 import unicodedata
 
 import ted_complet_v14 as ted
+import radar_resilience
 
 try:
     import bitd_signaux as bs
@@ -303,7 +304,7 @@ def entreprises_deja_enrichies(sheet_id, fichier_cs):
         from google.oauth2.service_account import Credentials
         portee = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
         creds = Credentials.from_service_account_file(fichier_cs, scopes=portee)
-        classeur = gspread.authorize(creds).open_by_key(sheet_id)
+        classeur = radar_resilience.avec_retry(lambda: gspread.authorize(creds).open_by_key(sheet_id), "ouverture classeur")
         valeurs = classeur.worksheet(NOM_ONGLET_ENRICHIES).get_all_values()
     except Exception:
         return set()
@@ -520,7 +521,7 @@ def pass_contacts_hunter(classeur, whitelist, fetch=None):
         feuille = classeur.add_worksheet(title=NOM_ONGLET_CONTACTS, rows=500,
                                          cols=len(COLONNES_CONTACTS))
         feuille.update([COLONNES_CONTACTS])
-    feuille.append_rows(nouveaux, value_input_option="RAW")
+    radar_resilience.avec_retry(lambda: feuille.append_rows(nouveaux, value_input_option="RAW"), "ecriture append_rows")
     trouves = sum(1 for r in nouveaux if r[1])
     print("Hunter : {} tentative(s), {} email(s) trouve(s), ecrits dans '{}'.".format(
         len(nouveaux), trouves, NOM_ONGLET_CONTACTS))
@@ -534,7 +535,7 @@ def _ouvrir_classeur_ro(sheet_id, fichier_cs):
     from google.oauth2.service_account import Credentials
     portee = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
     creds = Credentials.from_service_account_file(fichier_cs, scopes=portee)
-    return gspread.authorize(creds).open_by_key(sheet_id)
+    return radar_resilience.avec_retry(lambda: gspread.authorize(creds).open_by_key(sheet_id), "ouverture classeur")
 
 
 def _lire_valeurs(classeur, nom):
@@ -673,10 +674,10 @@ def main():
     from google.oauth2.service_account import Credentials
     portee = ["https://www.googleapis.com/auth/spreadsheets"]
     creds = Credentials.from_service_account_file(fichier, scopes=portee)
-    classeur = gspread.authorize(creds).open_by_key(sheet_id)
+    classeur = radar_resilience.avec_retry(lambda: gspread.authorize(creds).open_by_key(sheet_id), "ouverture classeur")
     if lignes:
         feuille = ouvrir_ou_creer_onglet(classeur)
-        feuille.append_rows(lignes, value_input_option="RAW")
+        radar_resilience.avec_retry(lambda: feuille.append_rows(lignes, value_input_option="RAW"), "ecriture append_rows")
         print("{} entreprises enrichies et ecrites dans '{}'.".format(
             len(lignes), NOM_ONGLET_ENRICHIES))
     else:
