@@ -460,7 +460,7 @@ def ecrire(feuille, lignes):
     memoire l'a de toute facon ecartee en amont."""
     if not lignes:
         return 0
-    feuille.append_rows(lignes, value_input_option="RAW")
+    radar_resilience.avec_retry(lambda: feuille.append_rows(lignes, value_input_option="RAW"), "ecriture append_rows")
     return len(lignes)
 
 
