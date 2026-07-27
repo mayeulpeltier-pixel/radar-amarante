@@ -259,8 +259,10 @@ def ecrire(leads):
                 f = classeur.add_worksheet(title=NOM_ONGLET, rows=2000,
                                            cols=len(COLONNES))
                 f.append_row(COLONNES)
-            f.append_rows([[str(l.get(c, "")) for c in COLONNES] for l in leads],
-                          value_input_option="RAW")
+            radar_resilience.avec_retry(
+                lambda: f.append_rows(
+                    [[str(l.get(c, "")) for c in COLONNES] for l in leads],
+                    value_input_option="RAW"), "ecriture append")
             print("  {} evenement(s) ecrit(s) dans '{}'.".format(len(leads), NOM_ONGLET))
         except Exception as e:
             print("  (geo) ecriture Sheet impossible ({}). Le run continue.".format(e))
