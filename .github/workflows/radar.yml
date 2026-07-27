@@ -239,7 +239,7 @@ jobs:
       - name: Collecter les avis Prozorro (Ukraine)
         if: always() && steps.cle.outcome == 'success'
         env:
-          RADAR_PROZORRO: "0"          # coupe : le collecteur sort avant tout fetch
+          RADAR_PROZORRO: "1"          # coupe : le collecteur sort avant tout fetch
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
