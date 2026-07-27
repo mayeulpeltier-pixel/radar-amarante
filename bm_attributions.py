@@ -687,7 +687,7 @@ def ecrire(feuille, attributions):
             continue
         nouvelles.append(ligne_pour_sheet(a) + ["", date.today().isoformat()])
     if nouvelles:
-        feuille.append_rows(nouvelles, value_input_option="RAW")
+        radar_resilience.avec_retry(lambda: feuille.append_rows(nouvelles, value_input_option="RAW"), "ecriture append_rows")
     # Double ecriture (etape 2 du cap produit, 21/07/2026) : miroir Postgres
     # best-effort. On passe TOUTES les attributions, pas seulement les
     # nouvelles : le miroir a sa propre memoire (ON CONFLICT DO NOTHING) et se
