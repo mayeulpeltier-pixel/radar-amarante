@@ -67,6 +67,7 @@ from datetime import date, datetime, timedelta
 
 import bm_attributions as bma      # resolveur de pays bilingue + conversion USD
 import ted_complet_v14 as ted
+import radar_resilience
 
 
 ACTIVER = os.environ.get("RADAR_ISDB", "1") != "0"
@@ -440,9 +441,8 @@ def dedupliquer(attributions):
 def ouvrir_feuille(sheet_id, fichier):
     import gspread
     from google.oauth2.service_account import Credentials
-    creds = Credentials.from_service_account_file(
-        fichier, scopes=["https://www.googleapis.com/auth/spreadsheets"])
-    classeur = gspread.authorize(creds).open_by_key(sheet_id)
+    # Ouverture protegee par retry (503/429).
+    classeur = radar_resilience.ouvrir_classeur(sheet_id, fichier)
     try:
         return classeur.worksheet(NOM_ONGLET)
     except gspread.WorksheetNotFound:
