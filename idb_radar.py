@@ -549,7 +549,7 @@ def ecrire_attributions(feuille, attributions):
         nouvelles.append([str(a.get(c, "")) for c in bm_attributions.COLONNES]
                          + ["", date.today().isoformat()])
     if nouvelles:
-        feuille.append_rows(nouvelles, value_input_option="RAW")
+        radar_resilience.avec_retry(lambda: feuille.append_rows(nouvelles, value_input_option="RAW"), "ecriture append_rows")
     # Miroir Postgres best-effort : on passe TOUT, il a sa propre memoire.
     try:
         import radar_stockage
@@ -675,9 +675,9 @@ def ecrire_resultats(feuille, resultats):
             nouvelles.append(ligne + ["nouveau", date.today().isoformat()])
             nb_new += 1
     if maj:
-        feuille.batch_update(maj)
+        radar_resilience.avec_retry(lambda: feuille.batch_update(maj), "ecriture batch_update")
     if nouvelles:
-        feuille.append_rows(nouvelles, value_input_option="RAW")
+        radar_resilience.avec_retry(lambda: feuille.append_rows(nouvelles, value_input_option="RAW"), "ecriture append_rows")
     # Double ecriture : miroir Postgres best-effort, sous FORME PLATE (colonnes
     # du Sheet), la forme canonique que lit le dashboard. Ne peut JAMAIS faire
     # echouer le run.
