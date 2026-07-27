@@ -108,6 +108,10 @@ _MOTS_ISO3 = {
     "togo": "TGO", "benin": "BEN", "guinea-bissau": "GNB",
     "equatorial guinea": "GNQ", "papua new guinea": "PNG", "guinea": "GIN",
     "cote d": "CIV", "ivoire": "CIV", "ivory coast": "CIV", "djibouti": "DJI",
+    "rwanda": "RWA", "gabon": "GAB", "timor": "TLS", "west bank": "PSE",
+    "gaza": "PSE", "palestin": "PSE", "zambia": "ZMB", "malawi": "MWI",
+    "nepal": "NPL", "honduras": "HND", "guatemala": "GTM", "ecuador": "ECU",
+    "bolivia": "BOL", "el salvador": "SLV", "nicaragua": "NIC",
 }
 
 
@@ -149,7 +153,7 @@ def _liens_projets(html):
 def _champ(html, label):
     """Valeur d'un champ Drupal <div class="field__label">LABEL</div> ... item."""
     m = re.search(
-        r'field__label">\s*' + re.escape(label) + r'\s*</div>.{0,400}?'
+        r'field__label">\s*' + re.escape(label) + r'\s*</div>.{0,600}?'
         r'field[_-]+item[^>]*>\s*(.*?)\s*</div>', html, re.S)
     if not m:
         return ""
@@ -188,15 +192,23 @@ def parser_fiche(slug, titre_liste, html):
     fy = _champ(html, "Fiscal Year")
     ptype = _champ(html, "Project Type")
     desc = _description(html)
-    iso3 = _iso3_pays(hc)
 
     titre = titre_liste or slug.rsplit("/", 1)[-1].replace("-", " ").strip().title()
+    # Resolution pays hote : champ Host Country, sinon repli sur le titre puis le
+    # slug (certaines fiches ne parsent pas le champ ; le pays est souvent dans
+    # le titre, ex. "Setrag Gabon", "Timor Leste Solar").
+    iso3 = _iso3_pays(hc) or _iso3_pays(titre) or _iso3_pays(slug.replace("-", " "))
+    # publication_number NORMALISE : on retire le suffixe Drupal -\d+ pour que
+    # les doublons (SPG puis Brief du meme projet) partagent une seule ligne,
+    # qui evolue au lieu de se dupliquer.
+    tail = re.sub(r"-\d+$", "", slug.rsplit("/", 1)[-1])
+
     contexte = ("Investisseur (Guarantee Holder) : {} ({}). Pays hote : {}. "
                 "Categorie E&S : {}. Annee fiscale : {}. {}").format(
         gh or "n.c.", ic or "n.c.", hc or "n.c.", cat or "n.c.", fy or "n.c.", desc)
 
     return {
-        "publication_number": "MIGA:" + slug.rsplit("/", 1)[-1],
+        "publication_number": "MIGA:" + tail,
         "titre": titre[:300],
         "acheteur": gh or "Investisseur MIGA (non precise)",
         "investisseur_pays": ic,
@@ -261,10 +273,12 @@ def collecte(session=None, fetch_liste=None, fetch_fiche=None, deja_vus=None):
             break
         for slug, titre in paires:
             compteurs["liens_vus"] += 1
-            if slug in vus_run:
+            # Slug normalise (suffixe -\d+ retire) = cle de dedup et de memoire :
+            # collapse les doublons SPG/Brief d'un meme projet.
+            pub = "MIGA:" + re.sub(r"-\d+$", "", slug.rsplit("/", 1)[-1])
+            if pub in vus_run:
                 continue
-            vus_run.add(slug)
-            pub = "MIGA:" + slug.rsplit("/", 1)[-1]
+            vus_run.add(pub)
             if pub in deja_vus:
                 compteurs["deja_connus"] += 1
                 continue
