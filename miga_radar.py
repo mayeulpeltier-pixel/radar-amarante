@@ -43,6 +43,7 @@ import time
 from datetime import date
 
 import ted_complet_v14 as ted
+import radar_resilience
 
 
 # ===========================================================================
@@ -511,9 +512,9 @@ def ecrire_resultats(feuille, resultats):
             nouvelles.append(ligne + ["nouveau", date.today().isoformat()])
             nb_n += 1
     if maj:
-        feuille.batch_update(maj)
+        radar_resilience.avec_retry(lambda: feuille.batch_update(maj), "ecriture batch_update")
     if nouvelles:
-        feuille.append_rows(nouvelles, value_input_option="RAW")
+        radar_resilience.avec_retry(lambda: feuille.append_rows(nouvelles, value_input_option="RAW"), "ecriture append_rows")
     try:
         import radar_stockage
         plates = [dict(zip(COLONNES, ligne_depuis_resultat(r))) for r in resultats]
