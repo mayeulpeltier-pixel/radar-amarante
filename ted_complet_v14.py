@@ -43,6 +43,7 @@ import re
 from datetime import date, timedelta
 
 import requests
+import radar_resilience  # retry Sheet 503/429
 
 # ===========================================================================
 # PARTIE 1 -- CONFIGURATION COLLECTE (identique a ted_collecte.py)
@@ -1544,12 +1545,8 @@ def lettre_colonne(index_1_base):
 
 def ouvrir_feuille(sheet_id, fichier_compte_service):
     import gspread
-    from google.oauth2.service_account import Credentials
-
-    portee = ["https://www.googleapis.com/auth/spreadsheets"]
-    creds = Credentials.from_service_account_file(fichier_compte_service, scopes=portee)
-    client = gspread.authorize(creds)
-    classeur = client.open_by_key(sheet_id)
+    # Ouverture protegee par retry (503/429).
+    classeur = radar_resilience.ouvrir_classeur(sheet_id, fichier_compte_service)
     try:
         feuille = classeur.worksheet(NOM_ONGLET_SHEET)
     except gspread.WorksheetNotFound:
@@ -1671,10 +1668,10 @@ def _memoire_depuis_sheet(sheet_id, fichier_compte_service, nom_onglet, colonnes
         return set()
     try:
         import gspread
-        from google.oauth2.service_account import Credentials
-        portee = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-        creds = Credentials.from_service_account_file(fichier_compte_service, scopes=portee)
-        classeur = gspread.authorize(creds).open_by_key(sheet_id)
+        # Ouverture (lecture seule) protegee par retry (503/429).
+        classeur = radar_resilience.ouvrir_classeur(
+            sheet_id, fichier_compte_service,
+            portee=["https://www.googleapis.com/auth/spreadsheets.readonly"])
         try:
             feuille = classeur.worksheet(nom_onglet)
         except gspread.WorksheetNotFound:
