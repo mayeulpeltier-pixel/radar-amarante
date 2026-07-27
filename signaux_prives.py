@@ -40,6 +40,7 @@ import re
 import time
 
 import ted_complet_v14 as ted
+import radar_resilience
 import bitd_signaux as bitd
 import radar_etat
 import radar_retroaction
@@ -181,7 +182,7 @@ def _ouvrir_classeur(sheet_id, fichier_cs):
     from google.oauth2.service_account import Credentials
     portee = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
     creds = Credentials.from_service_account_file(fichier_cs, scopes=portee)
-    return gspread.authorize(creds).open_by_key(sheet_id)
+    return radar_resilience.avec_retry(lambda: gspread.authorize(creds).open_by_key(sheet_id), "ouverture classeur")
 
 
 def lire_watchlist_multisecteurs(valeurs):
@@ -824,7 +825,7 @@ def main():
             from google.oauth2.service_account import Credentials
             creds = Credentials.from_service_account_file(
                 fichier, scopes=["https://www.googleapis.com/auth/spreadsheets"])
-            classeur_rw = gspread.authorize(creds).open_by_key(sheet_id)
+            classeur_rw = radar_resilience.avec_retry(lambda: gspread.authorize(creds).open_by_key(sheet_id), "ouverture classeur")
             feuille = bitd.ouvrir_ou_creer_onglet(classeur_rw)
             n_ecrits = bitd.ecrire_resultats(feuille, resultats)
             print("-> {} signal(aux) ecrit(s) dans '{}'.".format(n_ecrits, bitd.NOM_ONGLET_PRIVE))
