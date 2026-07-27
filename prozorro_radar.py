@@ -2,6 +2,16 @@
 """RADAR AMARANTE -- Collecteur PROZORRO (e-procurement public ukrainien).
 =========================================================================
 
+STATUT (26/07/2026) : DESACTIVE (RADAR_PROZORRO=0 dans radar.yml). Code garde
+dormant, pas supprime. Verdict apres trois sondes : l'entonnoir est sain (~3%)
+et le LLM lit l'ukrainien, MAIS les avis sont du marche public DOMESTIQUE
+(acheteur toujours public) et les 38 attributions ICP examinees etaient gagnees
+a 38/38 par des entreprises UKRAINIENNES (0 etranger, 100% UA-EDR). Le seul
+prospect Amarante serait un titulaire ETRANGER (expatries a proteger) ; or ces
+contractants passent par les bailleurs (BM/EBRD/IFC), deja captes, pas par
+Prozorro. Pipeline cyrillique reutilisable si un jour on vise la reconstruction
+domestique. Reactiver = RADAR_PROZORRO="1".
+
 Pourquoi cette source
 ---------------------
 Prozorro publie l'integralite des marches publics ukrainiens. L'Ukraine est
