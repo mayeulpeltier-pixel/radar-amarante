@@ -49,6 +49,7 @@ from datetime import date, datetime, timedelta
 
 import ted_complet_v14 as ted
 import ted_complet_bm as bm
+import radar_resilience  # retry/backoff sur 503/429 a l'ouverture du Sheet
 
 
 # ===========================================================================
@@ -565,10 +566,8 @@ def ecrire_attributions(feuille, attributions):
 def ouvrir_feuille_attributions(sheet_id, fichier_cs):
     import gspread
     import bm_attributions
-    from google.oauth2.service_account import Credentials
-    portee = ["https://www.googleapis.com/auth/spreadsheets"]
-    creds = Credentials.from_service_account_file(fichier_cs, scopes=portee)
-    classeur = gspread.authorize(creds).open_by_key(sheet_id)
+    # Ouverture protegee par retry (503/429). Corrige le crash observe ici.
+    classeur = radar_resilience.ouvrir_classeur(sheet_id, fichier_cs)
     try:
         return classeur.worksheet(NOM_ONGLET_ATTRIB)
     except gspread.WorksheetNotFound:
@@ -600,10 +599,8 @@ TOUTES_COLONNES_IDB = COLONNES_IDB + [COLONNE_STATUT_SUIVI, COLONNE_DATE_DETECTI
 
 def ouvrir_feuille(sheet_id, fichier_cs):
     import gspread
-    from google.oauth2.service_account import Credentials
-    portee = ["https://www.googleapis.com/auth/spreadsheets"]
-    creds = Credentials.from_service_account_file(fichier_cs, scopes=portee)
-    classeur = gspread.authorize(creds).open_by_key(sheet_id)
+    # Ouverture protegee par retry (503/429).
+    classeur = radar_resilience.ouvrir_classeur(sheet_id, fichier_cs)
     try:
         f = classeur.worksheet(NOM_ONGLET)
     except gspread.WorksheetNotFound:
@@ -1109,10 +1106,14 @@ def main():
                   a["valeur_attribuee"] or "n.c.", a["pays_execution"],
                   a["gagnant"][:34], a["_pays_titulaire"] or "?"))
           return
-      feuille = ouvrir_feuille_attributions(sheet_id, fichier)
-      nb, ignorees = ecrire_attributions(feuille, attributions)
-      print("-> {} nouvelle(s) ligne(s) dans '{}' ({} deja connue(s)).".format(
-          nb, NOM_ONGLET_ATTRIB, ignorees))
+      try:
+          feuille = ouvrir_feuille_attributions(sheet_id, fichier)
+          nb, ignorees = ecrire_attributions(feuille, attributions)
+          print("-> {} nouvelle(s) ligne(s) dans '{}' ({} deja connue(s)).".format(
+              nb, NOM_ONGLET_ATTRIB, ignorees))
+      except Exception as e:
+          print("(idb) ecriture attributions impossible ({}). Le run continue.".format(e))
+          return
       print("\nLES PLUS GROS TITULAIRES DE CE RUN :")
       for a in attributions[:12]:
           print("  {:>14} | {} | {:32} <- {:14} | {}".format(
@@ -1237,12 +1238,15 @@ def main():
                 r["score"], r["avis"]["pays_execution"], r["avis"]["titre"][:66]))
         return
 
-    print("\nEcriture dans l'onglet '{}' ({} avis)...".format(
-        NOM_ONGLET, len(resultats)))
-    feuille = ouvrir_feuille(sheet_id, fichier)
-    nb_new, nb_maj = ecrire_resultats(feuille, resultats)
-    print("-> {} nouvel(s) avis, {} mis a jour (statut_suivi jamais touche).".format(
-        nb_new, nb_maj))
+    try:
+        print("\nEcriture dans l'onglet '{}' ({} avis)...".format(
+            NOM_ONGLET, len(resultats)))
+        feuille = ouvrir_feuille(sheet_id, fichier)
+        nb_new, nb_maj = ecrire_resultats(feuille, resultats)
+        print("-> {} nouvel(s) avis, {} mis a jour (statut_suivi jamais touche).".format(
+            nb_new, nb_maj))
+    except Exception as e:
+        print("(idb) ecriture avis impossible ({}). Le run continue.".format(e))
 
     print("\n" + "=" * 70)
     print("RESULTATS IDB (score = surete x0.5 + commercial x0.5)")
