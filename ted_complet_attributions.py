@@ -40,6 +40,7 @@ import requests
 
 try:
     import ted_complet_v14 as ted
+    import radar_resilience
 except ModuleNotFoundError:
     raise SystemExit(
         "ERREUR : ted_complet_v14.py doit etre dans le MEME dossier que ce "
@@ -437,7 +438,7 @@ def ouvrir_feuille(sheet_id, fichier):
     from google.oauth2.service_account import Credentials
     creds = Credentials.from_service_account_file(
         fichier, scopes=["https://www.googleapis.com/auth/spreadsheets"])
-    classeur = gspread.authorize(creds).open_by_key(sheet_id)
+    classeur = radar_resilience.avec_retry(lambda: gspread.authorize(creds).open_by_key(sheet_id), "ouverture classeur")
     try:
         f = classeur.worksheet(NOM_ONGLET)
     except gspread.WorksheetNotFound:
@@ -496,9 +497,9 @@ def ecrire(feuille, attributions):
             nouvelles.append(vals + ["nouveau", date.today().isoformat()])
             nb_n += 1
     if maj:
-        feuille.batch_update(maj)
+        radar_resilience.avec_retry(lambda: feuille.batch_update(maj), "ecriture batch_update")
     if nouvelles:
-        feuille.append_rows(nouvelles, value_input_option="RAW")
+        radar_resilience.avec_retry(lambda: feuille.append_rows(nouvelles, value_input_option="RAW"), "ecriture append_rows")
     # Double ecriture (etape 2 du cap produit, 21/07/2026) : miroir Postgres
     # best-effort. On passe TOUTES les attributions, pas seulement les
     # nouvelles : le miroir a sa propre memoire (ON CONFLICT DO NOTHING) et se
