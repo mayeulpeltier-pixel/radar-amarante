@@ -51,17 +51,10 @@ jobs:
       # sonde_prozorro_attributions.py sont supprimees (jetables, travail fait).
       # Prochaine cible a sonder : brancher ici le sonde_<source>.py voulu.
 
-      # CIBLE 27/07/2026 : validation de l'entonnoir MIGA en mode DEBUG.
-      # Les sondes d'acces/balisage ont fait leur travail (sonde_miga.py
-      # supprimee). On lance maintenant le COLLECTEUR en RADAR_MIGA_DEBUG :
-      # collecte + parsing + crible categorie FI + resolution pays hote, AFFICHE
-      # l'entonnoir, SANS LLM ni ecriture. Meme prudence que IDB/IsDB : valider
-      # sur donnees reelles avant tout write. Lire "--- ENTONNOIR MIGA ---".
-      - name: Valider l'entonnoir MIGA (debug, sans ecriture)
-        env:
-          RADAR_MIGA_DEBUG: "1"
-          MIGA_PAGES: "4"
-        run: python miga_radar.py
+      # CIBLE ACTUELLE : aucune. MIGA valide en debug et cable en prod dans
+      # radar.yml le 27/07/2026 (crible FI, resolution pays, dedup SPG/Brief).
+      # sonde_miga.py supprimee (jetable). Prochaine cible a sonder : brancher
+      # ici le sonde_<source>.py voulu.
 
       # Veille "signaux faibles" alertes voyageurs FCDO (UK). API GOV.UK
       # Content, JSON public, sans cle. A retirer une fois le collecteur ecrit.
