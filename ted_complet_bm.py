@@ -33,6 +33,7 @@ import requests
 # --- Reutilisation du coeur TED (aucune modification de ce fichier) ---------
 try:
     import ted_complet_v14 as ted
+    import radar_resilience
 except ModuleNotFoundError:
     raise SystemExit(
         "ERREUR : ted_complet_v14.py doit etre dans le MEME dossier que ce "
@@ -471,12 +472,8 @@ TOUTES_COLONNES_BM = COLONNES_BM + [COLONNE_STATUT_SUIVI, COLONNE_DATE_DETECTION
 
 def ouvrir_feuille_bm(sheet_id, fichier_compte_service):
     import gspread
-    from google.oauth2.service_account import Credentials
-
-    portee = ["https://www.googleapis.com/auth/spreadsheets"]
-    creds = Credentials.from_service_account_file(fichier_compte_service, scopes=portee)
-    client = gspread.authorize(creds)
-    classeur = client.open_by_key(sheet_id)
+    # Ouverture protegee par retry (503/429).
+    classeur = radar_resilience.ouvrir_classeur(sheet_id, fichier_compte_service)
     try:
         feuille = classeur.worksheet(NOM_ONGLET_BM)
     except gspread.WorksheetNotFound:
