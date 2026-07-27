@@ -45,19 +45,11 @@ jobs:
         # Le collecteur Prozorro ne depend que de `requests` (deja present).
         run: pip install -r requirements-radar.txt
 
-      # CIBLE 26/07/2026 : nationalite des gagnants Prozorro (attributions).
-      # Le 1er run reel des avis a montre qu'ils sont hors cible (marche public
-      # domestique). Seul gisement ICP plausible : les attributions dont le
-      # gagnant est ETRANGER (deploiement d'expatries). Cette sonde reutilise le
-      # scan teste de prozorro_radar, dumpe awards[].suppliers[] et tranche : la
-      # nationalite est-elle detectable, et quelle part d'etrangers ? Aucun LLM,
-      # aucune ecriture. Lire la SYNTHESE.
-      - name: Sonder les attributions Prozorro (nationalite du gagnant)
-        env:
-          PROZORRO_JOURS: "3"
-          PROZORRO_MINUTES_MAX: "20"
-          PROZORRO_MAX_DETAILS: "6000"
-        run: python sonde_prozorro_attributions.py
+      # CIBLE ACTUELLE : aucune sonde Prozorro. Verdict rendu le 26/07/2026
+      # (attributions 38/38 gagnants ukrainiens, 0 etranger -> source coupee,
+      # cf. commentaire dans radar.yml). Les sondes sonde_prozorro.py et
+      # sonde_prozorro_attributions.py sont supprimees (jetables, travail fait).
+      # Prochaine cible a sonder : brancher ici le sonde_<source>.py voulu.
 
       # Veille "signaux faibles" alertes voyageurs FCDO (UK). API GOV.UK
       # Content, JSON public, sans cle. A retirer une fois le collecteur ecrit.
