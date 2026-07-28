@@ -1,32 +1,27 @@
 # -*- coding: utf-8 -*-
-"""RADAR AMARANTE -- SONDE IFC (jetable) : valider l'API avant collecteur.
+"""RADAR AMARANTE -- SONDE IFC (jetable) : quel viewId est GLOBAL ?
 =========================================================================
 
-Decouverte : les divulgations IFC sont exposees en JSON STRUCTURE via World
-Bank Finances One, sur un endpoint qui ne demande PAS de resourceId (contrairement
-a l'apiservice qui nous avait bloques sur MIGA) :
+Acquis : l'endpoint Finances One `view?viewId=<DS>&top=N&type=json` repond
+depuis le CI, en JSON structure et nominatif (company_name, country,
+environmental_category [FI = crible], montants, projected_board_date,
+document_type). Mais DS01162 est le jeu BRESIL uniquement (les projets IFC sont
+publies par pays).
 
-    https://datacatalogapi.worldbank.org/dexapps/fone/api/view?viewId=DS01162&top=N&type=json
+QUESTION UNIQUE : existe-t-il un viewId GLOBAL (tous pays) ? On teste plusieurs
+candidats depuis le CI et on regarde la distribution des pays :
+  - DS01162 : IFC Investment Services in Brazil (temoin, doit etre 100% Brazil)
+  - DS01670 : "IFC Active Investment Projects by Country" (candidat GLOBAL,
+              meme motif de nom que MIGA DS01671 qui est global)
+  - DS01671 : MIGA Issued Projects by Country (reference : global connu)
 
-Hote deja prouve joignable depuis le CI (MIGA metadata). Reponse : {count, data:[...]}.
-Champs : date_disclosed, company_name, project_name, country, industry,
-environmental_category, status, projected_board_date, montants IFC, document_type,
-project_number. Nominatif, structure = source ideale (aucun scraping).
+Si un candidat renvoie plusieurs dizaines de pays -> c'est notre source globale,
+le collecteur IFC sera trivial. Sinon -> on tirera par pays (carte a batir).
 
-CETTE SONDE TRANCHE (aucune supposition, on dumpe le reel) :
-  A. L'endpoint repond-il depuis le CI ? Forme de l'enveloppe, nb de records.
-  B. Champs reels d'un record (dump brut) + valeurs cle.
-  C. GLOBAL ou "Brazil" ? -> distribution des pays sur un echantillon.
-  D. Ordre par defaut : les dates_disclosed sont-elles recent-d'abord ou
-     origine-d'abord ? (decide la strategie de collecte : tri/skip/filtre date)
-  E. Distribution document_type / environmental_category / status : de quoi
-     calibrer les cribles (FI a ecarter, ESRS/SPI a garder, pre-board = precoce).
-
-Aucune ecriture, aucun LLM. `requests` seul. Sortie code 0. Jetable.
+Aucune ecriture, aucun LLM. Sortie code 0. Jetable.
 """
 
 import json
-import re
 import sys
 
 try:
@@ -36,25 +31,19 @@ except Exception:                                    # pragma: no cover
     sys.exit(0)
 
 BASE = "https://datacatalogapi.worldbank.org/dexapps/fone/api/view"
-VIEW_ID = "DS01162"
 TIMEOUT = 45
 ENTETES = {"User-Agent": "amarante-radar/1.0", "Accept": "application/json"}
+
+CANDIDATS = [
+    ("DS01162", "IFC Investment Services in Brazil (temoin)"),
+    ("DS01670", "IFC Active Investment Projects by Country (candidat GLOBAL)"),
+    ("DS01671", "MIGA Issued Projects by Country (reference globale)"),
+]
 
 RESULTATS = []
 
 
-def _titre(t):
-    print("\n" + "=" * 72)
-    print(t)
-    print("=" * 72)
-
-
-def _verdict(nom, ok, detail):
-    RESULTATS.append((nom, ok, detail))
-    print("  => {} : {}".format("OK" if ok else "a creuser", detail))
-
-
-def _distribution(records, champ, n=12):
+def _distribution(records, champ, n=15):
     d = {}
     for r in records:
         v = str(r.get(champ, "")).strip() or "(vide)"
@@ -62,91 +51,56 @@ def _distribution(records, champ, n=12):
     return dict(sorted(d.items(), key=lambda kv: kv[1], reverse=True)[:n])
 
 
-def main():
-    print("SONDE IFC -- API Finances One view. Aucune ecriture, aucun LLM.")
-    s = requests.Session()
-    s.headers.update(ENTETES)
-    url = "{}?viewId={}&top=200&type=json".format(BASE, VIEW_ID)
-
-    _titre("A -- Endpoint IFC (view) : acces CI + enveloppe")
-    print("GET", url)
+def _tester(s, view_id, libelle):
+    print("\n" + "=" * 72)
+    print("{} -- {}".format(view_id, libelle))
+    print("=" * 72)
+    url = "{}?viewId={}&top=300&type=json".format(BASE, view_id)
     try:
         r = s.get(url, timeout=TIMEOUT)
     except Exception as e:
-        _verdict("A acces", False, "injoignable depuis CI : {}".format(e))
-        _fin()
+        print("  injoignable : {}".format(e))
+        RESULTATS.append((view_id, "injoignable"))
         return
-    print("HTTP {} | {} octets".format(r.status_code, len(r.text)))
     if r.status_code != 200:
-        print("Debut reponse :", r.text[:300])
-        _verdict("A acces", False, "statut != 200")
-        _fin()
+        print("  HTTP {} : {}".format(r.status_code, r.text[:200]))
+        RESULTATS.append((view_id, "HTTP {}".format(r.status_code)))
         return
     try:
         charge = r.json()
     except Exception as e:
-        _verdict("A acces", False, "reponse non-JSON : {}".format(e))
-        _fin()
+        print("  non-JSON : {}".format(e))
+        RESULTATS.append((view_id, "non-JSON"))
         return
-    cles = list(charge.keys()) if isinstance(charge, dict) else ["(liste)"]
-    records = charge.get("data") if isinstance(charge, dict) else charge
-    records = records or []
-    print("Cles enveloppe :", cles, "| count annonce :", charge.get("count") if isinstance(charge, dict) else "n/a")
-    print("Records recus :", len(records))
-    _verdict("A acces", len(records) > 0, "{} records, enveloppe {}".format(
-        len(records), "conforme" if records else "vide"))
-    if not records:
-        _fin()
-        return
-
-    _titre("B -- Champs reels d'un record (dump brut)")
-    r0 = records[0]
-    print("Champs :", sorted(r0.keys()))
-    print("\n1er record (brut) :")
-    print(json.dumps(r0, ensure_ascii=False, indent=1)[:1200])
-
-    _titre("C -- GLOBAL ou Brazil ? Distribution des pays")
+    records = (charge.get("data") if isinstance(charge, dict) else charge) or []
+    count = charge.get("count") if isinstance(charge, dict) else len(records)
     pays = _distribution(records, "country")
-    print("Pays (top) :", pays)
     nb_pays = len({str(x.get("country", "")).strip() for x in records if x.get("country")})
-    global_ok = nb_pays > 3
-    _verdict("C portee", global_ok,
-             "{} pays distincts -> dataset GLOBAL".format(nb_pays) if global_ok
-             else "{} pays -> possiblement limite, chercher le viewId global".format(nb_pays))
-
-    _titre("D -- Ordre par defaut (recent d'abord ?)")
-    dates = [str(x.get("date_disclosed", "")) for x in records if x.get("date_disclosed")]
-    if dates:
-        print("date_disclosed 1er record  :", dates[0])
-        print("date_disclosed dernier      :", dates[-1])
-        print("min :", min(dates), "| max :", max(dates))
-        recent_dabord = dates[0] >= dates[-1]
-        _verdict("D ordre", True,
-                 "recent-d'abord (ideal, on lit la tete)" if recent_dabord
-                 else "origine-d'abord (il faudra trier ou filtrer par date)")
-    else:
-        _verdict("D ordre", False, "date_disclosed absente/vide")
-
-    _titre("E -- Cribles : document_type / environmental_category / status")
-    print("document_type          :", _distribution(records, "document_type"))
-    print("environmental_category :", _distribution(records, "environmental_category"))
-    print("status                 :", _distribution(records, "status"))
-    print("projected_board_date presents :",
-          sum(1 for x in records if str(x.get("projected_board_date", "")).strip()),
-          "/", len(records), "(pre-board = signal precoce)")
-    _verdict("E cribles", True, "distributions dumpees ci-dessus")
-
-    _fin()
+    print("  count total :", count, "| records lus :", len(records), "| pays distincts :", nb_pays)
+    print("  distribution pays :", pays)
+    if records:
+        print("  champs :", sorted(records[0].keys())[:20])
+        print("  document_type :", _distribution(records, "document_type", 6))
+    verdict = "GLOBAL ({} pays)".format(nb_pays) if nb_pays > 5 else "mono/limite ({} pays)".format(nb_pays)
+    RESULTATS.append((view_id, verdict))
 
 
-def _fin():
-    _titre("SYNTHESE")
-    for nom, ok, detail in RESULTATS:
-        print("  [{}] {:10} {}".format("OK " if ok else "?? ", nom, detail))
-    print("\n  LECTURE : si global + nominatif + FI present, on ecrit le collecteur")
-    print("  IFC (JSON structure) en reutilisant le scoring/LLM/Sheet de MIGA.")
-    print("  On fetchera la fiche riche (project_number) seulement pour les tops.")
-    print("\nSonde jetable : a supprimer une fois le collecteur ecrit.")
+def main():
+    print("SONDE IFC -- quel viewId est global ? Aucune ecriture, aucun LLM.")
+    s = requests.Session()
+    s.headers.update(ENTETES)
+    for view_id, libelle in CANDIDATS:
+        _tester(s, view_id, libelle)
+
+    print("\n" + "=" * 72)
+    print("SYNTHESE")
+    print("=" * 72)
+    for view_id, verdict in RESULTATS:
+        print("  {} : {}".format(view_id, verdict))
+    print("\n  LECTURE : si un candidat est GLOBAL avec les champs de divulgation")
+    print("  (company_name, country, environmental_category, document_type), c'est")
+    print("  la source unique du collecteur IFC. Sinon on tire par pays.")
+    print("\nSonde jetable.")
     sys.exit(0)
 
 
