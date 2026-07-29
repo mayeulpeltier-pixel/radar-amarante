@@ -56,12 +56,11 @@ jobs:
       # sonde_miga.py supprimee (jetable). Prochaine cible a sonder : brancher
       # ici le sonde_<source>.py voulu.
 
-      # CIBLE 27/07/2026 : l'endpoint IFC existe mais 404 en GET simple. On lit
-      # le client de donnees du SPA (clientlib-ifc-disclosures-data.js) pour voir
-      # la construction exacte de l'appel (sous-chemin, methode, parametres).
-      # Aucun LLM, aucune ecriture. sonde_ifc_api.py peut etre supprimee.
-      - name: Lire le client JS des divulgations IFC
-        run: python sonde_ifc_js.py
+      # CIBLE 27/07/2026 : trouver la route exacte de l'endpoint IFC (GET/POST x
+      # sous-chemins) avec les params connus du JS (sortBy=Disclosed_Date...).
+      # Aucun LLM, aucune ecriture. sonde_ifc_js.py peut etre supprimee.
+      - name: Trouver la route de l'API IFC
+        run: python sonde_ifc_call.py
 
       # Veille "signaux faibles" alertes voyageurs FCDO (UK). API GOV.UK
       # Content, JSON public, sans cle. A retirer une fois le collecteur ecrit.
