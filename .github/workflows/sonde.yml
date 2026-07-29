@@ -56,13 +56,12 @@ jobs:
       # sonde_miga.py supprimee (jetable). Prochaine cible a sonder : brancher
       # ici le sonde_<source>.py voulu.
 
-      # CIBLE 27/07/2026 : valider l'API IFC (Finances One view DS01162) depuis
-      # le CI avant d'ecrire le collecteur. Tranche : acces, champs, global-vs-
-      # Brazil, ordre par defaut, distributions pour calibrer les cribles.
-      # Aucun LLM, aucune ecriture. sonde_miga_ifc.py (fix MIGA/IFC valide) peut
-      # etre supprimee.
-      - name: Sonder l'API IFC (Finances One view)
-        run: python sonde_ifc.py
+      # CIBLE 27/07/2026 : cracker le flux global IFC (disclosures.ifc.org).
+      # Les vues Finances One sont par pays (pas de global) -> on vise l'endpoint
+      # JSON AJAX du portail, en lisant le bundle JS depuis le CI (methode UNGM).
+      # Aucun LLM, aucune ecriture. sonde_ifc.py peut etre supprimee.
+      - name: Cracker le flux global IFC (bundle JS)
+        run: python sonde_ifc_feed.py
 
       # Veille "signaux faibles" alertes voyageurs FCDO (UK). API GOV.UK
       # Content, JSON public, sans cle. A retirer une fois le collecteur ecrit.
