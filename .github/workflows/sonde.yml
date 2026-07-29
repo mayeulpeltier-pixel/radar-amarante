@@ -56,12 +56,12 @@ jobs:
       # sonde_miga.py supprimee (jetable). Prochaine cible a sonder : brancher
       # ici le sonde_<source>.py voulu.
 
-      # CIBLE 27/07/2026 : cracker le flux global IFC (disclosures.ifc.org).
-      # Les vues Finances One sont par pays (pas de global) -> on vise l'endpoint
-      # JSON AJAX du portail, en lisant le bundle JS depuis le CI (methode UNGM).
-      # Aucun LLM, aucune ecriture. sonde_ifc.py peut etre supprimee.
-      - name: Cracker le flux global IFC (bundle JS)
-        run: python sonde_ifc_feed.py
+      # CIBLE 27/07/2026 : valider l'endpoint global IFC trouve par le crack du
+      # bundle JS : https://webapi.worldbank.org/aemsite/ifc-disclosure-search
+      # (parametres, forme JSON, distribution pays, tri, pagination, filtre pays).
+      # Aucun LLM, aucune ecriture. sonde_ifc_feed.py peut etre supprimee.
+      - name: Valider l'endpoint global IFC
+        run: python sonde_ifc_api.py
 
       # Veille "signaux faibles" alertes voyageurs FCDO (UK). API GOV.UK
       # Content, JSON public, sans cle. A retirer une fois le collecteur ecrit.
