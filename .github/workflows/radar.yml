@@ -244,6 +244,25 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python miga_radar.py
 
+      # 4d-quater) IFC (Societe Financiere Internationale, Gpe BM) -- Vague 2.
+      #     Investissements PRIVES finances par l'IFC dans les pays en dev.
+      #     Source globale : API Azure Search des divulgations (craquee via le
+      #     bundle JS du portail), fenetre recente par date, tri recent-d'abord.
+      #     Nominatif (entreprise, pays, secteur, sponsors, montant), description
+      #     complete incluse (pas de fetch de fiche). Cribles : FI + Advisory
+      #     (conseil, hors ICP) + perimetre pays. Onglet ifc_radar dedie, isole.
+      #     Entonnoir valide en debug (61 retenus sur 272, zones a risque OK).
+      #     RADAR_IFC_DEBUG=1 pour revalider sans LLM/ecriture ; RADAR_IFC=0 pour
+      #     couper ; IFC_EXCLURE_ADVISORY=0 pour garder les projets de conseil.
+      - name: Collecter les divulgations IFC (investissements prives)
+        if: always() && steps.cle.outcome == 'success'
+        env:
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python ifc_radar.py
+
       # 4e) Analyse LLM des attributions (attributions_analyse.py).
       #     Doit tourner APRES les cinq collecteurs d'attributions (leurs lignes
       #     brutes sont sa source) et AVANT le dashboard (qui joint le resultat).
