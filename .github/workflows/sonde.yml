@@ -56,12 +56,16 @@ jobs:
       # sonde_miga.py supprimee (jetable). Prochaine cible a sonder : brancher
       # ici le sonde_<source>.py voulu.
 
-      # CIBLE 27/07/2026 : acces IFC craque (POST base + query + corps {} -> 50
-      # records globaux). Dernier point : tri recent-d'abord (Azure $orderby),
-      # filtre par date ($filter) et pagination (skip). sonde_ifc_query.py peut
-      # etre supprimee.
-      - name: Fixer tri/filtre/pagination IFC
-        run: python sonde_ifc_sort.py
+      # CIBLE 27/07/2026 : validation de l'entonnoir IFC en mode DEBUG. Les
+      # sondes ont craque l'acces (POST Azure Search, $orderby/$filter/$skip).
+      # On lance le COLLECTEUR en RADAR_IFC_DEBUG : collecte + parsing + cribles
+      # (FI + perimetre pays), AFFICHE l'entonnoir et la fenetre de dates, SANS
+      # LLM ni ecriture. Toutes les sondes sonde_ifc_*.py peuvent etre supprimees.
+      - name: Valider l'entonnoir IFC (debug, sans ecriture)
+        env:
+          RADAR_IFC_DEBUG: "1"
+          IFC_FENETRE_JOURS: "120"
+        run: python ifc_radar.py
 
       # Veille "signaux faibles" alertes voyageurs FCDO (UK). API GOV.UK
       # Content, JSON public, sans cle. A retirer une fois le collecteur ecrit.
