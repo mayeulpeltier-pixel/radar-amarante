@@ -56,11 +56,12 @@ jobs:
       # sonde_miga.py supprimee (jetable). Prochaine cible a sonder : brancher
       # ici le sonde_<source>.py voulu.
 
-      # CIBLE 27/07/2026 : 'page' invalide dans le corps -> pagination/tri/search
-      # en QUERY STRING, corps = filtres. On teste ces placements.
-      # sonde_ifc_post.py peut etre supprimee.
-      - name: Placer les params IFC en query
-        run: python sonde_ifc_query.py
+      # CIBLE 27/07/2026 : acces IFC craque (POST base + query + corps {} -> 50
+      # records globaux). Dernier point : tri recent-d'abord (Azure $orderby),
+      # filtre par date ($filter) et pagination (skip). sonde_ifc_query.py peut
+      # etre supprimee.
+      - name: Fixer tri/filtre/pagination IFC
+        run: python sonde_ifc_sort.py
 
       # Veille "signaux faibles" alertes voyageurs FCDO (UK). API GOV.UK
       # Content, JSON public, sans cle. A retirer une fois le collecteur ecrit.
