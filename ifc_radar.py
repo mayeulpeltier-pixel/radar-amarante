@@ -62,6 +62,9 @@ CATEGORIES_EXCLUES = tuple(filter(None, (
     x.strip().upper() for x in os.environ.get("IFC_CATEGORIES_EXCLUES", "FI").split(","))))
 # Ne garder que les pays du perimetre a risque (ceux que _iso3_pays sait resoudre) ?
 FILTRER_PERIMETRE = os.environ.get("IFC_PERIMETRE", "1") != "0"
+# Ecarter les projets "Advisory Services" (conseil IFC, pas d'investisseur qui
+# deploie capitaux/equipes = hors ICP, comme les FI). Surchargeable.
+EXCLURE_ADVISORY = os.environ.get("IFC_EXCLURE_ADVISORY", "1") != "0"
 MAX_AVIS_LLM = int(os.environ.get("IFC_MAX_LLM", "60"))
 PAUSE = float(os.environ.get("IFC_PAUSE", "0.2"))
 
@@ -182,7 +185,7 @@ def collecte(session=None, fetch_page=None, deja_vus=None):
         return charge.get("value") if isinstance(charge, dict) else (charge or [])
 
     compteurs = {"pages": 0, "records_vus": 0, "doublons": 0, "deja_connus": 0,
-                 "rejet_fi": 0, "hors_perimetre": 0, "retenus": 0}
+                 "rejet_fi": 0, "rejet_advisory": 0, "hors_perimetre": 0, "retenus": 0}
     avis, vus_run = [], set()
 
     for page in range(IFC_PAGES):
@@ -210,6 +213,9 @@ def collecte(session=None, fetch_page=None, deja_vus=None):
             a = parser_record(rec)
             if (a["categorie_es"] or "").upper().startswith(CATEGORIES_EXCLUES):
                 compteurs["rejet_fi"] += 1
+                continue
+            if EXCLURE_ADVISORY and "advisory" in (rec.get("Type_Description") or "").lower():
+                compteurs["rejet_advisory"] += 1
                 continue
             if FILTRER_PERIMETRE and not a["pays_iso3"]:
                 compteurs["hors_perimetre"] += 1
@@ -421,6 +427,7 @@ def _afficher_entonnoir(c):
     print("  Doublons (memes projets): {}".format(c["doublons"]))
     print("  Deja connus (sautes)    : {}".format(c["deja_connus"]))
     print("  Rejetes -- categorie {} : {}".format("/".join(CATEGORIES_EXCLUES), c["rejet_fi"]))
+    print("  Rejetes -- Advisory     : {}".format(c["rejet_advisory"]))
     print("  Hors perimetre (pays)   : {}".format(c["hors_perimetre"]))
     print("  RETENUS                 : {}".format(c["retenus"]))
 
