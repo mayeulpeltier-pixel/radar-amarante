@@ -257,6 +257,10 @@ jobs:
       - name: Collecter les divulgations IFC (investissements prives)
         if: always() && steps.cle.outcome == 'success'
         env:
+          # RUN CORRECTIF (a retirer apres) : re-analyse les 29 lignes ecrites a
+          # 0.0 lors du run ou le LLM avait ete refuse (401 CORS). Met a jour les
+          # lignes en place. RETIRER cette ligne une fois les vrais scores ecrits.
+          IFC_IGNORER_MEMOIRE: "1"
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
