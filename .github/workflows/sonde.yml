@@ -56,11 +56,11 @@ jobs:
       # sonde_miga.py supprimee (jetable). Prochaine cible a sonder : brancher
       # ici le sonde_<source>.py voulu.
 
-      # CIBLE 27/07/2026 : POST sur la base IFC = bonne route, mauvais corps
-      # (400 nommant un param invalide). On teste plusieurs corps candidats et on
-      # lit la reponse complete. sonde_ifc_call.py peut etre supprimee.
-      - name: Trouver le corps de requete IFC (POST)
-        run: python sonde_ifc_post.py
+      # CIBLE 27/07/2026 : 'page' invalide dans le corps -> pagination/tri/search
+      # en QUERY STRING, corps = filtres. On teste ces placements.
+      # sonde_ifc_post.py peut etre supprimee.
+      - name: Placer les params IFC en query
+        run: python sonde_ifc_query.py
 
       # Veille "signaux faibles" alertes voyageurs FCDO (UK). API GOV.UK
       # Content, JSON public, sans cle. A retirer une fois le collecteur ecrit.
