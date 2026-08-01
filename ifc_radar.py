@@ -39,6 +39,8 @@ import re
 import time
 from datetime import date, timedelta
 
+import requests
+
 import ted_complet_v14 as ted
 import radar_resilience
 import miga_radar as miga            # reutilise _iso3_pays (resolveur pays -> ISO3)
@@ -89,7 +91,11 @@ _CODE_TYPE = [
 # ===========================================================================
 
 def _session():
-    s = ted.session_robuste()
+    # Session INDEPENDANTE (jamais ted.session_robuste, qui est partagee avec
+    # l'appel Anthropic) : l'en-tete Origin des requetes IFC ne doit pas polluer
+    # l'API du modele (sinon 401 "CORS ... dangerous-direct-browser-access").
+    # Le POST IFC est deja protege par radar_resilience.avec_retry.
+    s = requests.Session()
     s.headers.update(ENTETES)
     return s
 
@@ -444,8 +450,14 @@ def main():
     deja_vus = set()
     sheet_id = os.environ.get("TED_SHEET_ID")
     fichier = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
-    if not DEBUG:
+    # IFC_IGNORER_MEMOIRE=1 : re-analyse tout (meme le deja connu) et met a jour
+    # les lignes en place. A utiliser une fois pour corriger un run rate (ex.
+    # lignes a 0.0 apres un echec LLM).
+    ignorer_memoire = os.environ.get("IFC_IGNORER_MEMOIRE", "0") == "1"
+    if not DEBUG and not ignorer_memoire:
         deja_vus = ted.numeros_publication_existants(sheet_id, fichier, NOM_ONGLET, COLONNES) or set()
+    elif ignorer_memoire:
+        print("(info) IFC_IGNORER_MEMOIRE=1 : re-analyse complete (maj des lignes existantes).")
 
     print("Etape 1/2 -- Collecte IFC (API divulgations, fenetre {} j)...".format(FENETRE_JOURS))
     avis, compteurs = collecte(deja_vus=deja_vus)
