@@ -76,6 +76,16 @@ class TestEntonnoir(unittest.TestCase):
         self.assertEqual(c["deja_connus"], 1)
         self.assertEqual(c["retenus"], 0)
 
+    def test_crible_advisory(self):
+        rec_adv = {"Project_Number": "70001", "Project_Name": "DRC Capital Market Dev",
+                   "Country_Description": "Congo, Democratic Republic of",
+                   "Type_Description": "Advisory Services",
+                   "Project_Description": "Advisory to develop capital markets."}
+        avis, c = ic.collecte(session=object(),
+                              fetch_page=lambda skip: [rec_adv] if skip == 0 else [])
+        self.assertEqual(c["rejet_advisory"], 1)     # conseil IFC ecarte
+        self.assertEqual(c["retenus"], 0)
+
 
 class TestSchema(unittest.TestCase):
     def test_ligne_alignee(self):
