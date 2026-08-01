@@ -1,5 +1,5 @@
 {
-  "genere_le": "2026-07-31T23:01:04+00:00",
+  "genere_le": "2026-08-01T22:55:55+00:00",
   "onglets": [
     {
       "onglet": "Feuille 1",
@@ -25,14 +25,14 @@
     {
       "onglet": "ted_radar",
       "fichier": "ted_radar.csv",
-      "lignes": 74,
+      "lignes": 77,
       "colonnes": 32,
       "erreur": null
     },
     {
       "onglet": "bm_radar",
       "fichier": "bm_radar.csv",
-      "lignes": 631,
+      "lignes": 653,
       "colonnes": 35,
       "erreur": null
     },
@@ -81,7 +81,7 @@
     {
       "onglet": "attributions_radar",
       "fichier": "attributions_radar.csv",
-      "lignes": 1009,
+      "lignes": 1049,
       "colonnes": 17,
       "erreur": null
     },
@@ -95,42 +95,42 @@
     {
       "onglet": "afdb_radar",
       "fichier": "afdb_radar.csv",
-      "lignes": 140,
+      "lignes": 154,
       "colonnes": 32,
       "erreur": null
     },
     {
       "onglet": "ebrd_radar",
       "fichier": "ebrd_radar.csv",
-      "lignes": 1128,
+      "lignes": 1131,
       "colonnes": 34,
       "erreur": null
     },
     {
       "onglet": "reliefweb_radar",
       "fichier": "reliefweb_radar.csv",
-      "lignes": 975,
+      "lignes": 1039,
       "colonnes": 34,
       "erreur": null
     },
     {
       "onglet": "ungm_radar",
       "fichier": "ungm_radar.csv",
-      "lignes": 668,
+      "lignes": 848,
       "colonnes": 32,
       "erreur": null
     },
     {
       "onglet": "attributions_analyse",
       "fichier": "attributions_analyse.csv",
-      "lignes": 1009,
+      "lignes": 1049,
       "colonnes": 17,
       "erreur": null
     },
     {
       "onglet": "alertes_radar",
       "fichier": "alertes_radar.csv",
-      "lignes": 68,
+      "lignes": 84,
       "colonnes": 11,
       "erreur": null
     },
@@ -146,6 +146,13 @@
       "fichier": "miga_radar.csv",
       "lignes": 23,
       "colonnes": 33,
+      "erreur": null
+    },
+    {
+      "onglet": "ifc_radar",
+      "fichier": "ifc_radar.csv",
+      "lignes": 30,
+      "colonnes": 34,
       "erreur": null
     }
   ]
