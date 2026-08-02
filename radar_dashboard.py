@@ -301,6 +301,13 @@ def ligne_vers_lead(row, source):
         cible = _txt(row.get("cible_commerciale_reelle")) or \
             "Organisation qui recrute et déploie : viser direction sûreté / logistique / RH terrain."
         groupe = _txt(row.get("categorie")) or "humanitaire"
+    elif source in ("MIGA", "IFC"):
+        # Vague 2 : investisseur prive / entreprise projet qui deploie en
+        # zone a risque (deja formule par le collecteur). Groupe = type de
+        # document (SPI/ESRS = pre-board, signal precoce).
+        cible = _txt(row.get("cible_commerciale_reelle")) or \
+            "Investisseur prive / entreprise projet qui deploie cadres et actifs en zone a risque."
+        groupe = _txt(row.get("type_document")) or "divulgation"
     elif source in ("AFDB", "ADB", "EBRD", "UNGM"):
         # Bailleurs multilatéraux (Afrique / Asie / Ukraine-Caucase). Le
         # collecteur remplit déjà cible_commerciale_reelle (pour EBRD, le client
@@ -555,7 +562,8 @@ def superposer_analyse_attribution(lead, analyse):
 def construire_leads(lignes_ted, lignes_bm, lignes_prive=None,
                      enrichissement=None, lignes_attrib=None, lignes_rw=None,
                      lignes_afdb=None, lignes_adb=None, lignes_ebrd=None,
-                     lignes_ungm=None, analyses_attrib=None):
+                     lignes_ungm=None, analyses_attrib=None,
+                     lignes_miga=None, lignes_ifc=None):
     """Fusionne les onglets (TED, Banque Mondiale, AfDB, ADB, EBRD, ReliefWeb,
     PRIVÉ/BITD), deduplique, trie. Pour les leads PRIVÉ, remonte le dirigeant
     (enrichissement) comme contact.
@@ -570,6 +578,8 @@ def construire_leads(lignes_ted, lignes_bm, lignes_prive=None,
     leads += [ligne_vers_lead(r, "ADB") for r in (lignes_adb or [])]
     leads += [ligne_vers_lead(r, "EBRD") for r in (lignes_ebrd or [])]
     leads += [ligne_vers_lead(r, "RW") for r in (lignes_rw or [])]
+    leads += [ligne_vers_lead(r, "MIGA") for r in (lignes_miga or [])]
+    leads += [ligne_vers_lead(r, "IFC") for r in (lignes_ifc or [])]
     leads_prive = [ligne_vers_lead(r, "PRIVÉ") for r in (lignes_prive or [])]
 
     # Index d'enrichissement : clefs brutes (minuscules) + alias normalises,
@@ -746,6 +756,10 @@ def lire_onglets(sheet_id, fichier_cs):
     lignes_ungm = _lire_bailleur("ungm_radar", "ungm_radar", "TOUTES_COLONNES_UNGM", "NOM_ONGLET")
     lignes_adb = _lire_bailleur("adb_radar", "adb_radar", "TOUTES_COLONNES_ADB", "NOM_ONGLET")
     lignes_ebrd = _lire_bailleur("ebrd_radar", "ebrd_radar", "TOUTES_COLONNES_EBRD", "NOM_ONGLET")
+    # Vague 2 : MIGA (garanties risque politique) et IFC (investissements
+    # prives). Sources d'AVIS, pays par NOM (comme BM/RW). Onglets dedies.
+    lignes_miga = _lire_bailleur("miga_radar", "miga_radar", "TOUTES_COLONNES", "NOM_ONGLET")
+    lignes_ifc = _lire_bailleur("ifc_radar", "ifc_radar", "TOUTES_COLONNES", "NOM_ONGLET")
 
     # Watchlist des cibles privees (comptes_cibles_bitd) : liste curee a la main
     # (oil & gas, BTP, luxe...). Lue telle quelle (colonnes libres), pour la
@@ -830,7 +844,7 @@ def lire_onglets(sheet_id, fichier_cs):
 
     return (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
             lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
-            lignes_ungm, analyses_attrib, lignes_alertes)
+            lignes_ungm, analyses_attrib, lignes_alertes, lignes_miga, lignes_ifc)
 
 
 def preparer_alertes(lignes_alertes):
@@ -959,14 +973,16 @@ def main():
     print("Lecture des onglets du Sheet...")
     (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
      lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
-     lignes_ungm, analyses_attrib, lignes_alertes) = lire_onglets(sheet_id, fichier_cs)
+     lignes_ungm, analyses_attrib, lignes_alertes, lignes_miga, lignes_ifc) = lire_onglets(sheet_id, fichier_cs)
     leads = construire_leads(lignes_ted, lignes_bm, lignes_prive, enrichissement,
                              lignes_attrib, lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd,
-                             lignes_ungm, analyses_attrib)
+                             lignes_ungm, analyses_attrib, lignes_miga=lignes_miga,
+                             lignes_ifc=lignes_ifc)
     print("  TED : {} | BM : {} | AfDB : {} | ADB : {} | EBRD : {} | UNGM : {} | "
-          "ReliefWeb : {} | total exploitable : {}".format(
+          "ReliefWeb : {} | MIGA : {} | IFC : {} | total exploitable : {}".format(
               len(lignes_ted), len(lignes_bm), len(lignes_afdb), len(lignes_adb),
-              len(lignes_ebrd), len(lignes_ungm), len(lignes_rw), len(leads)))
+              len(lignes_ebrd), len(lignes_ungm), len(lignes_rw),
+              len(lignes_miga), len(lignes_ifc), len(leads)))
 
     html = generer_html(leads, lignes_watchlist, alertes=lignes_alertes)
     dossier = os.path.dirname(sortie)
@@ -1369,7 +1385,7 @@ const SUIVI_ON = !!SUIVI_URL || API_STATUT;
 // Correspondance source -> onglet, cle d'ecriture dans radar_statuts.
 const ONGLET_SRC = {TED:'ted_radar',BM:'bm_radar',AFDB:'afdb_radar',ADB:'adb_radar',
   EBRD:'ebrd_radar',UNGM:'ungm_radar',RW:'reliefweb_radar','PRIVÉ':'prive_radar',
-  ATTRIB:'attributions_radar'};
+  ATTRIB:'attributions_radar',MIGA:'miga_radar',IFC:'ifc_radar'};
 // Statut CRM deja pose (serveur) : survit au changement de navigateur, ce que
 // le localStorage seul ne permettait pas.
 function dejaContacte(l){const s=String(l.statut||'').toLowerCase();
@@ -1668,7 +1684,7 @@ function buildPeriod(){
   }));
 }
 
-const SRC_NOMS_META={TED:'TED',BM:'Banque Mondiale',AFDB:'AfDB',ADB:'ADB',EBRD:'EBRD',UNGM:'UNGM (agences ONU)',RW:'ReliefWeb','PRIVÉ':'Privé (BITD)',ATTRIB:'Titulaires'};
+const SRC_NOMS_META={TED:'TED',BM:'Banque Mondiale',AFDB:'AfDB',ADB:'ADB',EBRD:'EBRD',UNGM:'UNGM (agences ONU)',RW:'ReliefWeb','PRIVÉ':'Privé (BITD)',ATTRIB:'Titulaires',MIGA:'MIGA (garanties)',IFC:'IFC (invest. privé)'};
 const SRC_PRESENTES=[...new Set(LEADS.map(l=>l.src))].map(s=>SRC_NOMS_META[s]||s);
 document.getElementById('runmeta').innerHTML =
   'Run du <b>'+META.date+'</b><br>'+META.total+' avis analysés<br>Sources : '+(SRC_PRESENTES.join(', ')||'aucune');
