@@ -847,6 +847,37 @@ def lire_onglets(sheet_id, fichier_cs):
             lignes_ungm, analyses_attrib, lignes_alertes, lignes_miga, lignes_ifc)
 
 
+def charger_leads(sheet_id, fichier_cs):
+    """POINT D'ENTREE UNIQUE DU CHEMIN SHEET : lit les onglets puis construit les
+    leads avec le cablage COMPLET (toutes les sources, MIGA/IFC/UNGM inclus).
+
+    POURQUOI (02/08/2026)
+    ---------------------
+    `lire_onglets` renvoie un tuple qui a grossi au fil des sources (10 -> 15).
+    Chaque appelant qui le deballait a la main puis rappelait `construire_leads`
+    devait rester synchronise. Le digest ne l'etait pas : il deballait 10 valeurs
+    sur 15 et levait `ValueError` a chaque run, avale en "lecture du Sheet
+    impossible", canal PUSH mort en silence.
+
+    Desormais un SEUL endroit deballe `lire_onglets` et cable `construire_leads` :
+    cette fonction. `main` et le digest passent par ici, ne recablent plus rien,
+    et ne peuvent plus deriver. Le contrat d'arite est verrouille par
+    `test_cablage_lecture.py`.
+
+    Renvoie (leads, onglets) : `onglets` est le tuple brut de `lire_onglets`, pour
+    que l'appelant qui a besoin de la watchlist, des alertes ou des comptes par
+    source (le dashboard statique) le reutilise SANS relire le Sheet."""
+    onglets = lire_onglets(sheet_id, fichier_cs)
+    (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
+     lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
+     lignes_ungm, analyses_attrib, lignes_alertes, lignes_miga, lignes_ifc) = onglets
+    leads = construire_leads(
+        lignes_ted, lignes_bm, lignes_prive, enrichissement, lignes_attrib,
+        lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_ungm,
+        analyses_attrib, lignes_miga=lignes_miga, lignes_ifc=lignes_ifc)
+    return leads, onglets
+
+
 def preparer_alertes(lignes_alertes):
     """Lignes brutes de `alertes_radar` -> liste d'affichage pour le bandeau.
 
@@ -971,13 +1002,14 @@ def main():
         sys.exit(1)
 
     print("Lecture des onglets du Sheet...")
+    # Cablage UNIQUE via charger_leads : main ne deballe plus lire_onglets ni ne
+    # rappelle construire_leads a la main (c'etait la source des regressions du
+    # 02/08). On recupere aussi le tuple brut `onglets` pour les comptes par
+    # source et pour le rendu (watchlist + alertes), sans relire le Sheet.
+    leads, onglets = charger_leads(sheet_id, fichier_cs)
     (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
      lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
-     lignes_ungm, analyses_attrib, lignes_alertes, lignes_miga, lignes_ifc) = lire_onglets(sheet_id, fichier_cs)
-    leads = construire_leads(lignes_ted, lignes_bm, lignes_prive, enrichissement,
-                             lignes_attrib, lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd,
-                             lignes_ungm, analyses_attrib, lignes_miga=lignes_miga,
-                             lignes_ifc=lignes_ifc)
+     lignes_ungm, analyses_attrib, lignes_alertes, lignes_miga, lignes_ifc) = onglets
     print("  TED : {} | BM : {} | AfDB : {} | ADB : {} | EBRD : {} | UNGM : {} | "
           "ReliefWeb : {} | MIGA : {} | IFC : {} | total exploitable : {}".format(
               len(lignes_ted), len(lignes_bm), len(lignes_afdb), len(lignes_adb),
