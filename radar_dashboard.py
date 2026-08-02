@@ -1351,6 +1351,8 @@ GABARIT_HTML = r"""<!DOCTYPE html>
       <button data-src="ADB" aria-pressed="false">ADB</button>
       <button data-src="EBRD" aria-pressed="false">EBRD</button>
       <button data-src="RW" aria-pressed="false">ReliefWeb</button>
+      <button data-src="MIGA" aria-pressed="false">MIGA</button>
+      <button data-src="IFC" aria-pressed="false">IFC</button>
     </div>
     <div class="seg" id="triseg" role="group" aria-label="Tri">
       <button data-tri="score" aria-pressed="true">Importance</button>
@@ -1724,7 +1726,7 @@ function buildStats(){
       {k:'all',cls:'',n:fiches.length,l:'Tous les titulaires'}
     ];
   }else{
-    const av=LEADS.filter(l=>l.src==='TED'||l.src==='BM'||l.src==='AFDB'||l.src==='ADB'||l.src==='EBRD'||l.src==='UNGM'||l.src==='RW');
+    const av=LEADS.filter(l=>l.src==='TED'||l.src==='BM'||l.src==='AFDB'||l.src==='ADB'||l.src==='EBRD'||l.src==='UNGM'||l.src==='RW'||l.src==='MIGA'||l.src==='IFC');
     const c=a=>av.filter(l=>l.action===a).length;
     defs=[
       {k:'contacter',cls:'act',n:c('contacter'),l:'À contacter'},
