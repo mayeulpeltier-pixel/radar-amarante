@@ -182,7 +182,8 @@ def _onglet(conn, nom):
 
 
 def lire_onglets_pg(conn):
-    """Le meme 11-uplet que dash.lire_onglets, depuis radar_lignes.
+    """Les memes onglets que dash.lire_onglets (MIGA et IFC inclus), depuis
+    radar_lignes.
 
     Les lignes sont deja des dicts plats (forme canonique) : celles du
     rattrapage portent aussi statut_suivi/date_detection, celles de la double
@@ -220,9 +221,17 @@ def lire_onglets_pg(conn):
     analyses_attrib = _onglet(conn, "attributions_analyse")
     lignes_alertes = _onglet(conn, "alertes_radar")
 
+    # Vague 2 : MIGA (garanties risque politique) et IFC (investissements
+    # prives). Sources d'AVIS ecrites en base par leurs collecteurs. Absentes de
+    # l'application jusqu'au 02/08 : lues par le dashboard statique mais PAS ici,
+    # deux collecteurs valides restaient invisibles sur la surface applicative
+    # (le motif "orphelin"). Meme ordre de retour que dash.lire_onglets.
+    lignes_miga = _onglet(conn, "miga_radar")
+    lignes_ifc = _onglet(conn, "ifc_radar")
+
     return (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
             lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
-            lignes_ungm, analyses_attrib, lignes_alertes)
+            lignes_ungm, analyses_attrib, lignes_alertes, lignes_miga, lignes_ifc)
 
 
 # Quel champ humain pour quel onglet (avis = statut_suivi ; attributions =
@@ -248,17 +257,19 @@ def generer_page(conn):
     """Postgres -> HTML, en reutilisant le moteur du dashboard tel quel."""
     (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
      lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
-     lignes_ungm, analyses_attrib, lignes_alertes) = lire_onglets_pg(conn)
+     lignes_ungm, analyses_attrib, lignes_alertes,
+     lignes_miga, lignes_ifc) = lire_onglets_pg(conn)
     superposer_statuts(conn, [
         ("ted_radar", lignes_ted), ("bm_radar", lignes_bm),
         ("prive_radar", lignes_prive), ("attributions_radar", lignes_attrib),
         ("reliefweb_radar", lignes_rw), ("afdb_radar", lignes_afdb),
         ("adb_radar", lignes_adb), ("ebrd_radar", lignes_ebrd),
-        ("ungm_radar", lignes_ungm)])
+        ("ungm_radar", lignes_ungm), ("miga_radar", lignes_miga),
+        ("ifc_radar", lignes_ifc)])
     leads = dash.construire_leads(
         lignes_ted, lignes_bm, lignes_prive, enrichissement, lignes_attrib,
         lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_ungm,
-        analyses_attrib)
+        analyses_attrib, lignes_miga=lignes_miga, lignes_ifc=lignes_ifc)
     # api_statut=True : sur l'application, le bouton ecrit aussi en base.
     return dash.generer_html(leads, lignes_watchlist, api_statut=True,
                              alertes=lignes_alertes)
