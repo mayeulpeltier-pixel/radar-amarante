@@ -176,14 +176,17 @@ def _config_suivi():
 
 def _charger_leads(sheet_id, fichier_cs):
     """Lit le Sheet et reconstruit EXACTEMENT les memes leads que le dashboard,
-    en reutilisant sa plomberie (aucune duplication de logique)."""
+    en reutilisant sa plomberie (aucune duplication de logique).
+
+    Passe par `charger_leads`, le point d'entree UNIQUE du chemin Sheet : c'est
+    lui, et lui seul, qui deballe `lire_onglets` et cable `construire_leads`. Le
+    digest ne recable donc plus rien a la main -- c'est ce recablage, laisse en
+    arriere quand `lire_onglets` a grossi (10 -> 15 valeurs), qui cassait le
+    digest a chaque run ("too many values to unpack", avale en "lecture du Sheet
+    impossible", aucun e-mail envoye)."""
     import radar_dashboard as dash
-    (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
-     lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd,
-     lignes_watchlist) = dash.lire_onglets(sheet_id, fichier_cs)
-    return dash.construire_leads(
-        lignes_ted, lignes_bm, lignes_prive, enrichissement,
-        lignes_attrib, lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd)
+    leads, _onglets = dash.charger_leads(sheet_id, fichier_cs)
+    return leads
 
 
 def main():
