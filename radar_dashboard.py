@@ -360,6 +360,71 @@ def rang_tri(final, date_det, aujourdhui=None):
     return round(base * facteur, 3)
 
 
+# ===========================================================================
+# OBSERVABILITE DE RUN : ETAT DU DERNIER RUN PAR SOURCE (02/08/2026)
+# ===========================================================================
+# Quand le digest est tombe en silence (Niveau 0), rien dans la surface ne le
+# montrait. Ce bandeau derive, POUR CHAQUE SOURCE, son volume et la fraicheur de
+# son plus recent lead -- a partir des leads DEJA construits (aucune lecture ni
+# stockage supplementaire). Une source qui se tait (0 lead, ou plus rien de
+# recent) devient visible d'un coup d'oeil. Ce n'est pas un diagnostic de panne,
+# c'est un "coup d'oeil sante" : mieux vaut un "a verifier" injustifie qu'une
+# mort silencieuse.
+#
+# Seuils reglables (motif ADB) : au-dela de CALME_JOURS sans rien de neuf, la
+# source est marquee "ancien" (a regarder). FRAIS_JOURS = produit ce cycle-ci.
+SANTE_FRAIS_JOURS = int(os.environ.get("RADAR_SANTE_FRAIS_JOURS") or "4")
+SANTE_CALME_JOURS = int(os.environ.get("RADAR_SANTE_CALME_JOURS") or "14")
+
+# Sources attendues, dans l'ordre d'affichage. Une source de cette liste ABSENTE
+# des leads s'affiche a 0 (c'est ainsi qu'une source morte se voit).
+CATALOGUE_SOURCES = ("TED", "BM", "AFDB", "ADB", "EBRD", "UNGM", "RW",
+                     "MIGA", "IFC", "ATTRIB", "PRIVÉ")
+
+
+def sante_run(leads, aujourdhui=None):
+    """Etat du dernier run par source, derive des leads deja construits.
+
+    Pour chaque source : volume (n) et age du plus RECENT lead (freshest). Etat :
+      - "frais"   : quelque chose de neuf ce cycle (age <= FRAIS_JOURS)
+      - "calme"   : rien de tres recent mais raisonnable (<= CALME_JOURS)
+      - "ancien"  : plus rien de recent (> CALME_JOURS) -> a verifier
+      - "absent"  : aucun lead (source desactivee, ou tombee en panne)
+    Robuste aux formats de date mixtes (age calcule lead par lead, pas de
+    comparaison de chaines). Ne leve jamais."""
+    from datetime import date as _date
+    ref = aujourdhui or _date.today()
+    par_src = {}
+    for l in (leads or []):
+        s = l.get("src") or "?"
+        d = par_src.setdefault(s, {"n": 0, "age": None})
+        d["n"] += 1
+        a = _age_jours(l.get("date_det") or "", ref)
+        if a is not None and (d["age"] is None or a < d["age"]):
+            d["age"] = a
+    ordre = list(CATALOGUE_SOURCES) + [s for s in par_src if s not in CATALOGUE_SOURCES]
+    lignes = []
+    for s in ordre:
+        d = par_src.get(s)
+        if not d or d["n"] == 0:
+            lignes.append({"src": s, "n": 0, "age": None, "etat": "absent"})
+            continue
+        age = d["age"]
+        if age is None:
+            etat = "calme"                 # des leads, mais aucune date lisible
+        elif age <= SANTE_FRAIS_JOURS:
+            etat = "frais"
+        elif age <= SANTE_CALME_JOURS:
+            etat = "calme"
+        else:
+            etat = "ancien"
+        lignes.append({"src": s, "n": d["n"], "age": age, "etat": etat})
+    a_verifier = sum(1 for x in lignes if x["etat"] in ("ancien", "absent"))
+    actives = sum(1 for x in lignes if x["n"] > 0)
+    return {"date": ref.strftime("%d/%m/%Y"), "sources": lignes,
+            "actives": actives, "a_verifier": a_verifier}
+
+
 def ligne_vers_lead(row, source):
     """Transforme une ligne de Sheet (dict par nom de colonne) en lead unifie.
     Toutes les cellules passent par _txt() : gspread peut renvoyer des nombres
@@ -1060,6 +1125,9 @@ def generer_html(leads, watchlist=None, api_statut=False, alertes=None):
     outcomes = [{"secteur": (l.get("grp") or ""), "zone": (l.get("zone") or ""),
                  "statut": (l.get("statut") or "")} for l in leads]
     conversion_json = json.dumps(radar_retroaction.table_conversion(outcomes), ensure_ascii=False)
+    # Observabilite de run : etat par source, derive des leads (aucune lecture
+    # supplementaire). Rend visible une source qui s'est tue.
+    sante_json = json.dumps(sante_run(leads), ensure_ascii=False)
     # Config du bouton "Je contacte". PRIORITE aux variables d'environnement
     # (secrets GitHub Actions), pour ne plus stocker AUCUN secret dans le
     # depot. Repli sur suivi_config.py uniquement pour un usage local. Si les
@@ -1079,6 +1147,7 @@ def generer_html(leads, watchlist=None, api_statut=False, alertes=None):
             .replace("__META_JSON__", meta_json)
             .replace("__WATCHLIST_JSON__", watchlist_json)
             .replace("__CONVERSION_JSON__", conversion_json)
+            .replace("__SANTE_JSON__", sante_json)
             .replace("__SUIVI_URL__", json.dumps(surl))
             .replace("__SUIVI_TOKEN__", json.dumps(stok))
             .replace("__API_STATUT__", "true" if api_statut else "false"))
@@ -1203,6 +1272,22 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .count{font-family:var(--mono);font-size:0.7rem;color:var(--bone-dim);letter-spacing:0.06em;margin-bottom:14px}
   .alertes-pays{margin-bottom:18px}
   .alertes-pays:empty{display:none}
+  .sante-run{margin-bottom:16px;border:1px solid var(--line);border-radius:8px;background:var(--ink-2);padding:10px 12px}
+  .sante-run:empty{display:none}
+  .sante-tete{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:9px}
+  .sante-titre{font-family:var(--mono);font-size:0.62rem;letter-spacing:0.16em;text-transform:uppercase;color:var(--bone-dim)}
+  .sante-sub{font-family:var(--mono);font-size:0.62rem;letter-spacing:0.05em;color:var(--bone-faint)}
+  .sante-sub .warn{color:#dcb079}
+  .sante-grid{display:flex;flex-wrap:wrap;gap:6px}
+  .sante-chip{display:inline-flex;align-items:center;gap:7px;padding:4px 9px;border-radius:6px;border:1px solid var(--line);background:rgba(255,255,255,0.02);font-family:var(--mono);font-size:0.66rem;letter-spacing:0.03em;color:var(--bone-dim)}
+  .sante-chip .src{color:var(--bone);font-weight:600}
+  .sante-chip .n{color:var(--bone)}
+  .sante-chip .ag{color:var(--bone-faint)}
+  .sante-chip.frais{border-color:rgba(95,160,110,0.5)} .sante-chip.frais .dot{background:#5fa06e}
+  .sante-chip.calme{border-color:var(--line)} .sante-chip.calme .dot{background:var(--bone-faint)}
+  .sante-chip.ancien{border-color:rgba(200,137,59,0.55)} .sante-chip.ancien .dot{background:#c8893b}
+  .sante-chip.absent{opacity:0.55} .sante-chip.absent .dot{background:#7a3b41}
+  .sante-chip .dot{width:7px;height:7px;border-radius:50%;flex:none}
   .al-titre{font-family:var(--mono);font-size:0.62rem;letter-spacing:0.16em;text-transform:uppercase;color:var(--bone-dim);margin-bottom:8px}
   .al-liste{display:flex;flex-direction:column;gap:6px}
   .al-item{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:8px;text-decoration:none;color:var(--bone);background:rgba(255,255,255,0.02);border-left:3px solid var(--bone-faint);font-size:0.8rem}
@@ -1487,6 +1572,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
     <button class="export" id="export" title="Exporter la sélection courante en CSV (ouvrable dans Excel)">Exporter</button>
   </div>
   <div class="count" id="count"></div>
+  <div class="sante-run" id="santeRun"></div>
   <div class="alertes-pays" id="alertesPays"></div>
   <div class="leads" id="leads"></div>
   <footer id="foot"></footer>
@@ -1497,6 +1583,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
 <script>
 const LEADS = __LEADS_JSON__;
 const ALERTES = __ALERTES_JSON__;
+const SANTE = __SANTE_JSON__;
 const META = __META_JSON__;
 const WATCHLIST = __WATCHLIST_JSON__;
 const CONVERSION = __CONVERSION_JSON__;
@@ -2386,6 +2473,7 @@ buildStats();
 buildPeriod();
 buildComptes();
 renderAlertes();
+renderSante();
 render();
 
 // Section "Alertes pays" (option A) : bandeau de CONTEXTE, separe des leads.
@@ -2408,6 +2496,37 @@ function renderAlertes(){
     </a>`).join('');
   box.innerHTML=`<div class="al-titre">Alertes pays récentes (${ALERTES.length})</div>
     <div class="al-liste">${items}</div>`;
+}
+
+// Observabilite de run : etat du dernier run par source (volume + fraicheur).
+// Rend visible une source qui s'est tue -- ce qui manquait quand le digest est
+// tombe en silence. Derive cote Python (const SANTE), pas de calcul ici.
+function renderSante(){
+  const box=document.getElementById('santeRun');
+  if(!box) return;
+  if(!SANTE || !SANTE.sources || !SANTE.sources.length){ box.innerHTML=''; return; }
+  const nomSrc=s=>SRC_NOMS_META[s]||s;
+  const ageTxt=x=>{
+    if(x.etat==='absent'||x.n===0) return '—';
+    if(x.age===null||x.age===undefined) return 'n.c.';
+    if(x.age===0) return "aujourd'hui";
+    return 'il y a '+x.age+' j';
+  };
+  const chips=SANTE.sources.map(x=>`
+    <span class="sante-chip ${esc(x.etat)}" title="${esc(nomSrc(x.src))} · ${x.n} lead(s) · plus récent : ${esc(ageTxt(x))}">
+      <span class="dot"></span>
+      <span class="src">${esc(x.src)}</span>
+      <span class="n">${x.n}</span>
+      <span class="ag">${esc(ageTxt(x))}</span>
+    </span>`).join('');
+  const av=SANTE.a_verifier>0
+    ? `<span class="warn">${SANTE.a_verifier} à vérifier</span>`
+    : 'toutes actives';
+  box.innerHTML=`<div class="sante-tete">
+      <span class="sante-titre">État du dernier run</span>
+      <span class="sante-sub">${esc(SANTE.date||'')} · ${SANTE.actives} source(s) active(s) · ${av}</span>
+    </div>
+    <div class="sante-grid">${chips}</div>`;
 }
 </script>
 </body>
