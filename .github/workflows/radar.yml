@@ -107,6 +107,11 @@ jobs:
           RADAR_GDELT: "0"
           RADAR_ADB: "0"          # ADB desactive : portail rendu en JS, 0 resultat depuis l'infra CI (meme logique que GDELT). Retirer cette ligne pour reactiver.
           RADAR_PRIVES_DEBUG: "0"
+          # Retroaction (item 7) en mode OMBRE : mesure ce que la retroaction
+          # FERAIT (combien d'actions changeraient) sans rien appliquer au score.
+          # Zero risque, reversible. Passer a "1" pour l'activer en direct, "0"
+          # pour couper toute mesure. Le KPI apparait en fin de log du run.
+          RADAR_RETROACTION: "ombre"
           ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
           ADZUNA_APP_KEY: ${{ secrets.ADZUNA_APP_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
