@@ -468,11 +468,75 @@ def analyser(entreprise, secteur, article, appel=None):
 # ne peut pas etre promu en "contacter". Reutilise les autres poids de BITD.
 POIDS_PRIORITE_V2 = {"haute": 0.8, "moyenne": 0.5, "basse": 0.3}
 
-# Multiplicateurs de retroaction (item 7), charges dans main() si le flag
-# RADAR_RETROACTION est actif. None = retroaction desactivee (comportement par
-# defaut, scoring inchange).
+# Multiplicateurs de retroaction (item 7), charges dans main() selon le mode.
+# TROIS ETATS (RADAR_RETROACTION) :
+#   "0" (defaut) -> OFF   : rien n'est charge, scoring strictement inchange.
+#   "ombre"      -> OMBRE : les multiplicateurs sont charges et on CALCULE ce que
+#                   la retroaction FERAIT (combien d'actions changeraient), mais
+#                   on n'applique RIEN au score. Sert a mesurer l'impact et a
+#                   gagner en confiance avant de brancher en direct.
+#   "1"/"actif"  -> ACTIF : charges ET appliques au score final (comportement
+#                   historique).
+# _RETRO = None quand OFF (garde le comportement par defaut, scoring inchange).
 _RETRO = None
+_RETRO_MODE = "off"        # "off" | "ombre" | "actif"
+_RETRO_OMBRE = None        # accumulateur d'observation (rempli en mode OMBRE)
 CONF_MIN_CONTACTER = 0.6   # sous ce niveau, action plafonnee a "surveiller"
+
+
+def _mode_retroaction(valeur_env):
+    """Traduit RADAR_RETROACTION en mode. Tolerant a la casse / aux synonymes."""
+    v = (valeur_env or "0").strip().lower()
+    if v in ("1", "actif", "on", "live"):
+        return "actif"
+    if v in ("ombre", "shadow", "observation", "dry"):
+        return "ombre"
+    return "off"
+
+
+def _action_pour(final, conf):
+    """Regle d'action UNIQUE (contacter / surveiller / ignorer), avec garde-fou
+    confiance. Source de verite partagee par le score reel ET l'observation
+    d'ombre, pour qu'ils ne divergent jamais."""
+    action = ("contacter" if final >= bitd.SEUIL_CONTACTER
+              else "surveiller" if final >= bitd.SEUIL_SURVEILLER else "ignorer")
+    if action == "contacter" and conf < CONF_MIN_CONTACTER:
+        action = "surveiller"
+    return action
+
+
+def nouvel_observateur_ombre():
+    """Accumulateur des effets QU'AURAIT la retroaction si elle etait active."""
+    return {"n": 0, "actions_changees": 0, "vers_contacter": 0,
+            "quittent_contacter": 0, "somme_delta_abs": 0.0}
+
+
+def _enregistrer_ombre(obs, action_reelle, action_ombre, final_reel, final_ombre):
+    """Note, pour un signal, l'ecart entre l'action REELLE (retro non appliquee)
+    et l'action QU'AURAIT donnee la retroaction. C'est le changement d'ACTION,
+    pas le delta de score, qui mesure l'impact commercial reel."""
+    if obs is None:
+        return
+    obs["n"] += 1
+    obs["somme_delta_abs"] += abs(final_ombre - final_reel)
+    if action_ombre != action_reelle:
+        obs["actions_changees"] += 1
+        if action_ombre == "contacter":
+            obs["vers_contacter"] += 1
+        elif action_reelle == "contacter":
+            obs["quittent_contacter"] += 1
+
+
+def resume_ombre(obs):
+    """Phrase de journal (ou None si aucune observation). KPI = actions qui
+    changeraient si la retroaction passait en direct."""
+    if not obs or not obs["n"]:
+        return None
+    return ("Retroaction OMBRE : sur {} signal(aux) score(s), la retroaction "
+            "aurait change {} action(s) ({} -> contacter, {} hors contacter) ; "
+            "|delta score| moyen {:.2f}. (Rien n'a ete applique.)").format(
+                obs["n"], obs["actions_changees"], obs["vers_contacter"],
+                obs["quittent_contacter"], obs["somme_delta_abs"] / obs["n"])
 
 
 def scorer_signal(extraction, priorite_compte, iso3=None):
@@ -493,21 +557,26 @@ def scorer_signal(extraction, priorite_compte, iso3=None):
     else:
         nom_fr, zone = (extraction.get("pays") or ""), "Non classe"
     # Retroaction (item 7) : nuance le score final selon la conversion observee
-    # (secteur x zone). NEUTRE si desactivee (flag off) ou donnees insuffisantes.
+    # (secteur x zone). NEUTRE si desactivee (mode off) ou donnees insuffisantes.
     # On ne touche qu'au versant commercial via le score final, jamais a la
     # surete (evaluation de risque objective).
-    if _RETRO:
-        final = round(final * radar_retroaction.mult_pour(
-            _RETRO, extraction.get("type_activite"), zone), 1)
-    action = ("contacter" if final >= bitd.SEUIL_CONTACTER
-              else "surveiller" if final >= bitd.SEUIL_SURVEILLER else "ignorer")
-    # Garde-fou confiance : un signal peu sur ne monte jamais en "contacter".
+    mult = radar_retroaction.mult_pour(
+        _RETRO, extraction.get("type_activite"), zone) if _RETRO else 1.0
+    final_brut = final
+    if _RETRO and _RETRO_MODE == "actif":
+        final = round(final * mult, 1)
     try:
         conf = float(extraction.get("confiance") or 0)
     except (TypeError, ValueError):
         conf = 0
-    if action == "contacter" and conf < CONF_MIN_CONTACTER:
-        action = "surveiller"
+    action = _action_pour(final, conf)
+    # OBSERVATION (mode ombre) : que FERAIT la retroaction si elle etait active ?
+    # On calcule le score/action qu'elle DONNERAIT, sans jamais l'appliquer au
+    # resultat renvoye. Seul le mode ombre remplit l'accumulateur.
+    if _RETRO and _RETRO_MODE == "ombre":
+        final_ombre = round(final_brut * mult, 1)
+        _enregistrer_ombre(_RETRO_OMBRE, action,
+                           _action_pour(final_ombre, conf), final_brut, final_ombre)
     return {"final": final, "surete": surete, "commercial": commercial,
             "zone": zone, "action": action, "nom": nom_fr}
 
@@ -736,18 +805,22 @@ def main():
     deja_vus = set(vus_list)
     cles_existantes = bitd.cles_evenements_existantes(sheet_id, fichier)
 
-    # Boucle de retroaction (item 7), DESACTIVEE par defaut (RADAR_RETROACTION=1
-    # pour l'activer). Apprend des issues gagne/perdu pour nuancer le scoring,
-    # secteur x zone. Prudente : neutre tant qu'une categorie n'a pas assez
-    # d'issues. Lecture seule du Sheet, ne cree aucun point de defaillance.
-    global _RETRO
+    # Boucle de retroaction (item 7). TROIS modes via RADAR_RETROACTION :
+    #   off (defaut) : rien. ombre : on MESURE l'impact sans l'appliquer. actif :
+    #   on applique au score. Apprend des issues gagne/perdu, secteur x zone.
+    #   Prudente : neutre tant qu'une categorie n'a pas assez d'issues. Lecture
+    #   seule du Sheet, ne cree aucun point de defaillance.
+    global _RETRO, _RETRO_MODE, _RETRO_OMBRE
+    _RETRO_MODE = _mode_retroaction(os.environ.get("RADAR_RETROACTION", "0"))
     _RETRO = None
-    if os.environ.get("RADAR_RETROACTION", "0") == "1" and sheet_id and fichier:
+    _RETRO_OMBRE = nouvel_observateur_ombre() if _RETRO_MODE == "ombre" else None
+    if _RETRO_MODE in ("actif", "ombre") and sheet_id and fichier:
         _RETRO = radar_retroaction.multiplicateurs(_charger_outcomes_prive(sheet_id, fichier))
         ajustees = sum(1 for d in radar_retroaction.DIMENSIONS
                        for m in _RETRO[d].values() if m != 1.0)
-        print("Retroaction ACTIVE : {} issue(s), taux de base {:.0%}, "
-              "{} categorie(s) ajustee(s).".format(_RETRO["n"], _RETRO["base"], ajustees))
+        label = "ACTIVE" if _RETRO_MODE == "actif" else "OMBRE (observation, non appliquee)"
+        print("Retroaction {} : {} issue(s), taux de base {:.0%}, "
+              "{} categorie(s) ajustee(s).".format(label, _RETRO["n"], _RETRO["base"], ajustees))
 
     # Fenetre de rotation : on borne le nombre d'ENTREPRISES par run (le reseau
     # est le facteur limitant). Priorite : watchlist curee (majors deliberement
@@ -833,6 +906,12 @@ def main():
             print("ERREUR ecriture Sheet : {}".format(e))
     else:
         print("(dry-run : pas de Sheet configure)")
+
+    # Retroaction en mode OMBRE : bilan de ce qu'elle AURAIT change ce run. C'est
+    # la mesure a suivre run apres run avant de decider de passer en actif.
+    phrase_ombre = resume_ombre(_RETRO_OMBRE)
+    if phrase_ombre:
+        print(phrase_ombre)
 
     # Persistance de l'ETAT inter-runs dans un fichier versionne, INDEPENDAMMENT
     # du Sheet (survit meme si le Sheet est indisponible). Le workflow commite
