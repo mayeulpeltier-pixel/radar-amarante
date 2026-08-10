@@ -31,6 +31,41 @@ NOM_ONGLET_TED = "ted_radar"
 NOM_ONGLET_BM = "bm_radar"
 
 # ===========================================================================
+# TRI "IMPORTANCE" : SCORE DOMINANT, FRAICHEUR EN NUANCE (02/08/2026)
+# ===========================================================================
+# Le tri par defaut ("Importance") classait par score final PUR : un lead
+# detecte il y a 40 jours passait devant un lead d'hier a peine moins bien note.
+# Or "en amont" veut dire frais. On introduit un RANG = score attenue par l'age,
+# applique UNIQUEMENT au tri -- le score AFFICHE reste le score reel, et les
+# onglets "Urgence" et "Recents" ne changent pas.
+#
+# DOCTRINE (identique au collecteur TED, cf. CLAUDE.md §7) : le SCORE domine, la
+# fraicheur DEPARTAGE. Un lead frais mais faible ne double jamais un lead fort
+# ancien ; un lead fort ancien perd juste assez de rang pour qu'un lead RECENT
+# ET COMPARABLE repasse devant.
+#
+#   facteur(age) = PLANCHER + (1 - PLANCHER) * 0.5 ** (age / DEMIVIE)
+#     age 0 j        -> 1.00           (frais : score plein)
+#     age = DEMIVIE  -> a mi-chemin entre 1.00 et PLANCHER
+#     age -> +inf    -> PLANCHER       (jamais 0 : un vieux lead fort reste fort)
+#
+# Defauts CONSERVATEURS (score tres dominant) : DEMIVIE=45 j, PLANCHER=0.85.
+# Exemple : un 7.0 vaut 7.0 frais, ~6.5 a 40 j, ~6.4 a 60 j. Un 6.8 frais
+# (rang 6.8) repasse donc devant un 7.0 vieux de 40 j (rang ~6.5), ce qui
+# corrige le cas signale ("un lead ancien un peu mieux note enterrait un lead
+# frais"). Mais un 5.8 frais (rang 5.8) reste DERRIERE ce meme 7.0 ancien, et un
+# 9.0 ancien (rang ~8.4 a 60 j) reste tout en haut. Score dominant, fraicheur en
+# nuance -- pas une bascule vers le tri par date (qui reste l'onglet "Recents").
+#
+# Reglable / desactivable sans toucher au code (motif ADB) :
+#   RADAR_TRI_FRAICHEUR=0     -> desactive (tri "Importance" = score pur, comme avant)
+#   RADAR_TRI_DEMIVIE_JOURS   -> vitesse d'attenuation (defaut 45 j ; plus petit = plus agressif)
+#   RADAR_TRI_PLANCHER        -> part du score jamais perdue (defaut 0.85 ; plus bas = plus agressif)
+RADAR_TRI_FRAICHEUR = os.environ.get("RADAR_TRI_FRAICHEUR", "1") != "0"
+RADAR_TRI_DEMIVIE_JOURS = float(os.environ.get("RADAR_TRI_DEMIVIE_JOURS") or "45")
+RADAR_TRI_PLANCHER = float(os.environ.get("RADAR_TRI_PLANCHER") or "0.85")
+
+# ===========================================================================
 # RESOLUTION PAYS -> (nom affiche, zone)
 # BM stocke le NOM du pays, TED stocke un CODE ISO. On gere les deux.
 # Les zones sont volontairement larges (lecture operationnelle, pas geographie fine).
@@ -274,6 +309,55 @@ def _mois_depuis_date(s):
     if 1 <= mois <= 12:
         return ("{}-{:02d}".format(annee, mois), "{} {}".format(_MOIS_FR[mois], annee))
     return ("", "Sans date")
+
+
+def _age_jours(date_str, aujourdhui=None):
+    """Age en jours d'une date de detection (ISO AAAA-MM-JJ ou JJ/MM/AAAA).
+    None si illisible. Jamais negatif (une date future compte comme age 0)."""
+    from datetime import date as _date
+    import re
+    s = _txt(date_str)
+    an = mo = jo = None
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", s)
+    if m:
+        an, mo, jo = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    else:
+        m2 = re.match(r"(\d{2})/(\d{2})/(\d{4})", s)
+        if m2:
+            jo, mo, an = int(m2.group(1)), int(m2.group(2)), int(m2.group(3))
+    if an is None:
+        return None
+    try:
+        d = _date(an, mo, jo)
+    except ValueError:
+        return None
+    ref = aujourdhui or _date.today()
+    return max(0, (ref - d).days)
+
+
+def rang_tri(final, date_det, aujourdhui=None):
+    """Cle de tri "Importance" : le score attenue par l'age de detection.
+
+    N'affecte QUE l'ordre d'affichage, JAMAIS le score montre a l'ecran (qui
+    reste `final`). Le facteur est borne par PLANCHER : un lead ancien mais fort
+    ne peut pas tomber sous PLANCHER x son score, donc il ne se fait doubler que
+    par un lead RECENT ET COMPARABLE, jamais par un lead frais mais faible.
+
+    Robuste : fraicheur desactivee (RADAR_TRI_FRAICHEUR=0) ou date illisible ->
+    renvoie le score brut, aucune penalite injustifiee. Score non numerique ->
+    0.0 (le lead ira en fin de liste, comme un score nul)."""
+    try:
+        base = float(final)
+    except (TypeError, ValueError):
+        return 0.0
+    if not RADAR_TRI_FRAICHEUR:
+        return base
+    age = _age_jours(date_det, aujourdhui)
+    if age is None:
+        return base
+    demivie = RADAR_TRI_DEMIVIE_JOURS if RADAR_TRI_DEMIVIE_JOURS > 0 else 30.0
+    facteur = RADAR_TRI_PLANCHER + (1.0 - RADAR_TRI_PLANCHER) * (0.5 ** (age / demivie))
+    return round(base * facteur, 3)
 
 
 def ligne_vers_lead(row, source):
@@ -623,7 +707,15 @@ def construire_leads(lignes_ted, lignes_bm, lignes_prive=None,
             uniques[cle] = l
     leads = list(uniques.values())
 
-    leads.sort(key=lambda l: l["final"], reverse=True)
+    # RANG DE TRI : score attenue par l'age (cf. rang_tri). Calcule APRES la
+    # dedup (qui, elle, garde l'occurrence au meilleur score, independamment de
+    # l'age) et expose au JS via le champ `rang` (leads serialises tels quels).
+    # Le score AFFICHE (`final`) n'est pas touche. Departage a rang egal : le
+    # score brut, pour que deux leads de meme rang gardent l'ordre par valeur.
+    for l in leads:
+        l["rang"] = rang_tri(l.get("final", 0), l.get("date_det", ""))
+
+    leads.sort(key=lambda l: (l["rang"], l["final"]), reverse=True)
     return leads
 
 
@@ -2033,7 +2125,10 @@ function render(){
       return b.final-a.final;            // sinon, par score
     });
   }else{
-    filtered.sort((a,b)=> b.final-a.final);
+    // "Importance" : rang = score attenue par la fraicheur (calcule cote
+    // Python). Repli sur le score brut si `rang` absent (page en cache d'avant
+    // le chantier). Departage a rang egal par le score reel.
+    filtered.sort((a,b)=> ((b.rang!=null?b.rang:b.final)-(a.rang!=null?a.rang:a.final)) || (b.final-a.final));
   }
   updateMap(filtered);
   const moisLabel = state.mois ? (META.mois.find(m=>m.cle===state.mois)||{}).label : null;
