@@ -26,6 +26,7 @@ Proprietes testees :
 import os
 import tempfile
 import unittest
+from datetime import date, timedelta
 
 import signaux_prives as sp
 import radar_etat
@@ -35,9 +36,11 @@ def _cpt(nom, prio="moyenne"):
     return {"entreprise": nom, "priorite_socle": prio}
 
 
-def _attrib(nom):
+def _attrib(nom, date_attr=None):
+    # Attributaire RECENT par defaut (date du jour) : reste en tete prioritaire.
     return {"entreprise": nom, "priorite_socle": "haute",
-            "secteur": "Attributaire (marche gagne)"}
+            "secteur": "Attributaire (marche gagne)",
+            "date_attribution": date_attr or date.today().isoformat()}
 
 
 class TestPartitionTete(unittest.TestCase):
@@ -51,9 +54,11 @@ class TestPartitionTete(unittest.TestCase):
         self.assertEqual(comp["n_reste"], 3)
 
     def test_est_prioritaire(self):
-        self.assertTrue(sp._est_prioritaire({"priorite_socle": "haute"}))
-        self.assertTrue(sp._est_prioritaire({"priorite_socle": " Haute "}))
-        self.assertFalse(sp._est_prioritaire({"priorite_socle": "moyenne"}))
+        recent = date.today().isoformat()
+        self.assertTrue(sp._est_prioritaire({"priorite_socle": "haute", "date_attribution": recent}))
+        self.assertTrue(sp._est_prioritaire({"priorite_socle": " Haute ", "date_attribution": recent}))
+        self.assertFalse(sp._est_prioritaire({"priorite_socle": "haute"}))      # sans date -> queue
+        self.assertFalse(sp._est_prioritaire({"priorite_socle": "moyenne", "date_attribution": recent}))
         self.assertFalse(sp._est_prioritaire({}))
 
 
@@ -139,6 +144,56 @@ class TestAvanceCurseurs(unittest.TestCase):
         # debut_prio = 10 ; tete = min(10,12,35)=10 ; traite 10 -> (10+10)%12 = 8
         pp, pq = sp.avancer_curseurs(comp, len(comp["fenetre"]))
         self.assertEqual(pp, 8)
+
+
+class TestRecenceAttributaire(unittest.TestCase):
+    """La tete = attributaires RECENTS seulement (deploiement en cours)."""
+
+    def setUp(self):
+        self.auj = date(2026, 8, 11)
+
+    def test_recent_est_prioritaire(self):
+        recent = (self.auj - timedelta(days=60)).isoformat()
+        self.assertTrue(sp._est_prioritaire(
+            {"priorite_socle": "haute", "date_attribution": recent}, self.auj))
+
+    def test_ancien_retombe_en_queue(self):
+        vieux = (self.auj - timedelta(days=400)).isoformat()   # > 12 mois
+        self.assertFalse(sp._est_prioritaire(
+            {"priorite_socle": "haute", "date_attribution": vieux}, self.auj))
+
+    def test_sans_date_pas_prioritaire(self):
+        self.assertFalse(sp._est_prioritaire({"priorite_socle": "haute"}, self.auj))
+
+    def test_non_haute_jamais_prioritaire(self):
+        recent = (self.auj - timedelta(days=10)).isoformat()
+        self.assertFalse(sp._est_prioritaire(
+            {"priorite_socle": "moyenne", "date_attribution": recent}, self.auj))
+
+    def test_composer_exclut_les_attributaires_anciens_de_la_tete(self):
+        vieux = _attrib("VIEUX", (date.today() - timedelta(days=500)).isoformat())
+        recent = _attrib("RECENT")                              # date du jour
+        comptes = [vieux, recent] + [_cpt("R%d" % i) for i in range(30)]
+        comp = sp.composer_fenetre_deux_vitesses(comptes, 35, "10", 0, 0)
+        tete = {c["entreprise"] for c in comp["slice_prio"]}
+        self.assertIn("RECENT", tete)
+        self.assertNotIn("VIEUX", tete, "Un vieux marche n'est plus 'en cours' -> queue.")
+        # VIEUX n'est pas perdu : il est dans la queue.
+        queue = {c["entreprise"] for c in comp["slice_reste"]}
+        self.assertIn("VIEUX", queue)
+
+
+class TestSeedCaptureDate(unittest.TestCase):
+    def test_capture_la_date_la_plus_recente_par_societe(self):
+        valeurs = [["gagnant", "pays_execution", "date_publication"],
+                   ["Acme Security", "Mali", "2026-01-10"],
+                   ["Acme Security", "Niger", "2026-07-01"],   # plus recent
+                   ["Beta Defense", "Tchad", ""]]
+        comptes = sp.seed_depuis_attributions(valeurs)
+        par_nom = {c["entreprise"]: c for c in comptes}
+        self.assertIn("Acme Security", par_nom)
+        self.assertEqual(par_nom["Acme Security"]["date_attribution"], "2026-07-01")
+        self.assertEqual(par_nom["Beta Defense"]["date_attribution"], "")
 
 
 class TestSecondCurseurEtat(unittest.TestCase):
