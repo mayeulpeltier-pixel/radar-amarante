@@ -46,11 +46,30 @@ def charger(chemin=None):
         return None, None
 
 
-def sauver(curseur, vus_anciens, vus_nouveaux=None, chemin=None):
+def charger_prio(chemin=None):
+    """Curseur de la TETE prioritaire (rotation a deux vitesses, item cadence).
+
+    Second curseur, independant de `curseur` (qui balaie la queue). Renvoie 0 si
+    absent : un etat ecrit avant ce chantier n'a pas la cle, on repart de 0 sans
+    casser (la tete est petite, se recale en quelques runs). Volontairement
+    separe de `charger()` pour ne pas changer la signature de retour existante."""
+    chemin = chemin or CHEMIN_ETAT
+    if not os.path.exists(chemin):
+        return 0
+    try:
+        with open(chemin, encoding="utf-8") as f:
+            return int(json.load(f).get("curseur_prio", 0))
+    except (ValueError, OSError, TypeError):
+        return 0
+
+
+def sauver(curseur, vus_anciens, vus_nouveaux=None, chemin=None, curseur_prio=0):
     """Ecrit l'etat dans le fichier JSON (ecriture atomique).
 
     vus_anciens : liste ORDONNEE (plus ancien -> plus recent) deja connue.
     vus_nouveaux : iterable des vus de ce run, ajoutes a la fin.
+    curseur_prio : curseur de la tete prioritaire (0 par defaut ; les appelants
+      qui n'utilisent pas la rotation a deux vitesses n'ont rien a changer).
 
     Deduplique en preservant l'ordre, puis plafonne aux MAX_VUS_MEMOIRE plus
     recents (les plus anciens sont oublies en premier ; la fraicheur reelle est
@@ -68,6 +87,7 @@ def sauver(curseur, vus_anciens, vus_nouveaux=None, chemin=None):
         ordonnes = ordonnes[-MAX_VUS_MEMOIRE:]
     data = {
         "curseur": int(curseur),
+        "curseur_prio": int(curseur_prio),
         "vus": ordonnes,
         "maj": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
     }
