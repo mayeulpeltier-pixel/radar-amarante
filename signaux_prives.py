@@ -94,6 +94,60 @@ def taille_fenetre_pour(valeur_env=None, defaut=35):
     except (TypeError, ValueError):
         return defaut
 
+
+def _est_prioritaire(compte):
+    """Compte de la TETE prioritaire = attributaire (priorite_socle 'haute',
+    deploiement en cours). La watchlist curee est 'moyenne', la defense n'a pas
+    de priorite : elles restent dans la queue rotative."""
+    return str(compte.get("priorite_socle", "")).strip().lower() == "haute"
+
+
+def tete_pour(valeur_env, taille_fenetre, n_prio, defaut=10):
+    """Taille de la tete prioritaire scannee a CHAQUE run. Bornée : jamais plus
+    que le pool prioritaire, ni que la fenetre, et laisse toujours >=1 place a la
+    queue tant qu'il reste des comptes non prioritaires. 0 si aucun prioritaire
+    (comportement d'avant : toute la fenetre vient de la rotation normale)."""
+    try:
+        t = max(0, int(valeur_env)) if valeur_env not in (None, "") else defaut
+    except (TypeError, ValueError):
+        t = defaut
+    return max(0, min(t, n_prio, taille_fenetre))
+
+
+def composer_fenetre_deux_vitesses(comptes, taille_fenetre, taille_tete_env,
+                                   curseur, curseur_prio):
+    """Compose la fenetre du run : une TETE prioritaire (attributaires, curseur
+    dedie) puis une QUEUE rotative (le reste, curseur general). PURE (aucun
+    reseau) pour etre testable. La tete est en premier : l'avance des curseurs
+    reste honnete meme sur un arret anticipe. Renvoie un dict avec la fenetre,
+    les deux tranches, les tailles de pools et les positions de depart."""
+    prioritaires, reste = [], []
+    for c in (comptes or []):
+        (prioritaires if _est_prioritaire(c) else reste).append(c)
+    n_prio, n_reste = len(prioritaires), len(reste)
+    taille_tete = tete_pour(taille_tete_env, taille_fenetre, n_prio)
+    debut_prio = curseur_prio % n_prio if n_prio else 0
+    debut_reste = curseur % n_reste if n_reste else 0
+    slice_prio = [prioritaires[(debut_prio + i) % n_prio]
+                  for i in range(min(taille_tete, n_prio))]
+    reste_dispo = max(0, taille_fenetre - len(slice_prio))
+    slice_reste = [reste[(debut_reste + i) % n_reste]
+                   for i in range(min(reste_dispo, n_reste))]
+    return {"fenetre": slice_prio + slice_reste,
+            "slice_prio": slice_prio, "slice_reste": slice_reste,
+            "n_prio": n_prio, "n_reste": n_reste,
+            "debut_prio": debut_prio, "debut_reste": debut_reste}
+
+
+def avancer_curseurs(comp, traitees):
+    """(prochain_prio, prochain_queue) apres `traitees` comptes reellement faits.
+    La tete etant en tete de fenetre, les premiers traites sont prioritaires."""
+    prio_faits = min(traitees, len(comp["slice_prio"]))
+    reste_faits = max(0, traitees - len(comp["slice_prio"]))
+    prochain_prio = (comp["debut_prio"] + prio_faits) % comp["n_prio"] if comp["n_prio"] else 0
+    prochain = (comp["debut_reste"] + reste_faits) % comp["n_reste"] if comp["n_reste"] else 0
+    return prochain_prio, prochain
+
 # Mode diagnostic (RADAR_PRIVES_DEBUG=1) : affiche la decision LLM pour chaque
 # offre Adzuna analysee (gardee/rejetee + raison). N'ecrit rien de plus.
 DEBUG = os.environ.get("RADAR_PRIVES_DEBUG", "0") == "1"
@@ -793,6 +847,7 @@ def main():
     # fichier n'existe pas encore : migration douce depuis l'ancien etat du
     # Sheet pour ne pas repartir de zero (et donc ne pas tout retraiter).
     curseur, vus_list = radar_etat.charger()
+    curseur_prio = radar_etat.charger_prio()
     if curseur is None:
         if sheet_id and fichier:
             curseur = bitd.lire_curseur(sheet_id, fichier)
@@ -822,17 +877,22 @@ def main():
         print("Retroaction {} : {} issue(s), taux de base {:.0%}, "
               "{} categorie(s) ajustee(s).".format(label, _RETRO["n"], _RETRO["base"], ajustees))
 
-    # Fenetre de rotation : on borne le nombre d'ENTREPRISES par run (le reseau
-    # est le facteur limitant). Priorite : watchlist curee (majors deliberement
-    # choisis, forts deployeurs) d'abord, attributaires ensuite (couverts par la
-    # rotation sur les runs suivants).
-    comptes.sort(key=lambda c: 1 if str(c.get("secteur", "")).startswith("Attributaire") else 0)
+    # Rotation A DEUX VITESSES (item cadence). Le probleme : un balayage modulaire
+    # unique met ~3 mois a couvrir ~865 entites, or un signal de deploiement
+    # (offre "Country Manager Bamako") vit quelques semaines. On reserve donc une
+    # TETE prioritaire (attributaires = deploiement en cours) scannee a CHAQUE
+    # run, curseur dedie ; la QUEUE (watchlist curee + defense) tourne normalement,
+    # curseur general. Latence de la tete : len(prio)/taille_tete runs au lieu du
+    # cycle complet (ex. 60 attributaires / 10 = 6 runs ~ 3 semaines).
     taille_fenetre = taille_fenetre_pour(os.environ.get("RADAR_PRIVES_ENTREPRISES"))
-    n = len(comptes)
-    debut = curseur % n if n else 0
-    fenetre = [comptes[(debut + i) % n] for i in range(min(taille_fenetre, n))]
-    print("Watchlist : {} compte(s) au total. Fenetre de ce run : {} "
-          "(curseur {} -> ...).".format(n, len(fenetre), debut))
+    comp = composer_fenetre_deux_vitesses(
+        comptes, taille_fenetre, os.environ.get("RADAR_PRIVES_TETE"),
+        curseur, curseur_prio)
+    fenetre = comp["fenetre"]     # la tete d'abord (curseur honnete en cas d'arret)
+    print("Watchlist : {} compte(s) ({} attributaire(s) prioritaire(s), {} en queue). "
+          "Ce run : {} en tete + {} en queue (curseurs prio {} / queue {}).".format(
+              len(comptes), comp["n_prio"], comp["n_reste"], len(comp["slice_prio"]),
+              len(comp["slice_reste"]), comp["debut_prio"], comp["debut_reste"]))
 
     budget = {"reste": bitd.MAX_ANALYSES_PAR_RUN}
     vus_ce_run = set()
@@ -872,18 +932,18 @@ def main():
             break
         time.sleep(PAUSE_ENTREPRISE)   # respiration anti rate-limit Google News
 
-    # CURSEUR HONNETE : il n'avance que des entreprises REELLEMENT traitees.
-    # Avant, il etait calcule sur la fenetre entiere AVANT la boucle : un arret
-    # anticipe (budget epuise) faisait sauter les entreprises non traitees, qui
-    # n'etaient alors revues qu'au cycle suivant. Elles sont desormais reprises
-    # des le prochain run.
-    prochain = (debut + traitees) % n if n else 0
+    # CURSEURS HONNETES : chacun n'avance que des comptes REELLEMENT traites.
+    # La tete est en premier dans la fenetre : sur un arret anticipe (budget /
+    # garde-temps), on sait combien de prioritaires ont ete faits (les premiers)
+    # et combien de la queue (le reste). Les non-traites sont repris au run
+    # suivant, sans saut.
+    prochain_prio, prochain = avancer_curseurs(comp, traitees)
     if arret and traitees < len(fenetre):
-        print("  -> {} entreprise(s) non traitee(s) ({}) : elles seront reprises "
-              "au prochain run.".format(len(fenetre) - traitees, arret))
+        print("  -> {} compte(s) non traite(s) ({}) : repris au prochain run.".format(
+            len(fenetre) - traitees, arret))
 
-    print("Temps moteur : {:.0f}s. Signaux retenus : {}. Prochain curseur : {}.".format(
-        time.time() - t0, len(resultats), prochain))
+    print("Temps moteur : {:.0f}s. Signaux retenus : {}. Prochains curseurs : "
+          "prio {}, queue {}.".format(time.time() - t0, len(resultats), prochain_prio, prochain))
     if ADZUNA_APP_ID and ADZUNA_APP_KEY:
         print("Adzuna : {appels} appel(s), {offres} offre(s) zone risque, "
               "{erreurs} erreur(s).".format(**_ADZUNA_STATS))
@@ -916,9 +976,9 @@ def main():
     # Persistance de l'ETAT inter-runs dans un fichier versionne, INDEPENDAMMENT
     # du Sheet (survit meme si le Sheet est indisponible). Le workflow commite
     # radar_etat.json en fin de run.
-    n_vus = radar_etat.sauver(prochain, vus_list, vus_ce_run)
-    print("radar_etat : {} vus memorises (plafond {}), curseur -> {} (fichier {}).".format(
-        n_vus, radar_etat.MAX_VUS_MEMOIRE, prochain, radar_etat.CHEMIN_ETAT))
+    n_vus = radar_etat.sauver(prochain, vus_list, vus_ce_run, curseur_prio=prochain_prio)
+    print("radar_etat : {} vus memorises (plafond {}), curseurs -> prio {} / queue {} (fichier {}).".format(
+        n_vus, radar_etat.MAX_VUS_MEMOIRE, prochain_prio, prochain, radar_etat.CHEMIN_ETAT))
 
 
 if __name__ == "__main__":
