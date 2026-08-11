@@ -972,6 +972,16 @@ def main():
     phrase_ombre = resume_ombre(_RETRO_OMBRE)
     if phrase_ombre:
         print(phrase_ombre)
+    # Persistance de la tendance (best-effort, ne casse jamais le run) : le KPI
+    # d'ombre s'accumule dans 'runs_radar', pour decider plus tard sur donnees.
+    if _RETRO_OMBRE is not None:
+        try:
+            import radar_runs
+            print("(pg) " + radar_runs.enregistrer(
+                "ombre", radar_runs.charge_ombre(_RETRO_OMBRE, _RETRO_MODE)))
+        except Exception as e:
+            print("(pg) stat de run ombre non persistee ({}) -- run non affecte".format(
+                str(e)[:100]))
 
     # Persistance de l'ETAT inter-runs dans un fichier versionne, INDEPENDAMMENT
     # du Sheet (survit meme si le Sheet est indisponible). Le workflow commite
