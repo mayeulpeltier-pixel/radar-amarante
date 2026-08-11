@@ -619,16 +619,35 @@ def attribution_vers_lead(row):
 
 
 def _norm_ent(s):
-    """Normalisation PRUDENTE d'un nom d'entreprise (miroir Python du JS) :
-    minuscules, sans accents, ponctuation et formes juridiques retirees.
-    Sert a matcher l'enrichissement malgre les variantes (« SA », casse...)."""
+    """Cle canonique d'un nom d'entreprise -- SOURCE DE VERITE UNIQUE de la
+    resolution d'entite : fusion transverse (watchlist / signaux prives /
+    titulaires dans la fiche 360) ET rattachement de l'enrichissement passent par
+    elle. Minuscules, sans accents, separateurs unifies, connecteurs et formes
+    juridiques (abregees OU en toutes lettres : ltd = limited, corp = corporation)
+    retires. Le JS ne recalcule plus cette cle : il lit `ent_cle`, precalcule ici
+    (voir construire_leads) ; `normEntreprise` cote JS n'est qu'un repli pour
+    d'anciennes pages en cache et reste le miroir exact de cette fonction."""
     s = unicodedata.normalize("NFD", str(s or "").lower())
     s = "".join(c for c in s if unicodedata.category(c) != "Mn")
-    s = re.sub(r"[.,'()]", " ", s)
-    s = re.sub(r"\b(sa|sas|sarl|sasu|eurl|spa|srl|gmbh|ltd|llc|inc|plc|bv|nv|ag|"
-               r"co|company|corp|group|groupe|holding|international|intl)\b", " ", s)
+    s = s.replace("&", " ")
+    s = s.replace(".", "")                       # S.A. -> SA (forme pointee captee)
+    s = re.sub(r"[,'()\-/]", " ", s)
+    s = re.sub(r"^\s*the\s+", " ", s)
+    s = re.sub(r"\b(sa|sas|sarl|sasu|eurl|spa|srl|gmbh|ltd|ltda|limited|llc|llp|inc|"
+               r"incorporated|plc|pvt|bv|nv|ag|co|company|companies|corp|corporation|"
+               r"group|groupe|holding|international|intl|and|et)\b", " ", s)
     s = re.sub(r"[^a-z0-9 ]", " ", s)
     return re.sub(r"\s+", " ", s).strip()
+
+
+def _nom_entreprise(lead):
+    """Nom retenu pour l'identite d'un lead : l'entreprise si connue, sinon
+    l'acheteur/agence. MIROIR EXACT de la selection cote JS, pour que la cle
+    Python (ent_cle) et le regroupement des fiches coincident au caractere pres."""
+    e = _txt(lead.get("entreprise"))
+    if e and e != "n.c.":
+        return e
+    return _txt(lead.get("agence"))
 
 
 def _attacher_enrichissement(lead, enrichissement, cle_entreprise):
@@ -779,6 +798,11 @@ def construire_leads(lignes_ted, lignes_bm, lignes_prive=None,
     # score brut, pour que deux leads de meme rang gardent l'ordre par valeur.
     for l in leads:
         l["rang"] = rang_tri(l.get("final", 0), l.get("date_det", ""))
+        # ent_cle : cle canonique d'entite, SOURCE DE VERITE UNIQUE. Precalculee
+        # ici pour que les fiches 360 (JS) regroupent sur EXACTEMENT la meme cle
+        # que le rattachement d'enrichissement (Python), sans re-normaliser cote
+        # client (fin de la double implementation qui pouvait deriver).
+        l["ent_cle"] = _norm_ent(_nom_entreprise(l))
 
     leads.sort(key=lambda l: (l["rang"], l["final"]), reverse=True)
     return leads
@@ -1115,7 +1139,8 @@ def generer_html(leads, watchlist=None, api_statut=False, alertes=None):
             if str(k).strip().lower() in ('secteur','secteurs','sector','categorie','cat\u00e9gorie','domaine','activite','activit\u00e9'):
                 return _txt(d.get(k))
         return ''
-    watchlist_norm = [{'entreprise': _txt(w.get('entreprise')), 'secteur': _secteur_wl(w)}
+    watchlist_norm = [{'entreprise': _txt(w.get('entreprise')), 'secteur': _secteur_wl(w),
+                       'ent_cle': _norm_ent(_txt(w.get('entreprise')))}
                       for w in watchlist if _txt(w.get('entreprise'))]
     watchlist_json = json.dumps(watchlist_norm, ensure_ascii=False)
     # Boucle de retroaction (item 7), volet VISIBILITE : taux de conversion
@@ -1706,9 +1731,14 @@ function match(l, ignore){
 // Normalisation PRUDENTE (decision validee) : minuscules, ponctuation, formes
 // juridiques. On prefere deux fiches a fusionner a la main qu'une fusion abusive.
 function normEntreprise(s){
+  // Repli pour anciennes pages en cache ; MIROIR EXACT de _norm_ent (Python),
+  // qui reste la source de verite (ent_cle est precalcule cote serveur).
   return sansAccent(s)
-    .replace(/[.,'()]/g,' ')
-    .replace(/\b(sa|sas|sarl|sasu|eurl|spa|srl|gmbh|ltd|llc|inc|plc|bv|nv|ag|co|company|corp|group|groupe|holding|international|intl)\b/g,' ')
+    .replace(/&/g,' ')
+    .replace(/\./g,'')
+    .replace(/[,'()\-/]/g,' ')
+    .replace(/^\s*the\s+/,' ')
+    .replace(/\b(sa|sas|sarl|sasu|eurl|spa|srl|gmbh|ltd|ltda|limited|llc|llp|inc|incorporated|plc|pvt|bv|nv|ag|co|company|companies|corp|corporation|group|groupe|holding|international|intl|and|et)\b/g,' ')
     .replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
 }
 const RANG_ACTION={contacter:3,surveiller:2,ignorer:1,aucun:0};
@@ -1753,13 +1783,13 @@ function agregerCibles(){
   const parCle={};
   WATCHLIST.forEach(w=>{
     const nom=w.entreprise; if(!nom) return;
-    const cle=normEntreprise(nom)||sansAccent(nom);
+    const cle=w.ent_cle||normEntreprise(nom)||sansAccent(nom);
     if(!parCle[cle]) parCle[cle]={cle,nom,signaux:[],zones:new Set(),secteurs:new Set(),cible:true};
     if(w.secteur) parCle[cle].secteurs.add(w.secteur);
   });
   LEADS.filter(l=>l.src==='PRIVÉ').forEach(l=>{
     const nom=(l.entreprise&&l.entreprise!=='n.c.')?l.entreprise:(l.agence||'?');
-    const cle=normEntreprise(nom)||sansAccent(nom);
+    const cle=l.ent_cle||normEntreprise(nom)||sansAccent(nom);
     if(!parCle[cle]) parCle[cle]={cle,nom,signaux:[],zones:new Set(),secteurs:new Set(),cible:false};
     const f=parCle[cle]; f.signaux.push(l); f.nom=meilleurNom(f.nom,nom);
     if(l.zone&&l.zone!=='Non classé') f.zones.add(l.zone);
@@ -1772,7 +1802,7 @@ function agregerTitulaires(){
   const parCle={};
   LEADS.filter(l=>l.src==='ATTRIB').forEach(l=>{
     const nom=(l.entreprise&&l.entreprise!=='n.c.')?l.entreprise:(l.agence||'?');
-    const cle=normEntreprise(nom)||sansAccent(nom);
+    const cle=l.ent_cle||normEntreprise(nom)||sansAccent(nom);
     if(!parCle[cle]) parCle[cle]={cle,nom,signaux:[],zones:new Set(),secteurs:new Set(),cible:false};
     const f=parCle[cle]; f.signaux.push(l); f.nom=meilleurNom(f.nom,nom);
     if(l.zone&&l.zone!=='Non classé') f.zones.add(l.zone);
@@ -1801,13 +1831,13 @@ function agregerEntreprises(){
   }
   WATCHLIST.forEach(w=>{
     const nom=w.entreprise; if(!nom) return;
-    const cle=normEntreprise(nom)||sansAccent(nom);
+    const cle=w.ent_cle||normEntreprise(nom)||sansAccent(nom);
     const f=fiche(cle,nom); f.cible=true; f.srcSet.add('watchlist');
     if(w.secteur) f.secteurs.add(w.secteur);
   });
   LEADS.filter(l=>l.src==='PRIVÉ'||l.src==='ATTRIB').forEach(l=>{
     const nom=(l.entreprise&&l.entreprise!=='n.c.')?l.entreprise:(l.agence||'?');
-    const cle=normEntreprise(nom)||sansAccent(nom);
+    const cle=l.ent_cle||normEntreprise(nom)||sansAccent(nom);
     const f=fiche(cle,nom); f.nom=meilleurNom(f.nom,nom);
     f.signaux.push(l); f.srcSet.add(l.src==='PRIVÉ'?'signal':'titulaire');
     if(l.zone&&l.zone!=='Non classé') f.zones.add(l.zone);
