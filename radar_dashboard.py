@@ -1196,6 +1196,16 @@ def main():
     (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
      lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
      lignes_ungm, analyses_attrib, lignes_alertes, lignes_miga, lignes_ifc) = onglets
+
+    # Persistance de la tendance (best-effort) : le snapshot sante par source
+    # s'accumule dans 'runs_radar' une fois par run (etape "Generer le tableau
+    # de bord"), pour tracer la tendance. Ne casse jamais la generation.
+    try:
+        import radar_runs
+        print("(pg) " + radar_runs.enregistrer("sante", radar_runs.charge_sante(sante_run(leads))))
+    except Exception as e:
+        print("(pg) stat de run sante non persistee ({}) -- generation non affectee".format(
+            str(e)[:100]))
     print("  TED : {} | BM : {} | AfDB : {} | ADB : {} | EBRD : {} | UNGM : {} | "
           "ReliefWeb : {} | MIGA : {} | IFC : {} | total exploitable : {}".format(
               len(lignes_ted), len(lignes_bm), len(lignes_afdb), len(lignes_adb),
