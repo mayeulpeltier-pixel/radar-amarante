@@ -326,6 +326,10 @@ jobs:
           # Script). Sans eux, le bouton ne s'affiche pas (dashboard intact).
           SUIVI_WEBAPP_URL: ${{ secrets.SUIVI_WEBAPP_URL }}
           SUIVI_TOKEN: ${{ secrets.SUIVI_TOKEN }}
+          # Persistance best-effort du snapshot sante par run (radar_runs) dans
+          # 'runs_radar'. Sans DATABASE_URL, la generation est intacte, la stat
+          # n'est simplement pas enregistree.
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python radar_dashboard.py
       # 6) Digest hebdo push : envoie par e-mail les NOUVELLES opportunites "a
       #     contacter" (via le meme webapp Apps Script que le bouton "Je
