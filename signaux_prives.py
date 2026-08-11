@@ -95,11 +95,56 @@ def taille_fenetre_pour(valeur_env=None, defaut=35):
         return defaut
 
 
-def _est_prioritaire(compte):
-    """Compte de la TETE prioritaire = attributaire (priorite_socle 'haute',
-    deploiement en cours). La watchlist curee est 'moyenne', la defense n'a pas
-    de priorite : elles restent dans la queue rotative."""
-    return str(compte.get("priorite_socle", "")).strip().lower() == "haute"
+def _mois_attributaire_recent():
+    """Fenetre de recence d'un attributaire pour entrer dans la tete prioritaire
+    (defaut 12 mois). Reglable via RADAR_PRIVES_ATTRIB_MOIS (motif ADB)."""
+    try:
+        return max(1, int(os.environ.get("RADAR_PRIVES_ATTRIB_MOIS") or "12"))
+    except (TypeError, ValueError):
+        return 12
+
+
+def _age_mois(date_str, aujourdhui=None):
+    """Age en mois (approx) d'une date ISO (AAAA-MM-JJ) ou JJ/MM/AAAA. None si
+    illisible. Jamais negatif (date future -> 0)."""
+    s = str(date_str or "").strip()
+    an = mo = jo = None
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", s)
+    if m:
+        an, mo, jo = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    else:
+        m2 = re.match(r"(\d{2})/(\d{2})/(\d{4})", s)
+        if m2:
+            jo, mo, an = int(m2.group(1)), int(m2.group(2)), int(m2.group(3))
+    if an is None:
+        return None
+    try:
+        d = datetime.date(an, mo, jo)
+    except ValueError:
+        return None
+    ref = aujourdhui or datetime.date.today()
+    return max(0, (ref - d).days) / 30.44
+
+
+def _est_prioritaire(compte, aujourdhui=None):
+    """Tete prioritaire = attributaire RECENT (marche gagne dans les
+    RADAR_PRIVES_ATTRIB_MOIS derniers mois = deploiement encore en cours).
+
+    POURQUOI LA RECENCE (constat du run du 11/08)
+    ---------------------------------------------
+    "priorite haute" seule mettait TOUS les attributaires jamais collectes en
+    tete (175 pour une tete de 10 -> ~18 runs, plus lent que la queue :
+    l'acceleration ne mordait pas). Un marche gagne il y a trois ans n'est plus
+    "en cours". On restreint donc la tete aux attributaires recents : le pool
+    redevient petit, donc la tete tourne vite. Un attributaire ancien, ou sans
+    date exploitable, retombe dans la queue (cadence normale, il n'est pas
+    perdu)."""
+    if str(compte.get("priorite_socle", "")).strip().lower() != "haute":
+        return False
+    age = _age_mois(compte.get("date_attribution"), aujourdhui)
+    if age is None:
+        return False
+    return age <= _mois_attributaire_recent()
 
 
 def tete_pour(valeur_env, taille_fenetre, n_prio, defaut=10):
@@ -275,7 +320,11 @@ def lire_watchlist_multisecteurs(valeurs):
 def seed_depuis_attributions(valeurs, max_comptes=150):
     """Auto-alimentation : chaque titulaire gagnant du registre d'attributions
     devient un compte a surveiller (il deploie deja). Couvre TOUTE zone a
-    risque sans liste manuelle. Ignore les '(gagnant non publie)'."""
+    risque sans liste manuelle. Ignore les '(gagnant non publie)'.
+
+    Capture la DATE d'attribution (date_publication), la PLUS RECENTE par
+    societe : c'est elle qui decide si l'attributaire est "recent" (donc en tete
+    prioritaire) ou ancien (queue). Voir _est_prioritaire."""
     if not valeurs or len(valeurs) < 2:
         return []
     entetes = [str(c).strip().lower() for c in valeurs[0]]
@@ -283,32 +332,43 @@ def seed_depuis_attributions(valeurs, max_comptes=150):
         return []
     ig = entetes.index("gagnant")
     ipays = entetes.index("pays_execution") if "pays_execution" in entetes else -1
-    vus, comptes = set(), []
+    idate = entetes.index("date_publication") if "date_publication" in entetes else -1
+    par_nom, ordre = {}, []      # dedup par nom ; date_attribution = la plus recente
     for row in valeurs[1:]:
         brut = row[ig].strip() if ig < len(row) else ""
         if not brut or "non publie" in brut.lower():
             continue
         pays = (row[ipays].strip() if 0 <= ipays < len(row) else "")
+        date_attr = (row[idate].strip() if 0 <= idate < len(row) else "")
         # un marche peut lister plusieurs gagnants separes par ';'
         for nom in brut.split(";"):
             nom = nom.strip()
             cle = nom.lower()
-            if len(nom) < 3 or cle in vus:
+            if len(nom) < 3:
                 continue
             if _est_pme_locale(nom):     # PME purement locale -> pas un prospect
                 continue
-            vus.add(cle)
-            comptes.append({
+            if cle in par_nom:
+                # garder la date la PLUS RECENTE (age le plus petit) ; une date
+                # lisible bat une illisible.
+                a_new = _age_mois(date_attr)
+                a_old = _age_mois(par_nom[cle].get("date_attribution"))
+                if a_new is not None and (a_old is None or a_new < a_old):
+                    par_nom[cle]["date_attribution"] = date_attr
+                continue
+            par_nom[cle] = {
                 "entreprise": nom,
                 "secteur": "Attributaire (marche gagne)",
                 "requete_personnalisee": "",
-                "priorite_socle": "haute",   # deploiement en cours = prioritaire
+                "priorite_socle": "haute",   # attributaire (recence tranchee par _est_prioritaire)
+                "date_attribution": date_attr,
                 "angle_contact": "Titulaire d'un marche en zone a risque{} : deploiement en cours.".format(
                     " (" + pays + ")" if pays else ""),
-            })
-            if len(comptes) >= max_comptes:
-                return comptes
-    return comptes
+            }
+            ordre.append(cle)
+            if len(ordre) >= max_comptes:
+                return [par_nom[c] for c in ordre]
+    return [par_nom[c] for c in ordre]
 
 
 def construire_watchlist(sheet_id, fichier_cs):
