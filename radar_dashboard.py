@@ -1576,6 +1576,13 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .grphead span{color:var(--bone-dim);font-size:0.66rem;letter-spacing:0.08em}
   /* Lentille géopolitique */
   .geosec .grphead{color:var(--bone)}
+  /* Cockpit « À faire » : accents d'urgence par bucket */
+  .todosec .grphead{align-items:center}
+  .grpsub{font-family:var(--mono);font-size:0.58rem;letter-spacing:0.08em;text-transform:none;color:var(--bone-faint);font-style:italic;margin-left:4px}
+  .todosec.b-retard .grphead{color:#e5544b;border-bottom-color:rgba(192,57,43,0.5)}
+  .todosec.b-echeance .grphead{color:#d9a54a;border-bottom-color:rgba(210,150,60,0.4)}
+  .todosec.b-contacter .grphead{color:var(--fort)}
+  .todosec.b-suivre .grphead{color:var(--bone-dim)}
   .geocard{grid-column:1/-1;display:grid;grid-template-columns:26px 1fr auto;gap:12px;align-items:center;
     text-decoration:none;background:var(--ink-2);border:1px solid var(--line);border-left-width:3px;
     border-radius:8px;padding:11px 15px;transition:.15s}
@@ -1785,6 +1792,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
     </div>
     <div class="lensseg" id="lensseg" role="group" aria-label="Vue">
       <button data-lens="avis" aria-pressed="true">Opportunités <span>· avis</span></button>
+      <button data-lens="todo" aria-pressed="false">À faire <span>· cette semaine</span></button>
       <button data-lens="entreprises" aria-pressed="false">Entreprises <span>· 360°</span></button>
       <button data-lens="cibles" aria-pressed="false">Cibles privées <span>· prospects</span></button>
       <button data-lens="titulaires" aria-pressed="false">Titulaires <span>· attributions</span></button>
@@ -1873,6 +1881,8 @@ function marquerContacte(idx,btn){
   const cid=leadId(l);
   btn.disabled=true; btn.classList.add('done'); btn.textContent='✓ Contacté';
   CONTACTES.add(cid); try{localStorage.setItem('suivi_contactes',JSON.stringify([...CONTACTES]));}catch(e){}
+  // Date de contact (locale) : alimente le bucket « à relancer » du cockpit.
+  try{const m=JSON.parse(localStorage.getItem('suivi_dates')||'{}');m[cid]=new Date().toISOString().slice(0,10);localStorage.setItem('suivi_dates',JSON.stringify(m));}catch(e){}
   const p={token:SUIVI_TOKEN,id:cid,source:SRC_SUIVI[l.src]||l.src,date_det:l.date_det||'',
     pays:l.pays||'',zone:l.zone||'',agence:l.agence||'',titre:l.titre||'',lien:l.lien||'',
     score:l.final,surete:l.surete,comm:l.comm,action:l.action||'',fenetre:l.win||'',
@@ -2220,6 +2230,15 @@ function buildStats(){
       {k:'lateral',cls:'wat',n:c('lateral'),l:'Latéraux'},
       {k:'all',cls:'',n:GEO.length,l:'Tous les signaux'}
     ];
+  }else if(state.lens==='todo'){
+    const items=todoListe();
+    const c=b=>items.filter(o=>o.b===b).length;
+    defs=[
+      {k:'retard',cls:'act',n:c('retard'),l:'En retard'},
+      {k:'echeance',cls:'wat',n:c('echeance'),l:'Échéance ≤ 7 j'},
+      {k:'contacter',cls:'',n:c('contacter'),l:'À contacter'},
+      {k:'suivre',cls:'low',n:c('suivre'),l:'À suivre'}
+    ];
   }else{
     const av=LEADS.filter(l=>l.src==='TED'||l.src==='BM'||l.src==='AFDB'||l.src==='ADB'||l.src==='EBRD'||l.src==='UNGM'||l.src==='RW'||l.src==='MIGA'||l.src==='IFC'||l.src==='IDB');
     const c=a=>av.filter(l=>l.action===a).length;
@@ -2233,8 +2252,8 @@ function buildStats(){
   box.innerHTML=defs.map(s=>
     `<button class="tile ${s.cls}" data-action="${s.k}" aria-pressed="${s.k===state.action}"><div class="n">${s.n}</div><div class="l">${s.l}</div></button>`).join('');
   box.querySelectorAll('.tile').forEach(t=>t.addEventListener('click',()=>{
-    state.action=t.dataset.action;
-    box.querySelectorAll('.tile').forEach(x=>x.setAttribute('aria-pressed',x===t?'true':'false'));
+    state.action=(state.action===t.dataset.action)?'all':t.dataset.action;
+    box.querySelectorAll('.tile').forEach(x=>x.setAttribute('aria-pressed',x.dataset.action===state.action?'true':'false'));
     render();
   }));
 }
@@ -2449,7 +2468,7 @@ document.querySelectorAll('#lensseg button').forEach(b=>b.addEventListener('clic
   // on part de "tout" pour voir l'ensemble (toute la watchlist, tous les titulaires).
   state.action = state.lens==='avis' ? 'contacter' : 'all';
   majControlesLentille();
-  const titres={avis:'Carte des opportunités',entreprises:'Carte des entreprises',cibles:'Carte des cibles',titulaires:'Carte des titulaires',geo:'Carte des signaux géopolitiques'};
+  const titres={avis:'Carte des opportunités',entreprises:'Carte des entreprises',cibles:'Carte des cibles',titulaires:'Carte des titulaires',geo:'Carte des signaux géopolitiques',todo:'Carte des actions à mener'};
   document.querySelector('.geo .phead').textContent=titres[state.lens]||'Carte';
   buildStats(); buildPeriod(); render();
 }));
@@ -2619,19 +2638,109 @@ function buildSecteurSel(){
 // Visibilite des controles selon la lentille. Source = avis seulement ;
 // secteur + grouper = partout sauf geo ; periodes + comptes = pas en geo.
 function majControlesLentille(){
-  const geo=state.lens==='geo', fiches=vueFiches();
+  const geo=state.lens==='geo', fiches=vueFiches(), todo=state.lens==='todo';
   const set=(id,on)=>{const e=document.getElementById(id); if(e) e.style.display=on?'':'none';};
-  set('srcseg', !geo && !fiches);
-  set('secteurPick', !geo);
-  set('groupPick', !geo);
-  set('triseg', !geo);
-  set('period', !geo);
-  set('comptes', !geo && !fiches);
+  set('srcseg', !geo && !fiches && !todo);
+  set('secteurPick', !geo && !todo);
+  set('groupPick', !geo && !todo);
+  set('triseg', !geo && !todo);
+  set('period', !geo && !todo);
+  set('comptes', !geo && !fiches && !todo);
 }
 document.getElementById('secteurSel').addEventListener('change',e=>{state.secteur=e.target.value;render();});
 document.getElementById('groupSel').addEventListener('change',e=>{state.group=e.target.value;render();});
 
+// ===================== COCKPIT « À FAIRE » (discipline de pipeline) =====================
+// Transforme le radar de « liste d'opportunités » en « que dois-je faire cette
+// semaine ». Buckets prioritaires (un lead n'apparait qu'une fois, au plus
+// urgent). Tout est derive des champs existants (statut, date_det, deadline,
+// fenetre) : aucune collecte, aucune ecriture serveur nouvelle.
+const SLA_IMMEDIAT_JOURS=3, ECHEANCE_JOURS=7, RELANCE_JOURS=10;
+const BUCKETS_TODO=[
+  {k:'retard',   l:'En retard',      cls:'b-retard'},
+  {k:'echeance', l:'Échéance ≤ 7 j', cls:'b-echeance'},
+  {k:'contacter',l:'À contacter',    cls:'b-contacter'},
+  {k:'suivre',   l:'À suivre',       cls:'b-suivre'},
+];
+const BUCKET_LABEL={retard:'En retard',echeance:'Échéance ≤ 7 j',contacter:'À contacter',suivre:'À suivre'};
+function _joursDepuis(ds){ if(!ds)return null; const d=new Date(ds+'T00:00:00'); if(isNaN(d.getTime()))return null; return Math.floor((Date.now()-d.getTime())/86400000); }
+function _joursAvant(ds){ if(!ds)return null; const d=new Date(ds+'T00:00:00'); if(isNaN(d.getTime()))return null; return Math.floor((d.getTime()-Date.now())/86400000); }
+function _clos(l){ const s=(l.statut||'').toLowerCase(); return s.indexOf('gagn')>=0||s.indexOf('perd')>=0; }
+function _engage(l){ const s=(l.statut||'').toLowerCase(); return s.indexOf('contact')>=0||s.indexOf('relanc')>=0; }
+function _dateContactLocale(l){ try{ const m=JSON.parse(localStorage.getItem('suivi_dates')||'{}'); return m[leadId(l)]||null; }catch(e){ return null; } }
+// Bucket le plus prioritaire d'un lead, ou null s'il n'est pas actionnable.
+function bucketTodo(l){
+  if(_clos(l)) return null;                       // gagné/perdu -> hors pipeline
+  if(l.src==='ATTRIB'){                            // titulaires = prospects
+    if(_engage(l)) return 'suivre';
+    return (l.final||0)>=6 ? 'contacter' : null;   // seuls les indices forts
+  }
+  if(_engage(l)) return 'suivre';                  // déjà contacté, pas d'issue
+  const estC=l.action==='contacter';
+  const ageDet=_joursDepuis(l.date_det);
+  const dDead=_joursAvant(l.deadline);
+  const echeanceProche=(dDead!==null && dDead<=ECHEANCE_JOURS && dDead>=-3);
+  const retard=estC && l.win==='immediate' && ageDet!==null && ageDet>SLA_IMMEDIAT_JOURS;
+  if(retard) return 'retard';
+  if(echeanceProche) return 'echeance';
+  if(estC) return 'contacter';
+  return null;
+}
+function todoListe(){
+  const out=[];
+  LEADS.forEach(l=>{ const b=bucketTodo(l); if(b) out.push({l,b}); });
+  return out;
+}
+const _ORDRE_B={retard:0,echeance:1,contacter:2,suivre:3};
+function _triTodo(a,b){
+  if(_ORDRE_B[a.b]!==_ORDRE_B[b.b]) return _ORDRE_B[a.b]-_ORDRE_B[b.b];
+  if(a.b==='echeance'){ const da=_joursAvant(a.l.deadline), db=_joursAvant(b.l.deadline); return (da==null?999:da)-(db==null?999:db); }
+  if(a.b==='retard'){ const aa=_joursDepuis(a.l.date_det)||0, ab=_joursDepuis(b.l.date_det)||0; return ab-aa; }
+  if(a.b==='suivre'){ // le plus ancien contact d'abord (à relancer en premier)
+    const ca=_dateContactLocale(a.l)||'9999', cb=_dateContactLocale(b.l)||'9999'; if(ca!==cb) return ca<cb?-1:1;
+  }
+  return (b.l.rang||b.l.final||0)-(a.l.rang||a.l.final||0);
+}
+function buildZoneChartTodo(items){
+  const counts={};
+  items.forEach(o=>{ if(o.l.zone) counts[o.l.zone]=(counts[o.l.zone]||0)+1; });
+  const zones=ORDRE_ZONES.filter(z=>counts[z]).concat(Object.keys(counts).filter(z=>!ORDRE_ZONES.includes(z)));
+  const box=document.getElementById('zonechart');
+  const maxZ=Math.max(1,...zones.map(z=>counts[z]));
+  if(!zones.length){ box.innerHTML='<div class="count">Rien à faire pour ce filtre.</div>'; return; }
+  box.innerHTML=zones.map(z=>{
+    const c=counts[z], pct=Math.round(c/maxZ*100), pressed=z===state.zone?'true':'false';
+    return `<div class="zrow" data-zone="${z}" role="button" tabindex="0" aria-pressed="${pressed}"><div class="zlab"><span>${z}</span><span>${c}</span></div><div class="ztrack"><div class="zfill" style="width:${pct}%"></div></div></div>`;
+  }).join('');
+  box.querySelectorAll('.zrow').forEach(el=>{
+    const choisir=()=>{ state.zone=state.zone===el.dataset.zone?null:el.dataset.zone; render(); };
+    el.addEventListener('click',choisir);
+    el.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();choisir();}});
+  });
+}
+function renderTodo(){
+  const box=document.getElementById('leads');
+  let items=todoListe().sort(_triTodo);
+  if(state.action!=='all') items=items.filter(o=>o.b===state.action);
+  if(state.zone) items=items.filter(o=>o.l.zone===state.zone);
+  if(state.q){ const q=state.q; items=items.filter(o=>((o.l.titre||'')+' '+(o.l.pays||'')+' '+(o.l.agence||'')+' '+(o.l.entreprise||'')).toLowerCase().indexOf(q)>=0); }
+  buildZoneChartTodo(items);
+  updateMap(items.map(o=>o.l));
+  const n=items.length;
+  document.getElementById('count').textContent=`${n} action${n>1?'s':''} cette semaine`+(state.action!=='all'?` · ${BUCKET_LABEL[state.action]}`:'')+(state.zone?`, ${state.zone}`:'');
+  if(!n){ box.innerHTML='<div class="empty">Rien à traiter ici. Pipeline à jour.</div>'; AFFICHES=[]; return; }
+  AFFICHES=items.map(o=>o.l);               // data-idx pointe vers cet index
+  const withIdx=items.map((o,gi)=>({o,gi}));
+  box.innerHTML=BUCKETS_TODO.filter(b=>items.some(o=>o.b===b.k)).map(b=>{
+    const sec=withIdx.filter(x=>x.o.b===b.k);
+    const sous=b.k==='suivre'?' <em class="grpsub">les plus anciens à relancer d\'abord</em>':(b.k==='retard'?' <em class="grpsub">SLA fenêtre immédiate dépassé</em>':'');
+    return `<div class="grpsec todosec ${b.cls}"><div class="grphead">${esc(b.l)}<span>${sec.length}</span>${sous}</div>`+
+      sec.map(x=>leadCard(x.o.l,x.gi)).join('')+`</div>`;
+  }).join('');
+}
+
 function render(){
+  if(state.lens==='todo'){ renderTodo(); return; }
   if(state.lens==='geo'){ renderGeo(); return; }
   buildZoneChart();
   if(vueFiches()){ renderFiches(fichesCourantes()); return; }
