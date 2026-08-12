@@ -175,8 +175,8 @@ class TestIdbBranche(unittest.TestCase):
     def test_idb_dans_catalogue_sources(self):
         self.assertIn("IDB", rd.CATALOGUE_SOURCES)
 
-    def test_lire_onglets_renvoie_seize_valeurs(self):
-        """Le tuple de lecture inclut desormais IDB (16e valeur). Garde-fou
+    def test_lire_onglets_renvoie_dix_sept_valeurs(self):
+        """Le tuple de lecture inclut IDB (16e) puis BMP amont (17e). Garde-fou
         contre une regression d'arite non propagee aux consommateurs."""
         import ast
         src = open("radar_dashboard.py", encoding="utf-8").read()
@@ -185,7 +185,7 @@ class TestIdbBranche(unittest.TestCase):
                     if isinstance(n, ast.FunctionDef) and n.name == "lire_onglets")
         ret = next(n for n in ast.walk(fonc)
                    if isinstance(n, ast.Return) and isinstance(n.value, ast.Tuple))
-        self.assertEqual(len(ret.value.elts), 16)
+        self.assertEqual(len(ret.value.elts), 17)
 
 
 # ---------------------------------------------------------------------------
