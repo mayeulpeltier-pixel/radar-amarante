@@ -27,11 +27,15 @@ inerte (inactif), sans bruit.
 """
 
 import datetime
+import os
 
 import radar_stockage
 
 
 NOM_ONGLET = "runs_radar"
+# Une source en REGRESSION (elle produisait, puis 0 pendant N runs consecutifs)
+# est alertee. Surchargeable via RADAR_MUET_RUNS. N=3 -> ~1,5 semaine a 2 runs/sem.
+SEUIL_MUET_RUNS = int(os.environ.get("RADAR_MUET_RUNS", "3"))
 
 
 def horodatage():
@@ -84,6 +88,75 @@ def historique(limite=30, type_=None):
 
 
 # ===========================================================================
+# DETECTION DES SOURCES MUETTES (regression silencieuse, 12/08/2026)
+# ===========================================================================
+# Le mode d'echec le plus vicieux : une source qui produisait s'arrete sans
+# erreur (endpoint change, quota epuise, structure modifiee) et le radar continue
+# comme si de rien n'etait. Le panneau "Etat du run" le montre passivement ; ici
+# on le detecte ACTIVEMENT sur la tendance persistee et on alerte fort.
+
+def sources_muettes(hist_sante, seuil_runs=None):
+    """Sources en REGRESSION : presentes et a 0 sur les `seuil_runs` derniers
+    runs, ALORS qu'elles produisaient avant. Pur (aucune base).
+
+    On exige une activite passee (n>0 au-dela de la fenetre) pour distinguer une
+    panne d'une source chroniquement vide : on n'alerte que sur une vraie
+    regression, pas sur un bruit de fond. `hist_sante` = enregistrements 'sante'
+    (l'ordre est renormalise ici, plus recent d'abord). Renvoie
+    [{src, runs_muets}] trie par source."""
+    seuil = seuil_runs or SEUIL_MUET_RUNS
+    sante = [r for r in (hist_sante or []) if isinstance(r, dict)
+             and r.get("type") == "sante"]
+    sante.sort(key=lambda r: r.get("horodatage", ""), reverse=True)
+    fenetre = sante[:seuil]
+    if len(fenetre) < seuil:
+        return []                      # pas assez d'historique pour conclure
+    # Sources qui ont deja produit (n>0) AU-DELA de la fenetre.
+    actives_avant = set()
+    for run in sante[seuil:]:
+        for s in (run.get("sources") or []):
+            if (s.get("n") or 0) > 0:
+                actives_avant.add(s.get("src"))
+    # Volumes par source DANS la fenetre.
+    vols = {}
+    for run in fenetre:
+        for s in (run.get("sources") or []):
+            vols.setdefault(s.get("src"), []).append(s.get("n") or 0)
+    muettes = []
+    for src, ns in vols.items():
+        if len(ns) >= seuil and all(n == 0 for n in ns) and src in actives_avant:
+            muettes.append({"src": src, "runs_muets": len(ns)})
+    return sorted(muettes, key=lambda m: m["src"] or "")
+
+
+def alerter_sources_muettes(seuil_runs=None, emettre=None, hist=None):
+    """Detecte et ALERTE fort les sources muettes. Best-effort (ne leve jamais).
+
+    Emet, par source : une ligne lisible ET une annotation GitHub Actions
+    (`::warning::`) visible sur le run, sans dependance mail/webapp. Renvoie la
+    liste (utile aux tests / a un futur badge dashboard)."""
+    emettre = emettre or print
+    seuil = seuil_runs or SEUIL_MUET_RUNS
+    try:
+        if hist is None:
+            hist = historique(limite=max(30, seuil * 5), type_="sante")
+        muettes = sources_muettes(hist, seuil_runs=seuil)
+    except Exception:
+        return []
+    if not muettes:
+        return []
+    emettre("  " + "!" * 58)
+    for m in muettes:
+        emettre("  /!\\ SOURCE MUETTE : {} = 0 resultat depuis {} runs.".format(
+            m["src"], m["runs_muets"]))
+        emettre("::warning title=Source muette::{} n'a rien produit depuis {} "
+                "runs consecutifs -- verifier collecteur, endpoint ou quota."
+                .format(m["src"], m["runs_muets"]))
+    emettre("  " + "!" * 58)
+    return muettes
+
+
+# ===========================================================================
 # ASSEMBLAGE DES CHARGES (pur : ce que chaque appelant persiste)
 # ===========================================================================
 
@@ -128,6 +201,9 @@ def main():
             print("  [{}] ombre ({}) : {} signal(aux), {} action(s) changerai(en)t, "
                   "delta moyen {}".format(h, r.get("mode"), r.get("n"),
                                           r.get("actions_changees"), r.get("delta_moyen")))
+    muettes = alerter_sources_muettes(hist=[r for r in hist if r.get("type") == "sante"])
+    if not muettes:
+        print("  (ok) aucune source en regression silencieuse.")
 
 
 if __name__ == "__main__":
