@@ -132,5 +132,43 @@ class TestSchema(unittest.TestCase):
         self.assertEqual(a["pays_execution"], "SOM")
 
 
+class TestCablageDashboard(unittest.TestCase):
+    """BMP branche dans le dashboard comme une source d'avis ISO (pattern IDB)."""
+
+    def test_construire_leads_accepte_bmp(self):
+        import radar_dashboard as rd
+        avis = b.normaliser(_p("P1", "Mali", -30), aujourd=AUJ)
+        leads = rd.construire_leads([], [], [], {}, [], lignes_bmp=[avis])
+        self.assertEqual(len(leads), 1)
+        self.assertEqual(leads[0]["src"], "BMP")
+        self.assertEqual(leads[0]["pays"], "Mali")
+        self.assertNotEqual(leads[0]["zone"], "Non classé")
+
+    def test_bmp_dans_le_gabarit(self):
+        import radar_dashboard as rd
+        html = rd.GABARIT_HTML
+        for nom, marqueur in (
+                ("badge CSS", ".src.bmp{"),
+                ("source filtrable", "'IDB','BMP'"),
+                ("libelle carte", "BMP:'BM Projet · amont'"),
+                ("libelle bandeau", "BMP:'BM Projets (amont)'"),
+                ("compteur avis", "l.src==='BMP'")):
+            self.assertIn(marqueur, html, "branchement BMP absent : {}".format(nom))
+
+    def test_bmp_dans_catalogue(self):
+        import radar_dashboard as rd
+        self.assertIn("BMP", rd.CATALOGUE_SOURCES)
+
+    def test_lire_onglets_dix_sept(self):
+        import ast
+        src = open("radar_dashboard.py", encoding="utf-8").read()
+        arbre = ast.parse(src)
+        fonc = next(n for n in ast.walk(arbre)
+                    if isinstance(n, ast.FunctionDef) and n.name == "lire_onglets")
+        ret = next(n for n in ast.walk(fonc)
+                   if isinstance(n, ast.Return) and isinstance(n.value, ast.Tuple))
+        self.assertEqual(len(ret.value.elts), 17)
+
+
 if __name__ == "__main__":
     unittest.main()
