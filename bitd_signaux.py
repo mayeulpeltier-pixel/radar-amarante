@@ -193,8 +193,12 @@ def _nettoyer(html):
     return re.sub(r"<[^>]+>", " ", html or "").replace("&nbsp;", " ").strip()
 
 
-def article_frais(article, aujourd=None):
-    """False si l'article est plus vieux que JOURS_FRAICHEUR. Date illisible -> frais."""
+def article_frais(article, aujourd=None, jours=None):
+    """False si l'article est plus vieux que `jours` (defaut JOURS_FRAICHEUR).
+    Date illisible -> frais. Le parametre `jours` permet a un appelant (ex.
+    evenements_geo, qui ne veut que la semaine en cours) de resserrer la fenetre
+    sans changer la valeur partagee JOURS_FRAICHEUR du chemin BITD."""
+    seuil = JOURS_FRAICHEUR if jours is None else jours
     brut = article.get("date", "")
     if not brut:
         return True
@@ -203,7 +207,7 @@ def article_frais(article, aujourd=None):
         if dt is None:
             return True
         ref = aujourd or datetime.datetime.now(dt.tzinfo)
-        return (ref - dt).days <= JOURS_FRAICHEUR
+        return (ref - dt).days <= seuil
     except Exception:
         return True
 
