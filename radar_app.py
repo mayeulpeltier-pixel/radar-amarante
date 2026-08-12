@@ -228,10 +228,13 @@ def lire_onglets_pg(conn):
     # (le motif "orphelin"). Meme ordre de retour que dash.lire_onglets.
     lignes_miga = _onglet(conn, "miga_radar")
     lignes_ifc = _onglet(conn, "ifc_radar")
+    # IDB (Amérique latine) : source d'avis, alignée sur dash.lire_onglets.
+    lignes_idb = _onglet(conn, "idb_radar")
 
     return (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
             lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
-            lignes_ungm, analyses_attrib, lignes_alertes, lignes_miga, lignes_ifc)
+            lignes_ungm, analyses_attrib, lignes_alertes, lignes_miga, lignes_ifc,
+            lignes_idb)
 
 
 # Quel champ humain pour quel onglet (avis = statut_suivi ; attributions =
@@ -258,18 +261,19 @@ def generer_page(conn):
     (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
      lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
      lignes_ungm, analyses_attrib, lignes_alertes,
-     lignes_miga, lignes_ifc) = lire_onglets_pg(conn)
+     lignes_miga, lignes_ifc, lignes_idb) = lire_onglets_pg(conn)
     superposer_statuts(conn, [
         ("ted_radar", lignes_ted), ("bm_radar", lignes_bm),
         ("prive_radar", lignes_prive), ("attributions_radar", lignes_attrib),
         ("reliefweb_radar", lignes_rw), ("afdb_radar", lignes_afdb),
         ("adb_radar", lignes_adb), ("ebrd_radar", lignes_ebrd),
         ("ungm_radar", lignes_ungm), ("miga_radar", lignes_miga),
-        ("ifc_radar", lignes_ifc)])
+        ("ifc_radar", lignes_ifc), ("idb_radar", lignes_idb)])
     leads = dash.construire_leads(
         lignes_ted, lignes_bm, lignes_prive, enrichissement, lignes_attrib,
         lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_ungm,
-        analyses_attrib, lignes_miga=lignes_miga, lignes_ifc=lignes_ifc)
+        analyses_attrib, lignes_miga=lignes_miga, lignes_ifc=lignes_ifc,
+        lignes_idb=lignes_idb)
     # api_statut=True : sur l'application, le bouton ecrit aussi en base.
     return dash.generer_html(leads, lignes_watchlist, api_statut=True,
                              alertes=lignes_alertes)
