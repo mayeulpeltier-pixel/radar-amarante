@@ -1404,6 +1404,8 @@ def main():
     try:
         import radar_runs
         print("(pg) " + radar_runs.enregistrer("sante", radar_runs.charge_sante(sante_run(leads))))
+        # Alerte proactive : source en regression silencieuse (muette N runs).
+        radar_runs.alerter_sources_muettes()
     except Exception as e:
         print("(pg) stat de run sante non persistee ({}) -- generation non affectee".format(
             str(e)[:100]))
