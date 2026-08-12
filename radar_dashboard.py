@@ -1154,52 +1154,21 @@ def charger_leads(sheet_id, fichier_cs):
     return leads, onglets
 
 
-def preparer_alertes(lignes_alertes):
-    """Lignes brutes de `alertes_radar` -> liste d'affichage pour le bandeau.
-
-    Ne garde que les changements RECENTS (30 jours) et les trie par severite
-    puis date. Une alerte est un CONTEXTE, pas un lead : aucun score, aucune
-    action « je contacte ». Fonction pure (hors date du jour)."""
-    from datetime import date, timedelta
-    limite = (date.today() - timedelta(days=30)).isoformat()
-    prets = []
-    for l in (lignes_alertes or []):
-        maj = _txt(l.get("date_maj"))
-        if maj and maj < limite:
-            continue
-        try:
-            sev = int(float(l.get("severite") or 0))
-        except (TypeError, ValueError):
-            sev = 0
-        prets.append({
-            "pays": _txt(l.get("pays_nom")) or _txt(l.get("pays_execution")),
-            "iso3": _txt(l.get("pays_execution")),
-            "zone": _txt(l.get("zone")),
-            "sens": _txt(l.get("sens")),          # aggravation / allegement / lateral
-            "avant": _txt(l.get("niveau_avant")),
-            "apres": _txt(l.get("niveau_apres")),
-            "motif": _txt(l.get("motif")),
-            "severite": sev,
-            "date": maj,
-            "lien": _txt(l.get("lien")),
-        })
-    # Une aggravation prime a severite egale : c'est le signal le plus chaud.
-    poids_sens = {"aggravation": 2, "lateral": 1, "allegement": 0}
-    prets.sort(key=lambda a: (-a["severite"], -poids_sens.get(a["sens"], 1),
-                              a["date"]), reverse=False)
-    prets.sort(key=lambda a: (a["severite"], poids_sens.get(a["sens"], 1)),
-               reverse=True)
-    return prets
+# Fenetre de fraicheur de l'onglet Geopolitique : la SEMAINE EN COURS.
+# Les evenements pays ne sont un contexte utile que tres frais. Surchargeable
+# (ex. RADAR_GEO_JOURS=14) sans toucher au code.
+GEO_JOURS = int(os.environ.get("RADAR_GEO_JOURS", "7"))
 
 
-def preparer_geo(lignes_alertes, jours=90):
+def preparer_geo(lignes_alertes, jours=None):
     """Lignes brutes de `alertes_radar` -> flux GEOPOLITIQUE de l'onglet dedie.
 
-    Meme source que le bandeau (`preparer_alertes`) mais fenetre plus large
-    (90 j par defaut) pour offrir un HISTORIQUE explorable, groupable par zone
-    et cartographiable. Un evenement geo (FCDO ou presse) reste un CONTEXTE
+    Ne garde que les signaux de la SEMAINE EN COURS (7 jours par defaut) : au
+    dela, un evenement pays n'est plus un contexte operationnel pertinent, juste
+    du bruit qui encombre. Un evenement geo (FCDO ou presse) reste un CONTEXTE
     pays : aucun score, aucune action « je contacte ». Fonction pure."""
     from datetime import date, timedelta
+    jours = GEO_JOURS if jours is None else jours
     limite = (date.today() - timedelta(days=jours)).isoformat()
     prets = []
     for l in (lignes_alertes or []):
@@ -1263,8 +1232,7 @@ def generer_html(leads, watchlist=None, api_statut=False, alertes=None):
     # des leads. Une alerte n'est pas un prospect a contacter mais une info qui
     # rend les autres leads de ce pays plus chauds. On ne la melange donc pas au
     # scoring des leads (ce serait le defaut qu'on a corrige au chantier C).
-    alertes_json = json.dumps(preparer_alertes(alertes or []), ensure_ascii=False)
-    # Onglet Géopolitique (10/08/2026) : historique 90 j, groupé par zone côté JS.
+    # Onglet Géopolitique : signaux de la semaine en cours, groupés par zone.
     geo_json = json.dumps(preparer_geo(alertes or []), ensure_ascii=False)
     # Taxonomie secteur exposée au JS (filtre + regroupement). Ordre = affichage.
     secteurs_json = json.dumps(SECTEURS_CANONIQUES, ensure_ascii=False)
@@ -1306,7 +1274,6 @@ def generer_html(leads, watchlist=None, api_statut=False, alertes=None):
             pass
     return (GABARIT_HTML
             .replace("__LEADS_JSON__", leads_json)
-            .replace("__ALERTES_JSON__", alertes_json)
             .replace("__GEO_JSON__", geo_json)
             .replace("__SECTEURS_JSON__", secteurs_json)
             .replace("__META_JSON__", meta_json)
@@ -1446,8 +1413,6 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .export{font-family:var(--mono);font-size:0.66rem;letter-spacing:0.08em;color:var(--bone-dim);background:none;border:1px solid var(--line);border-radius:3px;padding:4px 9px;cursor:pointer;margin-left:auto}
   .export:hover{color:var(--bone);border-color:var(--bone-dim)}
   .count{font-family:var(--mono);font-size:0.7rem;color:var(--bone-dim);letter-spacing:0.06em;margin-bottom:14px}
-  .alertes-pays{margin-bottom:18px}
-  .alertes-pays:empty{display:none}
   .sante-run{margin-bottom:16px;border:1px solid var(--line);border-radius:8px;background:var(--ink-2);padding:10px 12px}
   .sante-run:empty{display:none}
   .sante-tete{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:9px}
@@ -1464,20 +1429,6 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .sante-chip.ancien{border-color:rgba(200,137,59,0.55)} .sante-chip.ancien .dot{background:#c8893b}
   .sante-chip.absent{opacity:0.55} .sante-chip.absent .dot{background:#7a3b41}
   .sante-chip .dot{width:7px;height:7px;border-radius:50%;flex:none}
-  .al-titre{font-family:var(--mono);font-size:0.62rem;letter-spacing:0.16em;text-transform:uppercase;color:var(--bone-dim);margin-bottom:8px}
-  .al-liste{display:flex;flex-direction:column;gap:6px}
-  .al-item{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:8px;text-decoration:none;color:var(--bone);background:rgba(255,255,255,0.02);border-left:3px solid var(--bone-faint);font-size:0.8rem}
-  .al-item:hover{background:rgba(255,255,255,0.05)}
-  .al-item.al-agg{border-left-color:#c0392b}
-  .al-item.al-alleg{border-left-color:#27812f}
-  .al-item.al-lat{border-left-color:var(--bone-faint)}
-  .al-sens{font-weight:700;width:14px;text-align:center}
-  .al-agg .al-sens{color:#e74c3c}
-  .al-alleg .al-sens{color:#2ecc71}
-  .al-pays{font-weight:600}
-  .al-zone{font-family:var(--mono);font-size:0.6rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--bone-faint)}
-  .al-niv{color:var(--bone-dim);font-size:0.74rem}
-  .al-motif{color:var(--bone-faint);font-size:0.7rem;margin-left:auto;max-width:38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   /* Onglets periode (mois) */
   .period{display:flex;gap:7px;flex-wrap:wrap;margin:22px 0 4px;align-items:center}
   .period .chip{background:var(--ink-2);border:1px solid var(--line);border-radius:20px;padding:7px 14px;cursor:pointer;color:var(--bone-dim);font-family:var(--mono);font-size:0.66rem;letter-spacing:0.06em;transition:.15s;white-space:nowrap}
@@ -1788,7 +1739,6 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   </div>
   <div class="count" id="count"></div>
   <div class="sante-run" id="santeRun"></div>
-  <div class="alertes-pays" id="alertesPays"></div>
   <div class="leads" id="leads"></div>
   <footer id="foot"></footer>
 </div>
@@ -1797,7 +1747,6 @@ GABARIT_HTML = r"""<!DOCTYPE html>
 </div>
 <script>
 const LEADS = __LEADS_JSON__;
-const ALERTES = __ALERTES_JSON__;
 const GEO = __GEO_JSON__;
 const SECTEURS = __SECTEURS_JSON__;
 const SANTE = __SANTE_JSON__;
@@ -2529,9 +2478,9 @@ function renderGeo(){
   const list=geoFiltres();
   updateMapGeo(list);
   document.getElementById('count').textContent=
-    `${list.length} signal${list.length>1?'aux':''} géopolitique${list.length>1?'s':''}`+
+    `${list.length} signal${list.length>1?'aux':''} géopolitique${list.length>1?'s':''} · 7 derniers jours`+
     (state.zone?`, zone ${state.zone}`:'')+(state.action!=='all'?`, ${state.action}`:'');
-  if(!list.length){box.innerHTML='<div class="empty">Aucun signal géopolitique sur la période (90 j).</div>';return;}
+  if(!list.length){box.innerHTML='<div class="empty">Aucun signal géopolitique cette semaine.</div>';return;}
   const parZone={};
   list.forEach(a=>{ (parZone[a.zone]=parZone[a.zone]||[]).push(a); });
   const zones=ORDRE_ZONES.filter(z=>parZone[z]).concat(Object.keys(parZone).filter(z=>!ORDRE_ZONES.includes(z)));
@@ -2582,7 +2531,6 @@ function majControlesLentille(){
   set('triseg', !geo);
   set('period', !geo);
   set('comptes', !geo && !fiches);
-  set('alertesPays', !geo);
 }
 document.getElementById('secteurSel').addEventListener('change',e=>{state.secteur=e.target.value;render();});
 document.getElementById('groupSel').addEventListener('change',e=>{state.group=e.target.value;render();});
@@ -2871,32 +2819,9 @@ buildSecteurSel();
 buildStats();
 buildPeriod();
 buildComptes();
-renderAlertes();
 renderSante();
 majControlesLentille();
 render();
-
-// Section "Alertes pays" (option A) : bandeau de CONTEXTE, separe des leads.
-// Un changement d'alerte voyageur n'est pas un prospect a contacter : c'est
-// une info qui rend les autres leads de ce pays plus chauds. Pas de score,
-// pas de bouton d'action. Repli silencieux si aucune alerte.
-function renderAlertes(){
-  const box=document.getElementById('alertesPays');
-  if(!box) return;
-  if(!ALERTES || !ALERTES.length){ box.innerHTML=''; return; }
-  const cls=a=>a.sens==='aggravation'?'al-agg':(a.sens==='allegement'?'al-alleg':'al-lat');
-  const fleche=a=>a.sens==='aggravation'?'▲':(a.sens==='allegement'?'▼':'≈');
-  const items=ALERTES.map(a=>`
-    <a class="al-item ${cls(a)}" ${a.lien?`href="${esc(a.lien)}" target="_blank" rel="noopener"`:''}>
-      <span class="al-sens">${fleche(a)}</span>
-      <span class="al-pays">${esc(a.pays)}</span>
-      <span class="al-zone">${esc(a.zone||'')}</span>
-      <span class="al-niv">${esc(a.avant)} → ${esc(a.apres)}</span>
-      ${a.motif?`<span class="al-motif">${esc(a.motif)}</span>`:''}
-    </a>`).join('');
-  box.innerHTML=`<div class="al-titre">Alertes pays récentes (${ALERTES.length})</div>
-    <div class="al-liste">${items}</div>`;
-}
 
 // Observabilite de run : etat du dernier run par source (volume + fraicheur).
 // Rend visible une source qui s'est tue -- ce qui manquait quand le digest est
