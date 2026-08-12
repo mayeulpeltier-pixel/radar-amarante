@@ -251,7 +251,7 @@ def resoudre_pays(brut, source):
     brut = _txt(brut)
     if not brut:
         return ("Pays non précisé", "Non classé")
-    if source in ("TED", "AFDB", "ADB", "EBRD", "UNGM", "IDB"):
+    if source in ("TED", "AFDB", "ADB", "EBRD", "UNGM", "IDB", "BMP"):
         # Sources ISO : pays_execution stocke en code ISO3 (scoring direct).
         code = brut.split(",")[0].strip().upper()
         if code in ZONE_PAR_ISO3:
@@ -379,7 +379,7 @@ SANTE_CALME_JOURS = int(os.environ.get("RADAR_SANTE_CALME_JOURS") or "14")
 # Sources attendues, dans l'ordre d'affichage. Une source de cette liste ABSENTE
 # des leads s'affiche a 0 (c'est ainsi qu'une source morte se voit).
 CATALOGUE_SOURCES = ("TED", "BM", "AFDB", "ADB", "EBRD", "UNGM", "RW",
-                     "MIGA", "IFC", "IDB", "ATTRIB", "PRIVÉ")
+                     "MIGA", "IFC", "IDB", "BMP", "ATTRIB", "PRIVÉ")
 
 
 def sante_run(leads, aujourdhui=None):
@@ -540,7 +540,7 @@ def ligne_vers_lead(row, source):
         cible = _txt(row.get("cible_commerciale_reelle")) or \
             "Investisseur prive / entreprise projet qui deploie cadres et actifs en zone a risque."
         groupe = _txt(row.get("type_document")) or "divulgation"
-    elif source in ("AFDB", "ADB", "EBRD", "UNGM", "IDB"):
+    elif source in ("AFDB", "ADB", "EBRD", "UNGM", "IDB", "BMP"):
         # Bailleurs multilatéraux (Afrique / Asie / Ukraine-Caucase /
         # Amérique latine pour IDB). Le
         # collecteur remplit déjà cible_commerciale_reelle (pour EBRD, le client
@@ -818,7 +818,8 @@ def construire_leads(lignes_ted, lignes_bm, lignes_prive=None,
                      enrichissement=None, lignes_attrib=None, lignes_rw=None,
                      lignes_afdb=None, lignes_adb=None, lignes_ebrd=None,
                      lignes_ungm=None, analyses_attrib=None,
-                     lignes_miga=None, lignes_ifc=None, lignes_idb=None):
+                     lignes_miga=None, lignes_ifc=None, lignes_idb=None,
+                     lignes_bmp=None):
     """Fusionne les onglets (TED, Banque Mondiale, AfDB, ADB, EBRD, ReliefWeb,
     PRIVÉ/BITD), deduplique, trie. Pour les leads PRIVÉ, remonte le dirigeant
     (enrichissement) comme contact.
@@ -836,6 +837,7 @@ def construire_leads(lignes_ted, lignes_bm, lignes_prive=None,
     leads += [ligne_vers_lead(r, "MIGA") for r in (lignes_miga or [])]
     leads += [ligne_vers_lead(r, "IFC") for r in (lignes_ifc or [])]
     leads += [ligne_vers_lead(r, "IDB") for r in (lignes_idb or [])]
+    leads += [ligne_vers_lead(r, "BMP") for r in (lignes_bmp or [])]
     leads_prive = [ligne_vers_lead(r, "PRIVÉ") for r in (lignes_prive or [])]
 
     # Index d'enrichissement : clefs brutes (minuscules) + alias normalises,
@@ -1115,10 +1117,14 @@ def lire_onglets(sheet_id, fichier_cs):
                        "motif", "publication_number", "lien"]
     lignes_alertes = _lignes_vers_dicts(valeurs(onglet_al), colonnes_al)
 
+    # BM Projects (AMONT) : projets approuves, en amont des appels d'offres BM.
+    # Source d'AVIS ISO3, score deterministe (pas de LLM). Onglet dedie.
+    lignes_bmp = _lire_bailleur("bm_projets", "bm_projets_radar", "TOUTES_COLONNES_BMP", "NOM_ONGLET")
+
     return (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
             lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
             lignes_ungm, analyses_attrib, lignes_alertes, lignes_miga, lignes_ifc,
-            lignes_idb)
+            lignes_idb, lignes_bmp)
 
 
 def charger_leads(sheet_id, fichier_cs):
@@ -1145,12 +1151,12 @@ def charger_leads(sheet_id, fichier_cs):
     (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
      lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
      lignes_ungm, analyses_attrib, lignes_alertes, lignes_miga, lignes_ifc,
-     lignes_idb) = onglets
+     lignes_idb, lignes_bmp) = onglets
     leads = construire_leads(
         lignes_ted, lignes_bm, lignes_prive, enrichissement, lignes_attrib,
         lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_ungm,
         analyses_attrib, lignes_miga=lignes_miga, lignes_ifc=lignes_ifc,
-        lignes_idb=lignes_idb)
+        lignes_idb=lignes_idb, lignes_bmp=lignes_bmp)
     return leads, onglets
 
 
@@ -1396,7 +1402,7 @@ def main():
     (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
      lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
      lignes_ungm, analyses_attrib, lignes_alertes, lignes_miga, lignes_ifc,
-     lignes_idb) = onglets
+     lignes_idb, lignes_bmp) = onglets
 
     # Persistance de la tendance (best-effort) : le snapshot sante par source
     # s'accumule dans 'runs_radar' une fois par run (etape "Generer le tableau
@@ -1410,10 +1416,10 @@ def main():
         print("(pg) stat de run sante non persistee ({}) -- generation non affectee".format(
             str(e)[:100]))
     print("  TED : {} | BM : {} | AfDB : {} | ADB : {} | EBRD : {} | UNGM : {} | "
-          "ReliefWeb : {} | MIGA : {} | IFC : {} | IDB : {} | total exploitable : {}".format(
+          "ReliefWeb : {} | MIGA : {} | IFC : {} | IDB : {} | BMP : {} | total exploitable : {}".format(
               len(lignes_ted), len(lignes_bm), len(lignes_afdb), len(lignes_adb),
               len(lignes_ebrd), len(lignes_ungm), len(lignes_rw),
-              len(lignes_miga), len(lignes_ifc), len(lignes_idb), len(leads)))
+              len(lignes_miga), len(lignes_ifc), len(lignes_idb), len(lignes_bmp), len(leads)))
 
     html = generer_html(leads, lignes_watchlist, alertes=lignes_alertes)
     dossier = os.path.dirname(sortie)
@@ -1563,6 +1569,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .src.miga{border-color:rgba(200,120,90,0.45);color:#d69a80}
   .src.ifc{border-color:rgba(120,170,190,0.45);color:#8fbccf}
   .src.idb{border-color:rgba(210,180,90,0.45);color:#d9c383}
+  .src.bmp{border-color:rgba(120,190,150,0.5);color:#8fce9f}
   /* Sélecteurs secteur / grouper */
   .pick{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:7px;
     background:var(--ink-2);padding:0 4px 0 11px;height:35px}
@@ -1870,7 +1877,7 @@ const SUIVI_ON = !!SUIVI_URL || API_STATUT;
 // Correspondance source -> onglet, cle d'ecriture dans radar_statuts.
 const ONGLET_SRC = {TED:'ted_radar',BM:'bm_radar',AFDB:'afdb_radar',ADB:'adb_radar',
   EBRD:'ebrd_radar',UNGM:'ungm_radar',RW:'reliefweb_radar','PRIVÉ':'prive_radar',
-  ATTRIB:'attributions_radar',MIGA:'miga_radar',IFC:'ifc_radar',IDB:'idb_radar'};
+  ATTRIB:'attributions_radar',MIGA:'miga_radar',IFC:'ifc_radar',IDB:'idb_radar',BMP:'bm_projets_radar'};
 // Statut CRM deja pose (serveur) : survit au changement de navigateur, ce que
 // le localStorage seul ne permettait pas.
 function dejaContacte(l){const s=String(l.statut||'').toLowerCase();
@@ -1902,7 +1909,7 @@ function marquerContacte(idx,btn){
 }
 const ORDRE_ZONES = ["Afrique de l'Ouest","Sahel","Afrique centrale","Afrique de l'Est","Afrique australe","Afrique du Nord","Proche-Orient","Péninsule arabique","Asie centrale","Asie du Sud","Asie du Sud-Est","Caucase","Balkans","Europe de l'Est","Caraïbes","Amérique latine","Europe de l'Ouest","Outre-mer","Non classé"];
 const winLabel={immediate:'Fenêtre immédiate',court_terme:'Court terme',indetermine:'Fenêtre indéterminée'};
-const SRC_LABEL={BM:'Banque Mondiale',TED:'TED',AFDB:'AfDB',ADB:'ADB',EBRD:'EBRD',UNGM:'UNGM · ONU',RW:'ReliefWeb',MIGA:'MIGA',IFC:'IFC',IDB:'IDB · Amérique latine','PRIVÉ':'Privé · BITD',ATTRIB:'Titulaire'};
+const SRC_LABEL={BM:'Banque Mondiale',TED:'TED',AFDB:'AfDB',ADB:'ADB',EBRD:'EBRD',UNGM:'UNGM · ONU',RW:'ReliefWeb',MIGA:'MIGA',IFC:'IFC',IDB:'IDB · Amérique latine',BMP:'BM Projet · amont','PRIVÉ':'Privé · BITD',ATTRIB:'Titulaire'};
 // Etiquette d'echelle de score. TROIS familles NON comparables entre elles :
 //   - AVIS (TED/BM/bailleurs, bareme additif) : « echelle avis » ;
 //   - SIGNAL PRIVE (bareme multiplicatif)      : « echelle signal » ;
@@ -2185,7 +2192,7 @@ function buildPeriod(){
   }));
 }
 
-const SRC_NOMS_META={TED:'TED',BM:'Banque Mondiale',AFDB:'AfDB',ADB:'ADB',EBRD:'EBRD',UNGM:'UNGM (agences ONU)',RW:'ReliefWeb','PRIVÉ':'Privé (BITD)',ATTRIB:'Titulaires',MIGA:'MIGA (garanties)',IFC:'IFC (invest. privé)',IDB:'IDB (Amérique latine)'};
+const SRC_NOMS_META={TED:'TED',BM:'Banque Mondiale',AFDB:'AfDB',ADB:'ADB',EBRD:'EBRD',UNGM:'UNGM (agences ONU)',RW:'ReliefWeb','PRIVÉ':'Privé (BITD)',ATTRIB:'Titulaires',MIGA:'MIGA (garanties)',IFC:'IFC (invest. privé)',IDB:'IDB (Amérique latine)',BMP:'BM Projets (amont)'};
 const SRC_PRESENTES=[...new Set(LEADS.map(l=>l.src))].map(s=>SRC_NOMS_META[s]||s);
 document.getElementById('runmeta').innerHTML =
   'Run du <b>'+META.date+'</b><br>'+META.total+' avis analysés<br>Sources : '+(SRC_PRESENTES.join(', ')||'aucune');
@@ -2242,7 +2249,7 @@ function buildStats(){
       {k:'suivre',cls:'low',n:c('suivre'),l:'À suivre'}
     ];
   }else{
-    const av=LEADS.filter(l=>l.src==='TED'||l.src==='BM'||l.src==='AFDB'||l.src==='ADB'||l.src==='EBRD'||l.src==='UNGM'||l.src==='RW'||l.src==='MIGA'||l.src==='IFC'||l.src==='IDB');
+    const av=LEADS.filter(l=>l.src==='TED'||l.src==='BM'||l.src==='AFDB'||l.src==='ADB'||l.src==='EBRD'||l.src==='UNGM'||l.src==='RW'||l.src==='MIGA'||l.src==='IFC'||l.src==='IDB'||l.src==='BMP');
     const c=a=>av.filter(l=>l.action===a).length;
     defs=[
       {k:'contacter',cls:'act',n:c('contacter'),l:'À contacter'},
@@ -2612,8 +2619,8 @@ function renderGeo(){
 // Barre source : ne montre QUE les sources d'avis reellement presentes (une
 // source vide -- ADB desactivee, IDB si non collectee -- disparait d'elle-meme,
 // plus de bouton qui ouvre une liste vide). Ordre d'affichage stable.
-const SRC_BTN={BM:'Banque Mondiale',TED:'TED',AFDB:'AfDB',ADB:'ADB',EBRD:'EBRD',UNGM:'UNGM',RW:'ReliefWeb',MIGA:'MIGA',IFC:'IFC',IDB:'IDB'};
-const SRC_ORDRE_AVIS=['BM','TED','AFDB','ADB','EBRD','UNGM','RW','MIGA','IFC','IDB'];
+const SRC_BTN={BM:'Banque Mondiale',TED:'TED',AFDB:'AfDB',ADB:'ADB',EBRD:'EBRD',UNGM:'UNGM',RW:'ReliefWeb',MIGA:'MIGA',IFC:'IFC',IDB:'IDB',BMP:'BM Projet'};
+const SRC_ORDRE_AVIS=['BM','TED','AFDB','ADB','EBRD','UNGM','RW','MIGA','IFC','IDB','BMP'];
 function buildSrcSeg(){
   const seg=document.getElementById('srcseg'); if(!seg)return;
   const presentes=new Set(LEADS.filter(l=>l.src!=='PRIVÉ'&&l.src!=='ATTRIB').map(l=>l.src));
