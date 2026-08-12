@@ -1199,6 +1199,95 @@ def preparer_geo(lignes_alertes, jours=None):
     return prets
 
 
+# ===========================================================================
+# COUPLAGE GEO -> SCORE (12/08/2026) -- « board vivant »
+# ===========================================================================
+# Le signal geopolitique cessait d'etre decoratif : un pays qui vient de virer
+# au rouge (aggravation FCDO/presse recente) doit rendre ses AVIS plus chauds.
+# Applique en DISPLAY-TIME dans le dashboard (non destructif, dynamique) : le
+# score de base est conserve, le boost est borne, trace, et recalcule le rang.
+# On ne touche PAS aux collecteurs (le score fige a la collecte ne verrait pas
+# un pays basculer apres coup).
+BOOST_GEO_JOURS = int(os.environ.get("RADAR_BOOST_GEO_JOURS", "14"))
+BOOST_GEO_MAX = float(os.environ.get("RADAR_BOOST_GEO_MAX", "1.5"))   # sur sûreté
+# Familles boostables : les AVIS uniquement. PRIVÉ/ATTRIB ont d'autres baremes,
+# non comparables, et ne sont pas des « avis dans un pays qui bascule ».
+SRC_BOOSTABLES = {"TED", "BM", "AFDB", "ADB", "EBRD", "UNGM", "RW", "MIGA", "IFC", "IDB"}
+
+
+def _boost_par_pays(alertes, aujourdhui=None):
+    """Nom de pays (resolu) -> (boost, motif, date) depuis les AGGRAVATIONS
+    recentes (< BOOST_GEO_JOURS). Un allegement ne baisse jamais un lead : on ne
+    veut pas masquer une opportunite reelle parce que le FCDO s'ameliore. Boost =
+    severite (0-4) atenuee lineairement par l'age, bornee a BOOST_GEO_MAX. Par
+    pays, la plus forte aggravation gagne (pas d'empilement). Fonction pure."""
+    from datetime import date, timedelta
+    auj = aujourdhui or date.today()
+    limite = (auj - timedelta(days=BOOST_GEO_JOURS)).isoformat()
+    par_pays = {}
+    for a in (alertes or []):
+        if _txt(a.get("sens")) != "aggravation":
+            continue
+        maj = _txt(a.get("date_maj"))
+        if maj and maj < limite:
+            continue
+        try:
+            sev = int(float(a.get("severite") or 0))
+        except (TypeError, ValueError):
+            sev = 0
+        try:
+            age = (auj - date.fromisoformat(maj)).days if maj else 0
+        except ValueError:
+            age = 0
+        decay = max(0.0, 1.0 - age / float(max(1, BOOST_GEO_JOURS)))
+        boost = round(min(BOOST_GEO_MAX, (sev / 4.0) * BOOST_GEO_MAX * decay), 2)
+        if boost <= 0:
+            continue
+        # Cle = NOM resolu (comme le champ `pays` des leads), via le meme
+        # resolveur ISO3 -> nom. Repli sur pays_nom brut.
+        nom_resolu, _ = resoudre_pays(_txt(a.get("pays_execution")), "TED")
+        for cle in (nom_resolu, _txt(a.get("pays_nom"))):
+            cle = _txt(cle)
+            if not cle:
+                continue
+            cur = par_pays.get(cle)
+            if not cur or boost > cur[0]:
+                par_pays[cle] = (boost, _txt(a.get("motif")), maj)
+    return par_pays
+
+
+def appliquer_boost_geo(leads, alertes):
+    """Rehausse les AVIS d'un pays en aggravation recente, in place. Non
+    destructif : `final_base`/`surete_base` conservent le score d'origine, le
+    resultat est borne a 10, le lead est marque (`geo_boost`/`geo_motif`) pour
+    l'UI, et le rang de tri est recalcule pour que le boost remonte le lead dans
+    la vue Importance. PRIVÉ/ATTRIB intacts. Retourne `leads` (re-trie)."""
+    par_pays = _boost_par_pays(alertes)
+    if not par_pays:
+        return leads
+    touche = False
+    for l in leads:
+        if l.get("src") not in SRC_BOOSTABLES:
+            continue
+        info = par_pays.get(_txt(l.get("pays")))
+        if not info:
+            continue
+        boost, motif, dmaj = info
+        l["surete_base"] = l.get("surete_base", l.get("surete", 0))
+        l["final_base"] = l.get("final_base", l.get("final", 0))
+        l["surete"] = round(min(10.0, l.get("surete", 0) + boost), 1)
+        l["final"] = round(min(10.0, l.get("final", 0) + 0.5 * boost), 1)
+        l["geo_boost"] = boost
+        l["geo_motif"] = motif
+        l["geo_date"] = dmaj
+        touche = True
+    if touche:
+        for l in leads:
+            l["rang"] = rang_tri(l.get("final", 0), l.get("date_det", ""))
+        leads.sort(key=lambda l: (l["rang"], l["final"]), reverse=True)
+    return leads
+
+
 def generer_html(leads, watchlist=None, api_statut=False, alertes=None):
     """Produit la page HTML autonome (situation board) a partir des leads.
 
@@ -1208,6 +1297,10 @@ def generer_html(leads, watchlist=None, api_statut=False, alertes=None):
     defaut : la page statique Cloudflare garde EXACTEMENT le comportement
     d'avant (l'appel /api/statut n'existe pas sur un hebergement statique)."""
     watchlist = watchlist or []
+    # Couplage géo -> score : un pays en aggravation récente rend ses avis plus
+    # chauds. Appliqué AVANT meta/serialisation pour que le boost pèse sur les
+    # KPI, le rang (Importance) et le score affiché. Non destructif.
+    appliquer_boost_geo(leads, alertes or [])
     # Les titulaires (ATTRIB) sont un REGISTRE DE PROSPECTS, pas des avis
     # analyses : on les EXCLUT des KPI d'action pour ne pas gonfler
     # artificiellement "a surveiller" ni le total. Ils ont leur propre
@@ -1517,6 +1610,9 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .badge.win-indetermine{background:var(--low-soft);color:var(--bone-dim)}
   .badge.ecart{background:transparent;border:1px solid rgba(200,137,59,0.5);color:#dcb079}
   .badge.deplacement{background:rgba(224,142,152,0.16);color:#e08e98;border:1px solid rgba(224,142,152,0.55);font-weight:600}
+  .badge.geoboost{background:rgba(192,57,43,0.20);color:#f0a090;border:1px solid rgba(192,57,43,0.6);font-weight:600}
+  .lead.boosted{box-shadow:inset 0 0 0 1px rgba(192,57,43,0.35)}
+  .scorebox .sfbase{font-size:0.9rem;color:var(--bone-faint);text-decoration:line-through;font-weight:400;font-family:var(--display)}
   .contact{border-top:1px solid var(--line-2);padding-top:12px;margin-top:2px}
   .contact .row{display:flex;gap:8px;font-size:0.8rem;margin-bottom:5px;align-items:baseline}
   .contact .k{font-family:var(--mono);font-size:0.58rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--bone-faint);min-width:62px;flex-shrink:0;padding-top:2px}
@@ -2580,16 +2676,18 @@ function leadCard(l,i){
     const stCls=stKey.includes('gagn')?'gagne':stKey.includes('perd')?'perdu':stKey.includes('contact')?'contacte':stKey.includes('relanc')?'relance':'';
     const statut=(stKey!=='nouveau')?`<span class="statut ${stCls}">${esc(l.statut)}</span>`:'';
     const dateChip=l.mois_label&&l.mois_label!=='Sans date'?`<span class="datedet">détecté ${esc(l.mois_label)}</span>`:'';
+    const geoBadge=l.geo_boost?`<span class="badge geoboost" title="${esc(l.geo_motif||'Pays en aggravation récente')} — score rehaussé de +${(l.geo_boost*0.5).toFixed(1)}">▲ pays en aggravation +${(l.geo_boost*0.5).toFixed(1)}</span>`:'';
+    const scoreBase=l.geo_boost&&l.final_base!=null?`<span class="sfbase" title="Score avant rehausse géopolitique">${l.final_base.toFixed(1)}</span> `:'';
     const hasContact=(l.nom&&l.nom!=='n.c.')||(l.email&&l.email!=='n.c.')||(l.tel&&l.tel!=='n.c.');
     const contactRows = hasContact ? `
           <div class="row"><span class="k">Contact</span><span class="v">${esc(l.nom)}</span></div>
           <div class="row"><span class="k">Email</span><span class="v">${mail}</span></div>
           <div class="row"><span class="k">Tél</span><span class="v">${tel}</span></div>` : '';
-    return `<article class="lead" data-tier="${tier}" data-idx="${i}"><span class="spine"></span><div class="body">
+    return `<article class="lead${l.geo_boost?' boosted':''}" data-tier="${tier}" data-idx="${i}"><span class="spine"></span><div class="body">
       <div class="lhead"><div class="lmeta"><span class="src ${l.src.toLowerCase()}">${SRC_LABEL[l.src]||l.src}</span><span class="pays">${esc(l.pays)}</span><span>· ${esc(l.zone)}</span></div>
-      <div class="scorebox"><div class="sf">${l.final.toFixed(1)}</div><div class="sd">sûreté ${l.surete.toFixed(1)} · com ${l.comm.toFixed(1)}</div><div class="se">${echelleLabel(l)}</div></div></div>
+      <div class="scorebox"><div class="sf">${scoreBase}${l.final.toFixed(1)}</div><div class="sd">sûreté ${l.surete.toFixed(1)} · com ${l.comm.toFixed(1)}</div><div class="se">${echelleLabel(l)}</div></div></div>
       <h3 class="ltitle">${esc(l.titre)}</h3>
-      <div class="badges">${(l.justif||'').indexOf('[DÉPLACEMENT CONCURRENT]')===0?'<span class="badge deplacement">⚔ Déplacement concurrent</span>':''}<span class="badge win-${win}">${winLabel[win]}</span>${badgeDeadline(l)}${ecart}${statut}${dateChip}</div>
+      <div class="badges">${geoBadge}${(l.justif||'').indexOf('[DÉPLACEMENT CONCURRENT]')===0?'<span class="badge deplacement">⚔ Déplacement concurrent</span>':''}<span class="badge win-${win}">${winLabel[win]}</span>${badgeDeadline(l)}${ecart}${statut}${dateChip}</div>
       <div class="contact"><div class="row"><span class="k">Agence</span><span class="v">${esc(l.agence)}</span></div>${contactRows}</div>
       <div class="cible"><b>Qui démarcher.</b> ${esc(l.cible)}</div>
       ${l.justif?`<details class="just"><summary><span class="chev">▸</span> Justification sûreté</summary><p>${esc((l.justif||'').replace('[DÉPLACEMENT CONCURRENT]','').trim())}</p></details>`:''}
@@ -2718,6 +2816,7 @@ function ficheHtml(l){
      ${row('SIREN',esc(l.siren||''))}
      ${row("Chiffre d'affaires",l.ca?esc(l.ca)+' €':'')}
      ${row('Qui démarcher',esc(l.cible))}
+     ${l.geo_boost?row('Contexte géo',`<span style="color:#e08e98">▲ Pays en aggravation récente (${esc(l.geo_date||'')}) — score rehaussé de ${l.final_base!=null?esc(l.final_base.toFixed(1)):''} à ${esc(l.final.toFixed(1))}.</span>${l.geo_motif?'<br>'+esc(l.geo_motif):''}`):''}
      ${row('Justification',esc((l.justif||'').replace('[DÉPLACEMENT CONCURRENT]','').trim()))}
    </div>
    <div class="mactions">
