@@ -94,14 +94,15 @@ def _alerte(iso, nom, zone, sens, sev, motif, jours_recul):
 
 
 class TestPreparerGeo(unittest.TestCase):
-    def test_fenetre_90j_vs_30j(self):
-        """Un signal a 50 j est HORS bandeau (30 j) mais DANS l'onglet (90 j)."""
-        a = [_alerte("MLI", "Mali", "Sahel", "aggravation", 3, "x", 50)]
-        self.assertEqual(len(rd.preparer_alertes(a)), 0)   # bandeau 30 j
-        self.assertEqual(len(rd.preparer_geo(a)), 1)       # onglet 90 j
+    def test_fenetre_semaine_en_cours(self):
+        """Onglet = 7 derniers jours. Un signal a 3 j reste, a 10 j sort."""
+        recent = [_alerte("MLI", "Mali", "Sahel", "aggravation", 3, "x", 3)]
+        vieux = [_alerte("MLI", "Mali", "Sahel", "aggravation", 3, "x", 10)]
+        self.assertEqual(len(rd.preparer_geo(recent)), 1)
+        self.assertEqual(len(rd.preparer_geo(vieux)), 0)
 
-    def test_exclusion_au_dela_de_90j(self):
-        a = [_alerte("MLI", "Mali", "Sahel", "aggravation", 3, "x", 120)]
+    def test_exclusion_au_dela_de_7j(self):
+        a = [_alerte("MLI", "Mali", "Sahel", "aggravation", 3, "x", 30)]
         self.assertEqual(len(rd.preparer_geo(a)), 0)
 
     def test_champs_cartographiables(self):
