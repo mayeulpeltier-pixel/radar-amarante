@@ -385,15 +385,18 @@ def trouver_contact_hunter(entreprise, dirigeant, fetch=None):
             "source": source}
 
 
-def meilleur_email_domaine(emails):
-    """Choisit le meilleur email d'une liste Hunter Domain Search : email
-    NOMINATIF (personnel) de plus haute confiance en priorite, sinon email
-    generique (contact@...). {} si liste vide."""
+def meilleur_email_domaine(emails, prefer_generic=False):
+    """Choisit le meilleur email d'une liste Hunter Domain Search.
+
+    Par defaut : email NOMINATIF (personnel) de plus haute confiance, sinon
+    generique. Avec `prefer_generic=True` (voie titulaires etrangers, posture
+    RGPD prudente) : on privilegie l'email GENERIQUE (contact@, export@...) et on
+    ne retombe sur un nominatif qu'en dernier recours. {} si liste vide."""
     if not emails:
         return {}
     persos = [e for e in emails if e.get("type") == "personal" and e.get("value")]
     generiques = [e for e in emails if e.get("type") != "personal" and e.get("value")]
-    pool = persos or generiques
+    pool = (generiques or persos) if prefer_generic else (persos or generiques)
     if not pool:
         return {}
 
@@ -408,17 +411,18 @@ def meilleur_email_domaine(emails):
             "contact": contact}
 
 
-def trouver_contact_domaine_hunter(entreprise, fetch=None):
+def trouver_contact_domaine_hunter(entreprise, fetch=None, prefer_generic=False):
     """Email de contact via Hunter Domain Search par NOM d'entreprise. Marche a
     l'international (Hunter resout le domaine lui-meme). {} si rien / pas de cle.
-    Cout : 1 credit de recherche par entreprise (1 a 10 emails renvoyes)."""
+    Cout : 1 credit de recherche par entreprise (1 a 10 emails renvoyes).
+    `prefer_generic` : privilegie un email generique (voie titulaires, RGPD)."""
     cle = os.environ.get("HUNTER_API_KEY", "")
     if not (cle and entreprise):
         return {}
     donnees = _get_json(API_HUNTER_DOMAIN,
                         {"company": entreprise, "api_key": cle, "limit": 10}, fetch=fetch)
     data = (donnees or {}).get("data") or {}
-    meilleur = meilleur_email_domaine(data.get("emails") or [])
+    meilleur = meilleur_email_domaine(data.get("emails") or [], prefer_generic=prefer_generic)
     if not meilleur.get("email"):
         return {}
     statut = "hunter/domaine" + ("/" + meilleur["type"] if meilleur.get("type") else "")
@@ -460,14 +464,20 @@ def _infos_par_entreprise(classeur):
     return m
 
 
-def selectionner_cibles_hunter(whitelist, infos, deja, budget):
-    """Repartit le budget Hunter (plafond global) entre :
-    - cibles FR : dirigeant connu -> Email Finder (contact nominatif, prioritaire) ;
-    - cibles etrangeres : identifiees par GLEIF, sans dirigeant -> Domain Search.
-    Ne cible QUE la priorite 'Haute', jamais deja tentee. Renvoie une liste de
-    tuples (nom, methode, dirigeant) plafonnee au budget. Fonction pure (testable)."""
-    cibles = []
-    for w in whitelist:
+def selectionner_cibles_hunter(comptes, infos, deja, budget):
+    """Repartit le budget Hunter (plafond global) entre, DANS L'ORDRE :
+
+    1. Watchlist priorite 'Haute' : dirigeant connu -> Email Finder (nominatif) ;
+       identifiee GLEIF sans dirigeant -> Domain Search.
+    2. RELIQUAT (12/08/2026) : titulaires ETRANGERS (origine attributaire,
+       titulaire_etranger), tries par taille de contrat decroissante -> Domain
+       Search en mode GENERIQUE (posture RGPD). Ne sert QUE ce qui reste apres la
+       watchlist : l'existant n'est jamais degrade.
+
+    Ne cible jamais une entreprise deja tentee. Renvoie des tuples
+    (nom, methode, dirigeant, generique) plafonnes au budget. Fonction pure."""
+    hautes = []
+    for w in comptes:
         if w.get("priorite_socle", "").strip() != "Haute":
             continue
         nom = w.get("entreprise", "").strip()
@@ -475,12 +485,27 @@ def selectionner_cibles_hunter(whitelist, infos, deja, budget):
             continue
         dirigeant, source = infos.get(nom.lower(), ("", ""))
         if dirigeant:
-            cibles.append((nom, "finder", dirigeant))
+            hautes.append((nom, "finder", dirigeant, False))
         elif source == "gleif":
-            cibles.append((nom, "domaine", ""))
-        # sinon (pas encore enrichie, ou 'non trouvée' pure) : on ne gaspille pas de credit
-    cibles.sort(key=lambda c: 0 if c[1] == "finder" else 1)   # FR d'abord
-    return cibles[:max(0, budget)]
+            hautes.append((nom, "domaine", "", False))
+    hautes.sort(key=lambda c: 0 if c[1] == "finder" else 1)   # FR (finder) d'abord
+    cibles = hautes[:max(0, budget)]
+
+    reste = max(0, budget) - len(cibles)
+    if reste > 0:
+        vus = {c[0].lower() for c in cibles} | set(deja)
+        titulaires = []
+        for w in comptes:
+            if w.get("origine") != "attributaire" or not w.get("etranger"):
+                continue                          # etrangers uniquement (Q2-A)
+            nom = w.get("entreprise", "").strip()
+            if not nom or nom.lower() in vus:
+                continue
+            vus.add(nom.lower())
+            titulaires.append((nom, w.get("valeur", 0.0)))
+        titulaires.sort(key=lambda t: t[1], reverse=True)     # plus gros contrats
+        cibles += [(nom, "domaine", "", True) for nom, _ in titulaires[:reste]]
+    return cibles
 
 
 def pass_contacts_hunter(classeur, whitelist, fetch=None):
@@ -498,19 +523,22 @@ def pass_contacts_hunter(classeur, whitelist, fetch=None):
     infos = _infos_par_entreprise(classeur)
     cibles = selectionner_cibles_hunter(whitelist, infos, deja, budget)
     n_fr = sum(1 for c in cibles if c[1] == "finder")
-    n_int = sum(1 for c in cibles if c[1] == "domaine")
+    n_wl = sum(1 for c in cibles if c[1] == "domaine" and not c[3])
+    n_tit = sum(1 for c in cibles if c[1] == "domaine" and c[3])
     print("Hunter : {} credit(s) utilisable(s), {} cible(s) : {} FR (finder), "
-          "{} etranger (domaine).".format(budget, len(cibles), n_fr, n_int))
+          "{} watchlist (domaine), {} titulaire etranger (domaine/generique)."
+          .format(budget, len(cibles), n_fr, n_wl, n_tit))
     aujourd = datetime.date.today().isoformat()
     nouveaux = []
-    for nom, methode, dirigeant in cibles:
+    for nom, methode, dirigeant, generique in cibles:
         if methode == "finder":
             c = trouver_contact_hunter(nom, dirigeant, fetch=fetch)
         else:
-            c = trouver_contact_domaine_hunter(nom, fetch=fetch)
+            c = trouver_contact_domaine_hunter(nom, fetch=fetch, prefer_generic=generique)
         nouveaux.append([nom, c.get("email", ""), c.get("confiance", ""),
                          c.get("source", "non trouve"), aujourd])
-        print("  [{}] {} : {}".format(methode, nom, c.get("email") or "aucun email trouve"))
+        print("  [{}{}] {} : {}".format(methode, "/gen" if generique else "",
+                                        nom, c.get("email") or "aucun email trouve"))
         time.sleep(0.3)
     if not nouveaux:
         return
@@ -566,30 +594,57 @@ def entreprises_watchlist(valeurs):
     return out
 
 
+def _valeur_num(brut):
+    """'45 millions EUR' / '120 000' / '1.2M' -> float (0 si illisible). Sert a
+    trier les titulaires par taille de contrat (les plus gros d'abord)."""
+    s = str(brut or "").lower().replace("\u00a0", " ").replace(",", ".")
+    m = re.search(r"([0-9]+(?:\.[0-9]+)?)", s)
+    if not m:
+        return 0.0
+    v = float(m.group(1))
+    if "billion" in s or "milliard" in s:
+        v *= 1e9
+    elif "million" in s or re.search(r"\bm\b", s):
+        v *= 1e6
+    elif "000" in s and v < 1000:      # deja en milliers ? on laisse tel quel
+        pass
+    return v
+
+
 def entreprises_attributaires(valeurs, max_comptes=None):
-    """'attributions_radar' -> [{entreprise, priorite_socle:'Moyenne', origine:'attributaire'}].
+    """'attributions_radar' -> [{entreprise, priorite_socle:'Moyenne',
+    origine:'attributaire', etranger:bool, valeur:float}].
+
     Gagnants PUBLIES seulement (ignore '(gagnant non publie)'), dedup par nom ;
     un marche peut lister plusieurs gagnants separes par ';'. Priorite Moyenne :
-    enrichis gratuitement (gouv/GLEIF) mais PAS eligibles a Hunter (quota paye
-    protege). Fonction PURE (testable)."""
+    enrichis gratuitement (gouv/GLEIF). Depuis 12/08/2026, les titulaires
+    ETRANGERS (titulaire_etranger='oui') sont eligibles a Hunter sur le RELIQUAT
+    de budget (apres la watchlist Haute), tries par taille de contrat : c'est le
+    « destinataire commercial reel » qui deploie. Fonction PURE (testable)."""
     if not valeurs or len(valeurs) < 2:
         return []
     entetes = [str(c).strip().lower() for c in valeurs[0]]
     if "gagnant" not in entetes:
         return []
     ig = entetes.index("gagnant")
+    i_etr = entetes.index("titulaire_etranger") if "titulaire_etranger" in entetes else -1
+    i_val = entetes.index("valeur_attribuee") if "valeur_attribuee" in entetes else -1
     vus, out = set(), []
     for row in valeurs[1:]:
         brut = str(row[ig]).strip() if ig < len(row) else ""
         if not brut or "non publie" in brut.lower():
             continue
+        etr = (str(row[i_etr]).strip().lower() in ("oui", "true", "1", "vrai")
+               if 0 <= i_etr < len(row) else False)
+        val = _valeur_num(row[i_val]) if 0 <= i_val < len(row) else 0.0
         for nom in brut.split(";"):
             nom = nom.strip()
             cle = nom.lower()
             if len(nom) < 3 or cle in vus:
                 continue
             vus.add(cle)
-            out.append({"entreprise": nom, "priorite_socle": "Moyenne", "origine": "attributaire"})
+            out.append({"entreprise": nom, "priorite_socle": "Moyenne",
+                        "origine": "attributaire", "etranger": etr, "valeur": val})
             if max_comptes and len(out) >= max_comptes:
                 return out
     return out
