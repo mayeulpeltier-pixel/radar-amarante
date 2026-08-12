@@ -2212,7 +2212,7 @@ class TestCablageUNGMDashboard(unittest.TestCase):
     def test_points_de_branchement_dans_le_gabarit(self):
         html = radar_dashboard.GABARIT_HTML
         for nom, marqueur in (("badge CSS", ".src.ungm{"),
-                              ("bouton de filtre", 'data-src="UNGM"'),
+                              ("source filtrable (barre dynamique)", "'UNGM','RW'"),
                               ("libelle de carte", "UNGM:'UNGM · ONU'"),
                               ("libelle du bandeau", "UNGM:'UNGM (agences ONU)'"),
                               ("lentille avis", "l.src==='UNGM'")):
