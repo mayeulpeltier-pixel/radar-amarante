@@ -72,6 +72,11 @@ NOM_ONGLET = "alertes_radar"          # PARTAGE avec les alertes voyageurs :
                                        # meme bandeau "contexte pays".
 BUDGET = int(os.environ.get("RADAR_GEO_BUDGET", "60"))
 PAUSE = float(os.environ.get("RADAR_GEO_PAUSE", "0.4"))
+# Semaine en cours : on n'analyse QUE les articles des 7 derniers jours. Un
+# evenement pays plus vieux n'est plus un contexte operationnel pertinent (et
+# encombrait l'onglet). Fenetre propre au geo, sans toucher JOURS_FRAICHEUR
+# (120 j) du chemin BITD. Surchargeable via RADAR_GEO_JOURS.
+GEO_JOURS_FRAICHEUR = int(os.environ.get("RADAR_GEO_JOURS", "7"))
 DEBUG = os.environ.get("RADAR_GEO_DEBUG", "0") == "1"
 
 # Requete d'evenements (FR + EN) : cible l'actu de RUPTURE, pas l'actu de fond.
@@ -214,7 +219,7 @@ def collecter_articles_pays(nom_pays, session=None):
         except Exception:
             continue
         for a in lot:
-            if not bitd.article_frais(a) or bitd.bruit_evident(a):
+            if not bitd.article_frais(a, jours=GEO_JOURS_FRAICHEUR) or bitd.bruit_evident(a):
                 continue
             k = bitd.id_article(a.get("lien", ""))
             if k and k not in vus:
