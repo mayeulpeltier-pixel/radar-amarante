@@ -268,6 +268,14 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python ifc_radar.py
 
+      - name: Collecter les projets amont Banque Mondiale
+        if: always() && steps.cle.outcome == 'success'
+        env:
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python bm_projets.py
+
       # 4e) Analyse LLM des attributions (attributions_analyse.py).
       #     Doit tourner APRES les cinq collecteurs d'attributions (leurs lignes
       #     brutes sont sa source) et AVANT le dashboard (qui joint le resultat).
