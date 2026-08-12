@@ -251,7 +251,7 @@ def resoudre_pays(brut, source):
     brut = _txt(brut)
     if not brut:
         return ("Pays non précisé", "Non classé")
-    if source in ("TED", "AFDB", "ADB", "EBRD", "UNGM"):
+    if source in ("TED", "AFDB", "ADB", "EBRD", "UNGM", "IDB"):
         # Sources ISO : pays_execution stocke en code ISO3 (scoring direct).
         code = brut.split(",")[0].strip().upper()
         if code in ZONE_PAR_ISO3:
@@ -379,7 +379,7 @@ SANTE_CALME_JOURS = int(os.environ.get("RADAR_SANTE_CALME_JOURS") or "14")
 # Sources attendues, dans l'ordre d'affichage. Une source de cette liste ABSENTE
 # des leads s'affiche a 0 (c'est ainsi qu'une source morte se voit).
 CATALOGUE_SOURCES = ("TED", "BM", "AFDB", "ADB", "EBRD", "UNGM", "RW",
-                     "MIGA", "IFC", "ATTRIB", "PRIVÉ")
+                     "MIGA", "IFC", "IDB", "ATTRIB", "PRIVÉ")
 
 
 def sante_run(leads, aujourdhui=None):
@@ -425,6 +425,89 @@ def sante_run(leads, aujourdhui=None):
             "actives": actives, "a_verifier": a_verifier}
 
 
+# ===========================================================================
+# TAXONOMIE SECTEUR CANONIQUE (10/08/2026)
+# ===========================================================================
+# Le systeme portait DEUX vocabulaires secteur incompatibles : les libelles CPV
+# des attributions (« BTP / construction », « Energie / petrole-gaz »...) et la
+# watchlist en texte libre (« luxe », « oil & gas »...). Sans normalisation, le
+# filtre secteur affichait vingt libelles disjoints et ne regroupait pas la meme
+# activite. On replie tout sur 10 secteurs canoniques via des mots-cles. C'est la
+# SOURCE DE VERITE : chaque lead porte `sect` (precalcule ici) et le JS ne
+# reclassifie pas -- il lit la valeur. « Secteur estime » cote avis : le libelle
+# est deduit du titre, moins fiable qu'un code CPV, l'UI l'indique.
+SECTEURS_CANONIQUES = [
+    "Défense", "BTP / Construction", "Énergie & Oil-Gas", "Mines / Matériaux",
+    "Ingénierie / Études", "Transport / Logistique", "Télécom / IT",
+    "Luxe", "Agro", "Autre",
+]
+# Ordre = PRIORITE de classement : le premier secteur dont un mot-cle est present
+# gagne. « Défense » d'abord (signal metier fort), « Autre » implicite en repli.
+_SECTEUR_MOTS = [
+    ("Défense", ("defense", "defence", "armement", "arme", "military",
+                 "militaire", "naval", "armee", "gendarmerie", "dga", "otan",
+                 "nato", "securite", "security")),
+    ("BTP / Construction", ("btp", "construction", "travaux", "works", "genie",
+                            "batiment", "building", "route", "road", "barrage",
+                            "dam", "pont", "bridge", "infrastructure", "chantier",
+                            "rehabilitation", "voirie")),
+    ("Énergie & Oil-Gas", ("energie", "energy", "petrol", "petrole", "oil",
+                           "gas", "gaz", "utilities", "power", "electr",
+                           "hydro", "solaire", "solar", "eolien", "eau",
+                           "water", "pipeline", "raffinerie")),
+    ("Mines / Matériaux", ("mine", "mines", "mining", "materiaux", "materials",
+                           "extract", "carriere", "metal", "cuivre", "or ",
+                           "lithium", "cobalt", "ciment")),
+    ("Ingénierie / Études", ("ingenierie", "ingenieur", "engineering", "etudes",
+                             "study", "conseil", "consulting", "assistance technique",
+                             "maitrise d")),
+    ("Transport / Logistique", ("transport", "logistique", "logistics",
+                                "vehicule", "fleet", "port ", "aeroport",
+                                "airport", "rail", "ferroviaire", "supply chain",
+                                "fret", "cargo")),
+    ("Télécom / IT", ("telecom", "telecommunication", "reseau", "network",
+                      "numerique", "digital", "informatique", "logiciel",
+                      "software", "data", "fibre", "satellite", "it ")),
+    ("Luxe", ("luxe", "luxury", "mode", "cosmetique", "joaillerie",
+              "maroquinerie", "parfum", "vin", "spiritueux", "hotellerie",
+              "haute couture")),
+    ("Agro", ("agro", "agri", "agricole", "food", "alimentaire", "farming",
+              "plantation", "elevage", "peche", "cacao", "coton")),
+]
+
+
+def secteur_canonique(*textes):
+    """Replie un ou plusieurs textes libres (libelle CPV, secteur watchlist,
+    titre d'avis, activite) sur UN secteur canonique. Repli « Autre ».
+    Deterministe, sans LLM : mots-cles, premier match dans l'ordre de priorite."""
+    t = " " + " ".join(
+        unicodedata.normalize("NFD", str(x or "").lower())
+        .encode("ascii", "ignore").decode("ascii")
+        for x in textes if x) + " "
+    for sec, mots in _SECTEUR_MOTS:
+        if any(m in t for m in mots):
+            return sec
+    return "Autre"
+
+
+def _secteur_du_lead(row, source, groupe):
+    """Secteur canonique d'un lead, selon sa source (fiabilite decroissante) :
+      - ATTRIB : libelle CPV (`secteur`), fiable ;
+      - IDB    : `secteur_idb` fourni par le collecteur, fiable ;
+      - PRIVÉ  : secteur de l'entreprise si present, sinon activite ;
+      - avis   : deduit du titre + groupe (ESTIME, l'UI l'indique)."""
+    if source == "ATTRIB":
+        return secteur_canonique(_txt(row.get("secteur")) or groupe)
+    if source == "IDB":
+        return secteur_canonique(_txt(row.get("secteur_idb")),
+                                 _txt(row.get("titre")), groupe)
+    if source == "PRIVÉ":
+        return secteur_canonique(_txt(row.get("secteur")),
+                                 _txt(row.get("type_activite")),
+                                 _txt(row.get("titre")))
+    return secteur_canonique(_txt(row.get("titre")), groupe)
+
+
 def ligne_vers_lead(row, source):
     """Transforme une ligne de Sheet (dict par nom de colonne) en lead unifie.
     Toutes les cellules passent par _txt() : gspread peut renvoyer des nombres
@@ -457,8 +540,9 @@ def ligne_vers_lead(row, source):
         cible = _txt(row.get("cible_commerciale_reelle")) or \
             "Investisseur prive / entreprise projet qui deploie cadres et actifs en zone a risque."
         groupe = _txt(row.get("type_document")) or "divulgation"
-    elif source in ("AFDB", "ADB", "EBRD", "UNGM"):
-        # Bailleurs multilatéraux (Afrique / Asie / Ukraine-Caucase). Le
+    elif source in ("AFDB", "ADB", "EBRD", "UNGM", "IDB"):
+        # Bailleurs multilatéraux (Afrique / Asie / Ukraine-Caucase /
+        # Amérique latine pour IDB). Le
         # collecteur remplit déjà cible_commerciale_reelle (pour EBRD, le client
         # maître d'ouvrage). Groupe = type de notice (GPN, prequalif, tender...).
         cible = _txt(row.get("cible_commerciale_reelle")) or \
@@ -506,6 +590,8 @@ def ligne_vers_lead(row, source):
         # Nom de l'entreprise cible (pour la lentille Entreprises). Cote PRIVÉ,
         # c'est l'entreprise surveillee ; ailleurs le gagnant est inconnu.
         "entreprise": (_txt(row.get("acheteur")) or "n.c.") if source == "PRIVÉ" else "",
+        # Secteur canonique (filtre + regroupement). Estime cote avis.
+        "sect": _secteur_du_lead(row, source, groupe),
     }
 
 
@@ -615,6 +701,7 @@ def attribution_vers_lead(row):
         "deadline": "", "conf": "", "modele": "",
         "pub": _txt(row.get("publication_number")),
         "entreprise": gagnant or "Titulaire",
+        "sect": secteur_canonique(secteur, marche),
     }
 
 
@@ -731,7 +818,7 @@ def construire_leads(lignes_ted, lignes_bm, lignes_prive=None,
                      enrichissement=None, lignes_attrib=None, lignes_rw=None,
                      lignes_afdb=None, lignes_adb=None, lignes_ebrd=None,
                      lignes_ungm=None, analyses_attrib=None,
-                     lignes_miga=None, lignes_ifc=None):
+                     lignes_miga=None, lignes_ifc=None, lignes_idb=None):
     """Fusionne les onglets (TED, Banque Mondiale, AfDB, ADB, EBRD, ReliefWeb,
     PRIVÉ/BITD), deduplique, trie. Pour les leads PRIVÉ, remonte le dirigeant
     (enrichissement) comme contact.
@@ -748,6 +835,7 @@ def construire_leads(lignes_ted, lignes_bm, lignes_prive=None,
     leads += [ligne_vers_lead(r, "RW") for r in (lignes_rw or [])]
     leads += [ligne_vers_lead(r, "MIGA") for r in (lignes_miga or [])]
     leads += [ligne_vers_lead(r, "IFC") for r in (lignes_ifc or [])]
+    leads += [ligne_vers_lead(r, "IDB") for r in (lignes_idb or [])]
     leads_prive = [ligne_vers_lead(r, "PRIVÉ") for r in (lignes_prive or [])]
 
     # Index d'enrichissement : clefs brutes (minuscules) + alias normalises,
@@ -941,6 +1029,10 @@ def lire_onglets(sheet_id, fichier_cs):
     # prives). Sources d'AVIS, pays par NOM (comme BM/RW). Onglets dedies.
     lignes_miga = _lire_bailleur("miga_radar", "miga_radar", "TOUTES_COLONNES", "NOM_ONGLET")
     lignes_ifc = _lire_bailleur("ifc_radar", "ifc_radar", "TOUTES_COLONNES", "NOM_ONGLET")
+    # IDB (Banque interaméricaine, Amérique latine) : source d'AVIS ISO3 comme
+    # AfDB/ADB. Son onglet `idb_radar` était collecté mais jamais lu (orphelin,
+    # 10/08/2026). Branché ici. Les attributions IDB restent dans attributions_radar.
+    lignes_idb = _lire_bailleur("idb_radar", "idb_radar", "TOUTES_COLONNES_IDB", "NOM_ONGLET")
 
     # Watchlist des cibles privees (comptes_cibles_bitd) : liste curee a la main
     # (oil & gas, BTP, luxe...). Lue telle quelle (colonnes libres), pour la
@@ -1025,7 +1117,8 @@ def lire_onglets(sheet_id, fichier_cs):
 
     return (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
             lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
-            lignes_ungm, analyses_attrib, lignes_alertes, lignes_miga, lignes_ifc)
+            lignes_ungm, analyses_attrib, lignes_alertes, lignes_miga, lignes_ifc,
+            lignes_idb)
 
 
 def charger_leads(sheet_id, fichier_cs):
@@ -1051,11 +1144,13 @@ def charger_leads(sheet_id, fichier_cs):
     onglets = lire_onglets(sheet_id, fichier_cs)
     (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
      lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
-     lignes_ungm, analyses_attrib, lignes_alertes, lignes_miga, lignes_ifc) = onglets
+     lignes_ungm, analyses_attrib, lignes_alertes, lignes_miga, lignes_ifc,
+     lignes_idb) = onglets
     leads = construire_leads(
         lignes_ted, lignes_bm, lignes_prive, enrichissement, lignes_attrib,
         lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_ungm,
-        analyses_attrib, lignes_miga=lignes_miga, lignes_ifc=lignes_ifc)
+        analyses_attrib, lignes_miga=lignes_miga, lignes_ifc=lignes_ifc,
+        lignes_idb=lignes_idb)
     return leads, onglets
 
 
@@ -1097,6 +1192,44 @@ def preparer_alertes(lignes_alertes):
     return prets
 
 
+def preparer_geo(lignes_alertes, jours=90):
+    """Lignes brutes de `alertes_radar` -> flux GEOPOLITIQUE de l'onglet dedie.
+
+    Meme source que le bandeau (`preparer_alertes`) mais fenetre plus large
+    (90 j par defaut) pour offrir un HISTORIQUE explorable, groupable par zone
+    et cartographiable. Un evenement geo (FCDO ou presse) reste un CONTEXTE
+    pays : aucun score, aucune action « je contacte ». Fonction pure."""
+    from datetime import date, timedelta
+    limite = (date.today() - timedelta(days=jours)).isoformat()
+    prets = []
+    for l in (lignes_alertes or []):
+        maj = _txt(l.get("date_maj"))
+        if maj and maj < limite:
+            continue
+        try:
+            sev = int(float(l.get("severite") or 0))
+        except (TypeError, ValueError):
+            sev = 0
+        nom_pays = _txt(l.get("pays_nom")) or _txt(l.get("pays_execution"))
+        _, zone_calc = resoudre_pays(_txt(l.get("pays_execution")), "TED")
+        prets.append({
+            "pays": nom_pays,
+            "iso3": _txt(l.get("pays_execution")),
+            "zone": _txt(l.get("zone")) or zone_calc,
+            "sens": _txt(l.get("sens")),
+            "avant": _txt(l.get("niveau_avant")),
+            "apres": _txt(l.get("niveau_apres")),
+            "motif": _txt(l.get("motif")),
+            "severite": sev,
+            "date": maj,
+            "lien": _txt(l.get("lien")),
+        })
+    # Tri par severite puis date (recent d'abord) : le JS regroupe ensuite par
+    # zone en conservant cet ordre intra-zone.
+    prets.sort(key=lambda a: (a["severite"], a["date"]), reverse=True)
+    return prets
+
+
 def generer_html(leads, watchlist=None, api_statut=False, alertes=None):
     """Produit la page HTML autonome (situation board) a partir des leads.
 
@@ -1131,6 +1264,10 @@ def generer_html(leads, watchlist=None, api_statut=False, alertes=None):
     # rend les autres leads de ce pays plus chauds. On ne la melange donc pas au
     # scoring des leads (ce serait le defaut qu'on a corrige au chantier C).
     alertes_json = json.dumps(preparer_alertes(alertes or []), ensure_ascii=False)
+    # Onglet Géopolitique (10/08/2026) : historique 90 j, groupé par zone côté JS.
+    geo_json = json.dumps(preparer_geo(alertes or []), ensure_ascii=False)
+    # Taxonomie secteur exposée au JS (filtre + regroupement). Ordre = affichage.
+    secteurs_json = json.dumps(SECTEURS_CANONIQUES, ensure_ascii=False)
     meta_json = json.dumps(meta, ensure_ascii=False)
     # Watchlist normalisee pour le JS : nom + secteur (detection dynamique de la
     # colonne secteur, quel que soit son intitule exact).
@@ -1140,7 +1277,8 @@ def generer_html(leads, watchlist=None, api_statut=False, alertes=None):
                 return _txt(d.get(k))
         return ''
     watchlist_norm = [{'entreprise': _txt(w.get('entreprise')), 'secteur': _secteur_wl(w),
-                       'ent_cle': _norm_ent(_txt(w.get('entreprise')))}
+                       'ent_cle': _norm_ent(_txt(w.get('entreprise'))),
+                       'sect': secteur_canonique(_secteur_wl(w))}
                       for w in watchlist if _txt(w.get('entreprise'))]
     watchlist_json = json.dumps(watchlist_norm, ensure_ascii=False)
     # Boucle de retroaction (item 7), volet VISIBILITE : taux de conversion
@@ -1169,6 +1307,8 @@ def generer_html(leads, watchlist=None, api_statut=False, alertes=None):
     return (GABARIT_HTML
             .replace("__LEADS_JSON__", leads_json)
             .replace("__ALERTES_JSON__", alertes_json)
+            .replace("__GEO_JSON__", geo_json)
+            .replace("__SECTEURS_JSON__", secteurs_json)
             .replace("__META_JSON__", meta_json)
             .replace("__WATCHLIST_JSON__", watchlist_json)
             .replace("__CONVERSION_JSON__", conversion_json)
@@ -1195,7 +1335,8 @@ def main():
     leads, onglets = charger_leads(sheet_id, fichier_cs)
     (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
      lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
-     lignes_ungm, analyses_attrib, lignes_alertes, lignes_miga, lignes_ifc) = onglets
+     lignes_ungm, analyses_attrib, lignes_alertes, lignes_miga, lignes_ifc,
+     lignes_idb) = onglets
 
     # Persistance de la tendance (best-effort) : le snapshot sante par source
     # s'accumule dans 'runs_radar' une fois par run (etape "Generer le tableau
@@ -1207,10 +1348,10 @@ def main():
         print("(pg) stat de run sante non persistee ({}) -- generation non affectee".format(
             str(e)[:100]))
     print("  TED : {} | BM : {} | AfDB : {} | ADB : {} | EBRD : {} | UNGM : {} | "
-          "ReliefWeb : {} | MIGA : {} | IFC : {} | total exploitable : {}".format(
+          "ReliefWeb : {} | MIGA : {} | IFC : {} | IDB : {} | total exploitable : {}".format(
               len(lignes_ted), len(lignes_bm), len(lignes_afdb), len(lignes_adb),
               len(lignes_ebrd), len(lignes_ungm), len(lignes_rw),
-              len(lignes_miga), len(lignes_ifc), len(leads)))
+              len(lignes_miga), len(lignes_ifc), len(lignes_idb), len(leads)))
 
     html = generer_html(leads, lignes_watchlist, alertes=lignes_alertes)
     dossier = os.path.dirname(sortie)
@@ -1373,6 +1514,42 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .src.adb{border-color:rgba(120,170,120,0.45);color:#9ec49e}
   .src.ebrd{border-color:rgba(150,120,200,0.45);color:#b39ad6}
   .src.privé,.src.prive{border-color:rgba(150,150,200,0.4);color:#a9a9d9}
+  .src.miga{border-color:rgba(200,120,90,0.45);color:#d69a80}
+  .src.ifc{border-color:rgba(120,170,190,0.45);color:#8fbccf}
+  .src.idb{border-color:rgba(210,180,90,0.45);color:#d9c383}
+  /* Sélecteurs secteur / grouper */
+  .pick{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:7px;
+    background:var(--ink-2);padding:0 4px 0 11px;height:35px}
+  .pick>span{font-family:var(--mono);font-size:0.62rem;letter-spacing:0.11em;text-transform:uppercase;color:var(--bone-dim)}
+  .pick select{background:transparent;border:none;color:var(--bone);font-family:var(--mono);font-size:0.68rem;
+    letter-spacing:0.04em;padding:8px 6px;cursor:pointer;outline:none;max-width:190px}
+  .pick select option{background:var(--ink-2);color:var(--bone)}
+  /* En-têtes de groupe (« Grouper par ») */
+  .grpsec{grid-column:1/-1;display:grid;grid-template-columns:repeat(2,1fr);gap:13px;margin-bottom:2px}
+  .grphead{grid-column:1/-1;display:flex;align-items:baseline;gap:10px;margin:14px 0 2px;
+    font-family:var(--mono);font-size:0.72rem;letter-spacing:0.14em;text-transform:uppercase;color:var(--fort);
+    border-bottom:1px solid var(--line);padding-bottom:7px}
+  .grphead span{color:var(--bone-dim);font-size:0.66rem;letter-spacing:0.08em}
+  /* Lentille géopolitique */
+  .geosec .grphead{color:var(--bone)}
+  .geocard{grid-column:1/-1;display:grid;grid-template-columns:26px 1fr auto;gap:12px;align-items:center;
+    text-decoration:none;background:var(--ink-2);border:1px solid var(--line);border-left-width:3px;
+    border-radius:8px;padding:11px 15px;transition:.15s}
+  .geocard:hover{border-color:var(--oxblood);transform:translateX(2px)}
+  .geocard.g-agg{border-left-color:#c0392b}
+  .geocard.g-alleg{border-left-color:#27812f}
+  .geocard.g-lat{border-left-color:#8a7f78}
+  .gc-sens{font-size:1.1rem;text-align:center}
+  .geocard.g-agg .gc-sens{color:#e07a6b}
+  .geocard.g-alleg .gc-sens{color:#6fbf77}
+  .geocard.g-lat .gc-sens{color:#b7aca3}
+  .gc-main{display:flex;flex-direction:column;gap:3px;min-width:0}
+  .gc-pays{color:var(--bone);font-weight:600;font-size:0.95rem}
+  .gc-motif{color:var(--bone-dim);font-size:0.8rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .gc-meta{display:flex;flex-direction:column;align-items:flex-end;gap:3px;font-family:var(--mono);font-size:0.66rem;color:var(--bone-dim)}
+  .gc-niv{color:var(--bone)}
+  .gc-sev{letter-spacing:2px;color:var(--fort)}
+  @media(max-width:860px){.gc-motif{white-space:normal}}
   .pays{color:var(--bone);font-weight:600}
   .scorebox{text-align:right;flex-shrink:0}
   .scorebox .sf{font-family:var(--display);font-weight:700;font-size:1.5rem;line-height:1}
@@ -1446,11 +1623,11 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   @media(max-width:860px){.geo{grid-template-columns:1fr}#map{height:280px}}
   /* --- Fiche lead (modale) + actions --- */
   .foot .footacts{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-  .foot .act{cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--bone-dim);
+  .foot .act,.facts .act{cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--bone-dim);
     font:inherit;font-size:12px;padding:4px 10px;border-radius:6px;text-decoration:none;transition:.15s}
-  .foot .act:hover{border-color:var(--oxblood);color:var(--bone)}
-  .foot .act.mail{border-color:var(--oxblood);color:var(--fort)}
-  .foot .act.mail:hover{background:var(--oxblood);color:#fff}
+  .foot .act:hover,.facts .act:hover{border-color:var(--oxblood);color:var(--bone)}
+  .foot .act.mail,.facts .act.mail{border-color:var(--oxblood);color:var(--fort)}
+  .foot .act.mail:hover,.facts .act.mail:hover{background:var(--oxblood);color:#fff}
   .foot .act.contact{border-color:var(--oxblood);color:var(--fort)}
   .foot .act.contact:hover{background:var(--oxblood);color:#fff}
   .foot .act.contact.done{border-color:rgba(120,190,150,0.5);color:#7fae8f;background:transparent;cursor:default}
@@ -1564,6 +1741,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
       <button data-lens="entreprises" aria-pressed="false">Entreprises <span>· 360°</span></button>
       <button data-lens="cibles" aria-pressed="false">Cibles privées <span>· prospects</span></button>
       <button data-lens="titulaires" aria-pressed="false">Titulaires <span>· attributions</span></button>
+      <button data-lens="geo" aria-pressed="false">Géopolitique <span>· alertes</span></button>
     </div>
     <div class="stats" id="stats"></div>
     <div class="exec" id="exec"></div>
@@ -1586,18 +1764,20 @@ GABARIT_HTML = r"""<!DOCTYPE html>
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
       <input type="text" id="search" placeholder="Filtrer par pays, agence, mot-clé..." autocomplete="off">
     </label>
-    <div class="seg" id="srcseg" role="group" aria-label="Source">
-      <button data-src="all" aria-pressed="true">Toutes</button>
-      <button data-src="BM" aria-pressed="false">Banque Mondiale</button>
-      <button data-src="TED" aria-pressed="false">TED</button>
-      <button data-src="AFDB" aria-pressed="false">AfDB</button>
-      <button data-src="UNGM" aria-pressed="false">UNGM</button>
-      <button data-src="ADB" aria-pressed="false">ADB</button>
-      <button data-src="EBRD" aria-pressed="false">EBRD</button>
-      <button data-src="RW" aria-pressed="false">ReliefWeb</button>
-      <button data-src="MIGA" aria-pressed="false">MIGA</button>
-      <button data-src="IFC" aria-pressed="false">IFC</button>
-    </div>
+    <div class="seg" id="srcseg" role="group" aria-label="Source"></div>
+    <label class="pick" id="secteurPick" title="Filtrer par secteur">
+      <span>Secteur</span>
+      <select id="secteurSel"></select>
+    </label>
+    <label class="pick" id="groupPick" title="Regrouper la liste par">
+      <span>Grouper</span>
+      <select id="groupSel">
+        <option value="aucun">Aucun</option>
+        <option value="zone">Zone</option>
+        <option value="secteur">Secteur</option>
+        <option value="action">Priorité</option>
+      </select>
+    </label>
     <div class="seg" id="triseg" role="group" aria-label="Tri">
       <button data-tri="score" aria-pressed="true">Importance</button>
       <button data-tri="urgence" aria-pressed="false">Urgence</button>
@@ -1618,6 +1798,8 @@ GABARIT_HTML = r"""<!DOCTYPE html>
 <script>
 const LEADS = __LEADS_JSON__;
 const ALERTES = __ALERTES_JSON__;
+const GEO = __GEO_JSON__;
+const SECTEURS = __SECTEURS_JSON__;
 const SANTE = __SANTE_JSON__;
 const META = __META_JSON__;
 const WATCHLIST = __WATCHLIST_JSON__;
@@ -1633,7 +1815,7 @@ const SUIVI_ON = !!SUIVI_URL || API_STATUT;
 // Correspondance source -> onglet, cle d'ecriture dans radar_statuts.
 const ONGLET_SRC = {TED:'ted_radar',BM:'bm_radar',AFDB:'afdb_radar',ADB:'adb_radar',
   EBRD:'ebrd_radar',UNGM:'ungm_radar',RW:'reliefweb_radar','PRIVÉ':'prive_radar',
-  ATTRIB:'attributions_radar',MIGA:'miga_radar',IFC:'ifc_radar'};
+  ATTRIB:'attributions_radar',MIGA:'miga_radar',IFC:'ifc_radar',IDB:'idb_radar'};
 // Statut CRM deja pose (serveur) : survit au changement de navigateur, ce que
 // le localStorage seul ne permettait pas.
 function dejaContacte(l){const s=String(l.statut||'').toLowerCase();
@@ -1663,7 +1845,7 @@ function marquerContacte(idx,btn){
 }
 const ORDRE_ZONES = ["Afrique de l'Ouest","Sahel","Afrique centrale","Afrique de l'Est","Afrique australe","Afrique du Nord","Proche-Orient","Péninsule arabique","Asie centrale","Asie du Sud","Asie du Sud-Est","Caucase","Balkans","Europe de l'Est","Caraïbes","Amérique latine","Europe de l'Ouest","Outre-mer","Non classé"];
 const winLabel={immediate:'Fenêtre immédiate',court_terme:'Court terme',indetermine:'Fenêtre indéterminée'};
-const SRC_LABEL={BM:'Banque Mondiale',TED:'TED',AFDB:'AfDB',ADB:'ADB',EBRD:'EBRD',UNGM:'UNGM · ONU',RW:'ReliefWeb','PRIVÉ':'Privé · BITD',ATTRIB:'Titulaire'};
+const SRC_LABEL={BM:'Banque Mondiale',TED:'TED',AFDB:'AfDB',ADB:'ADB',EBRD:'EBRD',UNGM:'UNGM · ONU',RW:'ReliefWeb',MIGA:'MIGA',IFC:'IFC',IDB:'IDB · Amérique latine','PRIVÉ':'Privé · BITD',ATTRIB:'Titulaire'};
 // Etiquette d'echelle de score. TROIS familles NON comparables entre elles :
 //   - AVIS (TED/BM/bailleurs, bareme additif) : « echelle avis » ;
 //   - SIGNAL PRIVE (bareme multiplicatif)      : « echelle signal » ;
@@ -1722,7 +1904,7 @@ function mailtoHref(l){
   const to=(l.email&&l.email!=='n.c.')?encodeURIComponent(l.email):'';
   return `mailto:${to}?subject=${encodeURIComponent(e.subject)}&body=${encodeURIComponent(e.body)}`;
 }
-let state={zone:null,src:'all',q:'',action:'contacter',mois:null,tri:'score',lens:'avis'};
+let state={zone:null,src:'all',q:'',action:'contacter',mois:null,tri:'score',lens:'avis',secteur:'all',group:'aucun'};
 
 // Filtre de la VUE AVIS (appels d'offres). Les entreprises (PRIVÉ, ATTRIB)
 // vivent dans la lentille Entreprises et sont exclues ici.
@@ -1730,6 +1912,7 @@ function match(l, ignore){
   ignore = ignore || {};
   if(l.src==='PRIVÉ' || l.src==='ATTRIB') return false;
   if(!ignore.action && state.action!=='all' && l.action!==state.action) return false;
+  if(!ignore.secteur && state.secteur!=='all' && (l.sect||'Autre')!==state.secteur) return false;
   if(!ignore.mois && state.mois && l.mois!==state.mois) return false;
   if(!ignore.zone && state.zone && l.zone!==state.zone) return false;
   if(!ignore.src && state.src!=='all' && l.src!==state.src) return false;
@@ -1780,7 +1963,9 @@ function finaliserFiche(f){
   // (attribution passee par attributions_analyse). Sert a faire remonter les
   // titulaires qualifies devant ceux encore sur le score deterministe.
   const analysee=f.signaux.some(s=>s.analysee);
+  const sectClasses=[...(f.sectSet||new Set())];
   return Object.assign(f,{zones:[...f.zones],secteurs:[...f.secteurs],
+    sectClasses,sectPrimary:sectClasses[0]||'Autre',
     prio,enr,repr,meilleur,dernier,analysee,n:f.signaux.length});
 }
 function _triFiches(a,b){
@@ -1794,16 +1979,18 @@ function agregerCibles(){
   WATCHLIST.forEach(w=>{
     const nom=w.entreprise; if(!nom) return;
     const cle=w.ent_cle||normEntreprise(nom)||sansAccent(nom);
-    if(!parCle[cle]) parCle[cle]={cle,nom,signaux:[],zones:new Set(),secteurs:new Set(),cible:true};
+    if(!parCle[cle]) parCle[cle]={cle,nom,signaux:[],zones:new Set(),secteurs:new Set(),sectSet:new Set(),cible:true};
     if(w.secteur) parCle[cle].secteurs.add(w.secteur);
+    if(w.sect) parCle[cle].sectSet.add(w.sect);
   });
   LEADS.filter(l=>l.src==='PRIVÉ').forEach(l=>{
     const nom=(l.entreprise&&l.entreprise!=='n.c.')?l.entreprise:(l.agence||'?');
     const cle=l.ent_cle||normEntreprise(nom)||sansAccent(nom);
-    if(!parCle[cle]) parCle[cle]={cle,nom,signaux:[],zones:new Set(),secteurs:new Set(),cible:false};
+    if(!parCle[cle]) parCle[cle]={cle,nom,signaux:[],zones:new Set(),secteurs:new Set(),sectSet:new Set(),cible:false};
     const f=parCle[cle]; f.signaux.push(l); f.nom=meilleurNom(f.nom,nom);
     if(l.zone&&l.zone!=='Non classé') f.zones.add(l.zone);
     if(l.grp&&l.grp!=='signal'&&l.grp!=='AT') f.secteurs.add(l.grp.replace(/_/g,' '));
+    if(l.sect) f.sectSet.add(l.sect);
   });
   return Object.values(parCle).map(finaliserFiche).sort(_triFiches);
 }
@@ -1813,10 +2000,11 @@ function agregerTitulaires(){
   LEADS.filter(l=>l.src==='ATTRIB').forEach(l=>{
     const nom=(l.entreprise&&l.entreprise!=='n.c.')?l.entreprise:(l.agence||'?');
     const cle=l.ent_cle||normEntreprise(nom)||sansAccent(nom);
-    if(!parCle[cle]) parCle[cle]={cle,nom,signaux:[],zones:new Set(),secteurs:new Set(),cible:false};
+    if(!parCle[cle]) parCle[cle]={cle,nom,signaux:[],zones:new Set(),secteurs:new Set(),sectSet:new Set(),cible:false};
     const f=parCle[cle]; f.signaux.push(l); f.nom=meilleurNom(f.nom,nom);
     if(l.zone&&l.zone!=='Non classé') f.zones.add(l.zone);
     if(l.grp&&l.grp!=='signal'&&l.grp!=='AT') f.secteurs.add(l.grp.replace(/_/g,' '));
+    if(l.sect) f.sectSet.add(l.sect);
   });
   return Object.values(parCle).map(finaliserFiche)
     // Les titulaires ANALYSES (vrais scores surete/commercial) remontent
@@ -1836,7 +2024,7 @@ function agregerTitulaires(){
 function agregerEntreprises(){
   const parCle={};
   function fiche(cle,nom){
-    if(!parCle[cle]) parCle[cle]={cle,nom,signaux:[],zones:new Set(),secteurs:new Set(),cible:false,srcSet:new Set()};
+    if(!parCle[cle]) parCle[cle]={cle,nom,signaux:[],zones:new Set(),secteurs:new Set(),sectSet:new Set(),cible:false,srcSet:new Set()};
     return parCle[cle];
   }
   WATCHLIST.forEach(w=>{
@@ -1844,6 +2032,7 @@ function agregerEntreprises(){
     const cle=w.ent_cle||normEntreprise(nom)||sansAccent(nom);
     const f=fiche(cle,nom); f.cible=true; f.srcSet.add('watchlist');
     if(w.secteur) f.secteurs.add(w.secteur);
+    if(w.sect) f.sectSet.add(w.sect);
   });
   LEADS.filter(l=>l.src==='PRIVÉ'||l.src==='ATTRIB').forEach(l=>{
     const nom=(l.entreprise&&l.entreprise!=='n.c.')?l.entreprise:(l.agence||'?');
@@ -1852,6 +2041,7 @@ function agregerEntreprises(){
     f.signaux.push(l); f.srcSet.add(l.src==='PRIVÉ'?'signal':'titulaire');
     if(l.zone&&l.zone!=='Non classé') f.zones.add(l.zone);
     if(l.grp&&l.grp!=='signal'&&l.grp!=='AT') f.secteurs.add(l.grp.replace(/_/g,' '));
+    if(l.sect) f.sectSet.add(l.sect);
   });
   return Object.values(parCle).map(f=>{
     const x=finaliserFiche(f);
@@ -1898,6 +2088,7 @@ function ficheMatchAction(f){
 function ficheOK(f, ignore){
   ignore = ignore || {};
   if(!ignore.action && !ficheMatchAction(f)) return false;
+  if(!ignore.secteur && state.secteur!=='all' && !(f.sectSet&&f.sectSet.has(state.secteur))) return false;
   if(!f.signaux.length){
     if((!ignore.zone&&state.zone)||(!ignore.mois&&state.mois)||(!ignore.q&&state.q)) return false;
     return true;
@@ -1937,7 +2128,7 @@ function buildPeriod(){
   }));
 }
 
-const SRC_NOMS_META={TED:'TED',BM:'Banque Mondiale',AFDB:'AfDB',ADB:'ADB',EBRD:'EBRD',UNGM:'UNGM (agences ONU)',RW:'ReliefWeb','PRIVÉ':'Privé (BITD)',ATTRIB:'Titulaires',MIGA:'MIGA (garanties)',IFC:'IFC (invest. privé)'};
+const SRC_NOMS_META={TED:'TED',BM:'Banque Mondiale',AFDB:'AfDB',ADB:'ADB',EBRD:'EBRD',UNGM:'UNGM (agences ONU)',RW:'ReliefWeb','PRIVÉ':'Privé (BITD)',ATTRIB:'Titulaires',MIGA:'MIGA (garanties)',IFC:'IFC (invest. privé)',IDB:'IDB (Amérique latine)'};
 const SRC_PRESENTES=[...new Set(LEADS.map(l=>l.src))].map(s=>SRC_NOMS_META[s]||s);
 document.getElementById('runmeta').innerHTML =
   'Run du <b>'+META.date+'</b><br>'+META.total+' avis analysés<br>Sources : '+(SRC_PRESENTES.join(', ')||'aucune');
@@ -1976,8 +2167,16 @@ function buildStats(){
       {k:'faible',cls:'low',n:fiches.filter(f=>sc(f)<4).length,l:'Faible'},
       {k:'all',cls:'',n:fiches.length,l:'Tous les titulaires'}
     ];
+  }else if(state.lens==='geo'){
+    const c=s=>GEO.filter(a=>a.sens===s).length;
+    defs=[
+      {k:'aggravation',cls:'act',n:c('aggravation'),l:'Aggravations'},
+      {k:'allegement',cls:'low',n:c('allegement'),l:'Allègements'},
+      {k:'lateral',cls:'wat',n:c('lateral'),l:'Latéraux'},
+      {k:'all',cls:'',n:GEO.length,l:'Tous les signaux'}
+    ];
   }else{
-    const av=LEADS.filter(l=>l.src==='TED'||l.src==='BM'||l.src==='AFDB'||l.src==='ADB'||l.src==='EBRD'||l.src==='UNGM'||l.src==='RW'||l.src==='MIGA'||l.src==='IFC');
+    const av=LEADS.filter(l=>l.src==='TED'||l.src==='BM'||l.src==='AFDB'||l.src==='ADB'||l.src==='EBRD'||l.src==='UNGM'||l.src==='RW'||l.src==='MIGA'||l.src==='IFC'||l.src==='IDB');
     const c=a=>av.filter(l=>l.action===a).length;
     defs=[
       {k:'contacter',cls:'act',n:c('contacter'),l:'À contacter'},
@@ -2204,10 +2403,8 @@ document.querySelectorAll('#lensseg button').forEach(b=>b.addEventListener('clic
   // Reset du filtre : en avis on part de "à contacter" ; en cibles/titulaires
   // on part de "tout" pour voir l'ensemble (toute la watchlist, tous les titulaires).
   state.action = state.lens==='avis' ? 'contacter' : 'all';
-  const ent=vueFiches();
-  document.getElementById('srcseg').style.display=ent?'none':'';   // source = notion avis
-  const comptes=document.getElementById('comptes'); if(comptes) comptes.style.display=ent?'none':'';
-  const titres={avis:'Carte des opportunités',entreprises:'Carte des entreprises',cibles:'Carte des cibles',titulaires:'Carte des titulaires'};
+  majControlesLentille();
+  const titres={avis:'Carte des opportunités',entreprises:'Carte des entreprises',cibles:'Carte des cibles',titulaires:'Carte des titulaires',geo:'Carte des signaux géopolitiques'};
   document.querySelector('.geo .phead').textContent=titres[state.lens]||'Carte';
   buildStats(); buildPeriod(); render();
 }));
@@ -2236,7 +2433,162 @@ function badgeDeadline(l){
   return `<span class="jx ${cls}">J-${jr}</span>`;
 }
 
+// ===================== REGROUPEMENT (« Grouper par ») =====================
+// Clé de groupe d'un avis / d'une fiche selon state.group. Retourne un libellé
+// lisible ; l'ordre des groupes suit ORDRE_ZONES pour la zone, sinon la taille.
+function grpKeyAvis(o){
+  if(state.group==='zone') return o.l.zone||'Zone n.c.';
+  if(state.group==='secteur') return o.l.sect||'Autre';
+  if(state.group==='action') return ({contacter:'À contacter',surveiller:'À surveiller',ignorer:'Faibles'})[o.l.action]||o.l.action||'—';
+  return '';
+}
+function grpKeyFiche(o){
+  if(state.group==='zone') return (o.f.zones&&o.f.zones[0])||'Zone n.c.';
+  if(state.group==='secteur') return o.f.sectPrimary||'Autre';
+  if(state.group==='action') return ({contacter:'À contacter',surveiller:'À surveiller',ignorer:'Faibles',aucun:'Sans signal'})[o.f.prio]||o.f.prio||'—';
+  return '';
+}
+function grouperListe(items, keyFn){
+  const g={}, ordre=[];
+  items.forEach(o=>{ const k=keyFn(o)||'—'; if(!g[k]){g[k]=[];ordre.push(k);} g[k].push(o); });
+  ordre.sort((a,b)=>{
+    const ia=ORDRE_ZONES.indexOf(a), ib=ORDRE_ZONES.indexOf(b);
+    if(ia>=0||ib>=0){ if(ia<0)return 1; if(ib<0)return -1; return ia-ib; }
+    return g[b].length-g[a].length;
+  });
+  return ordre.map(k=>({k,items:g[k]}));
+}
+function rendreGroupes(groupes, cardFn){
+  return groupes.map(gr=>
+    `<div class="grpsec"><div class="grphead">${esc(gr.k)}<span>${gr.items.length}</span></div>`+
+    gr.items.map(cardFn).join('')+`</div>`).join('');
+}
+
+// ===================== LENTILLE GEOPOLITIQUE =====================
+// Flux de contexte pays (alertes FCDO + evenements presse), historique 90 j,
+// GROUPE PAR ZONE et trie par date. Aucun score, aucune action « je contacte ».
+const GEO_COULEUR={aggravation:'#c0392b',allegement:'#27812f',lateral:'#8a7f78'};
+function geoFiltres(){
+  return GEO.filter(a=>{
+    if(state.action!=='all' && a.sens!==state.action) return false;
+    if(state.zone && a.zone!==state.zone) return false;
+    if(state.q){const hay=(a.pays+' '+a.zone+' '+a.motif+' '+a.apres).toLowerCase(); if(!hay.includes(state.q)) return false;}
+    return true;
+  });
+}
+function geoCard(a){
+  const cls=a.sens==='aggravation'?'g-agg':(a.sens==='allegement'?'g-alleg':'g-lat');
+  const fleche=a.sens==='aggravation'?'▲':(a.sens==='allegement'?'▼':'≈');
+  const niv=(a.avant||a.apres)?`${esc(a.avant)} → ${esc(a.apres)}`:'';
+  const sev='●●●●'.slice(0,Math.max(0,Math.min(4,a.severite)));
+  const lien=a.lien?`href="${esc(a.lien)}" target="_blank" rel="noopener"`:'';
+  return `<a class="geocard ${cls}" ${lien}>
+    <span class="gc-sens">${fleche}</span>
+    <span class="gc-main"><span class="gc-pays">${esc(a.pays)}</span>${a.motif?`<span class="gc-motif">${esc(a.motif)}</span>`:''}</span>
+    <span class="gc-meta">${niv?`<span class="gc-niv">${niv}</span>`:''}<span class="gc-date">${esc(a.date||'')}</span><span class="gc-sev" title="sévérité ${a.severite}">${sev}</span></span>
+  </a>`;
+}
+function buildZoneChartGeo(){
+  const counts={};
+  GEO.filter(a=>(state.action==='all'||a.sens===state.action) &&
+      (!state.q||(a.pays+' '+a.zone+' '+a.motif+' '+a.apres).toLowerCase().includes(state.q)))
+     .forEach(a=>{ counts[a.zone]=(counts[a.zone]||0)+1; });
+  const zones=ORDRE_ZONES.filter(z=>counts[z]);
+  const maxZ=Math.max(1,...zones.map(z=>counts[z]));
+  const box=document.getElementById('zonechart');
+  if(!zones.length){box.innerHTML='<div class="count">Aucun signal pour ce filtre.</div>';return;}
+  box.innerHTML=zones.map(z=>{
+    const c=counts[z], pct=Math.round(c/maxZ*100), pressed=z===state.zone?'true':'false';
+    return `<div class="zrow" data-zone="${z}" role="button" tabindex="0" aria-pressed="${pressed}"><div class="zlab"><span>${z}</span><span>${c}</span></div><div class="ztrack"><div class="zfill" style="width:${pct}%"></div></div></div>`;
+  }).join('');
+  box.querySelectorAll('.zrow').forEach(el=>{
+    const choisir=()=>{ state.zone=state.zone===el.dataset.zone?null:el.dataset.zone;
+      document.getElementById('clearz').classList.toggle('on',!!(state.zone||state.mois)); render(); };
+    el.addEventListener('click',choisir);
+    el.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();choisir();}});
+  });
+}
+function updateMapGeo(list){
+  if(!_map||!_layer)return; _layer.clearLayers();
+  const parPays={};
+  list.forEach(a=>{ if(!COORDS[a.pays])return; (parPays[a.pays]=parPays[a.pays]||[]).push(a); });
+  Object.entries(parPays).forEach(([pays,arr])=>{
+    const pire=arr.some(x=>x.sens==='aggravation')?'aggravation':(arr.some(x=>x.sens==='lateral')?'lateral':'allegement');
+    const col=GEO_COULEUR[pire]||'#8a7f78';
+    const sev=Math.max(0,...arr.map(x=>x.severite||0));
+    const r=6+Math.min(12,sev*3);
+    const m=L.circleMarker(COORDS[pays],{radius:r,color:col,weight:1.5,fillColor:col,fillOpacity:0.55});
+    m.bindPopup(`<b>${pays}</b><br>${arr.length} signal(aux) géo<br><span style="color:#A99E92;font-size:0.85em">${esc((arr[0].motif||'').slice(0,70))}</span>`);
+    m.on('click',()=>{ const inp=document.getElementById('search'); inp.value=pays; state.q=pays.toLowerCase(); render(); });
+    m.addTo(_layer);
+  });
+}
+function renderGeo(){
+  buildZoneChartGeo();
+  const box=document.getElementById('leads');
+  const list=geoFiltres();
+  updateMapGeo(list);
+  document.getElementById('count').textContent=
+    `${list.length} signal${list.length>1?'aux':''} géopolitique${list.length>1?'s':''}`+
+    (state.zone?`, zone ${state.zone}`:'')+(state.action!=='all'?`, ${state.action}`:'');
+  if(!list.length){box.innerHTML='<div class="empty">Aucun signal géopolitique sur la période (90 j).</div>';return;}
+  const parZone={};
+  list.forEach(a=>{ (parZone[a.zone]=parZone[a.zone]||[]).push(a); });
+  const zones=ORDRE_ZONES.filter(z=>parZone[z]).concat(Object.keys(parZone).filter(z=>!ORDRE_ZONES.includes(z)));
+  box.innerHTML=zones.map(z=>{
+    const items=parZone[z].slice().sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+    return `<div class="grpsec geosec"><div class="grphead">${esc(z)}<span>${items.length}</span></div>`+
+      items.map(geoCard).join('')+`</div>`;
+  }).join('');
+}
+
+// ===================== BARRES DYNAMIQUES =====================
+// Barre source : ne montre QUE les sources d'avis reellement presentes (une
+// source vide -- ADB desactivee, IDB si non collectee -- disparait d'elle-meme,
+// plus de bouton qui ouvre une liste vide). Ordre d'affichage stable.
+const SRC_BTN={BM:'Banque Mondiale',TED:'TED',AFDB:'AfDB',ADB:'ADB',EBRD:'EBRD',UNGM:'UNGM',RW:'ReliefWeb',MIGA:'MIGA',IFC:'IFC',IDB:'IDB'};
+const SRC_ORDRE_AVIS=['BM','TED','AFDB','ADB','EBRD','UNGM','RW','MIGA','IFC','IDB'];
+function buildSrcSeg(){
+  const seg=document.getElementById('srcseg'); if(!seg)return;
+  const presentes=new Set(LEADS.filter(l=>l.src!=='PRIVÉ'&&l.src!=='ATTRIB').map(l=>l.src));
+  const html=[`<button data-src="all" aria-pressed="${state.src==='all'}">Toutes</button>`]
+    .concat(SRC_ORDRE_AVIS.filter(s=>presentes.has(s)).map(s=>
+      `<button data-src="${s}" aria-pressed="${state.src===s}">${esc(SRC_BTN[s]||s)}</button>`));
+  seg.innerHTML=html.join('');
+  seg.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
+    state.src=b.dataset.src;
+    seg.querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed',x===b?'true':'false'));
+    render();
+  }));
+}
+// Selecteur secteur : ne liste que les secteurs presents (leads + watchlist).
+function buildSecteurSel(){
+  const sel=document.getElementById('secteurSel'); if(!sel)return;
+  const present=new Set();
+  LEADS.forEach(l=>{ if(l.sect) present.add(l.sect); });
+  WATCHLIST.forEach(w=>{ if(w.sect) present.add(w.sect); });
+  const ordre=SECTEURS.filter(s=>present.has(s));
+  sel.innerHTML='<option value="all">Tous</option>'+ordre.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('');
+  sel.value=state.secteur;
+}
+// Visibilite des controles selon la lentille. Source = avis seulement ;
+// secteur + grouper = partout sauf geo ; periodes + comptes = pas en geo.
+function majControlesLentille(){
+  const geo=state.lens==='geo', fiches=vueFiches();
+  const set=(id,on)=>{const e=document.getElementById(id); if(e) e.style.display=on?'':'none';};
+  set('srcseg', !geo && !fiches);
+  set('secteurPick', !geo);
+  set('groupPick', !geo);
+  set('triseg', !geo);
+  set('period', !geo);
+  set('comptes', !geo && !fiches);
+  set('alertesPays', !geo);
+}
+document.getElementById('secteurSel').addEventListener('change',e=>{state.secteur=e.target.value;render();});
+document.getElementById('groupSel').addEventListener('change',e=>{state.group=e.target.value;render();});
+
 function render(){
+  if(state.lens==='geo'){ renderGeo(); return; }
   buildZoneChart();
   if(vueFiches()){ renderFiches(fichesCourantes()); return; }
   const box=document.getElementById('leads');
@@ -2265,7 +2617,11 @@ function render(){
     (state.zone?`, zone ${state.zone}`:'')+(state.src!=='all'?`, source ${state.src}`:'');
   if(!filtered.length){box.innerHTML='<div class="empty">Aucun avis ne correspond à ce filtre.</div>';return;}
   AFFICHES=filtered;
-  box.innerHTML=filtered.map((l,i)=>{
+  box.innerHTML = state.group==='aucun'
+    ? filtered.map((l,i)=>leadCard(l,i)).join('')
+    : rendreGroupes(grouperListe(filtered.map((l,i)=>({l,i})),grpKeyAvis),(o)=>leadCard(o.l,o.i));
+}
+function leadCard(l,i){
     const tier=l.action;
     const done=SUIVI_ON&&(CONTACTES.has(leadId(l))||dejaContacte(l));
     const win=(['immediate','court_terme','indetermine'].includes(l.win))?l.win:'indetermine';
@@ -2290,7 +2646,6 @@ function render(){
       <div class="cible"><b>Qui démarcher.</b> ${esc(l.cible)}</div>
       ${l.justif?`<details class="just"><summary><span class="chev">▸</span> Justification sûreté</summary><p>${esc((l.justif||'').replace('[DÉPLACEMENT CONCURRENT]','').trim())}</p></details>`:''}
       </div><div class="foot"><span class="grp">Groupe ${esc(l.grp)}</span><span class="footacts">${SUIVI_ON?`<button class="act contact${done?' done':''}" type="button" data-contact="${i}"${done?' disabled':''}>${done?'✓ Contacté':'☎ Je contacte'}</button>`:''}<button class="act" type="button" data-fiche="${i}">Fiche ↗</button><a class="act mail" href="${mailtoHref(l)}">✉ Rédiger email</a>${l.lien?`<a class="act" href="${esc(l.lien)}" target="_blank" rel="noopener">Voir l'avis ↗</a>`:''}</span></div></article>`;
-  }).join('');
 }
 
 // --- Rendu de la lentille Entreprises ---
@@ -2343,7 +2698,9 @@ function renderFiches(fichesSource){
     `${fiches.length} entreprise${fiches.length>1?'s':''}`+
     (moisLabel?`, ${moisLabel}`:'')+(state.zone?`, zone ${state.zone}`:'');
   if(!fiches.length){box.innerHTML='<div class="empty">Aucune entreprise ne correspond à ce filtre.</div>';updateMap([]);return;}
-  box.innerHTML=fiches.map((f,i)=>ficheCard(f,i)).join('');
+  box.innerHTML = state.group==='aucun'
+    ? fiches.map((f,i)=>ficheCard(f,i)).join('')
+    : rendreGroupes(grouperListe(fiches.map((f,i)=>({f,i})),grpKeyFiche),(o)=>ficheCard(o.f,o.i));
   const sigVis=[]; fiches.forEach(f=>f.signaux.forEach(s=>{ if(signalOK(s)) sigVis.push(s); }));
   updateMap(sigVis);
 }
@@ -2509,11 +2866,14 @@ document.getElementById('modalcard').addEventListener('click',e=>{
 buildExec();
 renderConversion();
 initMap();
+buildSrcSeg();
+buildSecteurSel();
 buildStats();
 buildPeriod();
 buildComptes();
 renderAlertes();
 renderSante();
+majControlesLentille();
 render();
 
 // Section "Alertes pays" (option A) : bandeau de CONTEXTE, separe des leads.
