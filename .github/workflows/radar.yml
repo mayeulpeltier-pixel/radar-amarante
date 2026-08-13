@@ -320,6 +320,16 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python evenements_geo.py
 
+      - name: Decouvrir les deploiements prives (opt-in)
+        if: always() && steps.cle.outcome == 'success'
+        env:
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          RADAR_DECOUVERTE: ${{ vars.RADAR_DECOUVERTE }}
+        run: python signaux_deploiement.py
+
       # 5) Generer le tableau de bord depuis le Sheet (public/index.html).
       #    if: always() => le dashboard se rafraichit meme si un collecteur a eu
       #    un souci, en lisant le dernier etat du Sheet. L'echec reste visible
