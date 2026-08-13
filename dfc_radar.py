@@ -79,6 +79,16 @@ def est_secteur_financier(naics):
     return any(m in n for m in MOTS_FI)
 
 
+# Projets a nom/secteur masques (DFC redige les projets sensibles, surtout
+# Ukraine) : aucune cible actionnable, rien a donner au LLM. Ecartes par defaut,
+# reactivables via DFC_GARDER_REDACTED=1.
+GARDER_REDACTED = os.environ.get("DFC_GARDER_REDACTED", "0") == "1"
+
+
+def est_redacted(valeur):
+    return "redacted" in _norm(valeur)
+
+
 # ---------------------------------------------------------------------------
 # MAPPING NOM DE PAYS (anglais DFC) -> ISO3. Couvre le perimetre a risque ;
 # le DEBUG revele les non-mappes, qu'on ajoute ensuite en alias.
@@ -130,6 +140,11 @@ CARTE_PAYS_EN = {
     "lao pdr": "LAO", "mongolia": "MNG", "pakistan": "PAK", "bangladesh": "BGD",
     "papua new guinea": "PNG", "solomon islands": "SLB", "fiji": "FJI",
     "vanuatu": "VUT",
+    # Pays presents chez DFC mais HORS perimetre de risque : mappes pour nettoyer
+    # l'alerte "non mappe" ; dans_le_perimetre les exclut de toute facon.
+    "india": "IND", "vietnam": "VNM", "viet nam": "VNM", "el salvador": "SLV",
+    "belize": "BLZ", "maldives": "MDV", "timor-leste": "TLS", "timor leste": "TLS",
+    "greece": "GRC", "bulgaria": "BGR",
 }
 
 
@@ -230,7 +245,8 @@ def collecte(deja_vus=None, fetch=None):
     (avis_list, compteurs)."""
     deja_vus = deja_vus or set()
     c = {"lignes": 0, "hors_fy": 0, "rejet_fi": 0, "hors_perimetre": 0,
-         "deja_connus": 0, "sans_id": 0, "retenus": 0, "pays_non_mappes": {}}
+         "rejet_redacted": 0, "deja_connus": 0, "sans_id": 0, "retenus": 0,
+         "pays_non_mappes": {}}
     try:
         lignes = telecharger_lignes(fetch=fetch)
     except Exception as e:
@@ -259,6 +275,9 @@ def collecte(deja_vus=None, fetch=None):
                 c["pays_non_mappes"][pays_en] = c["pays_non_mappes"].get(pays_en, 0) + 1
             continue
         a = rec_vers_avis(ligne, idx)
+        if not GARDER_REDACTED and (est_redacted(a["acheteur"]) or est_redacted(a["secteur"])):
+            c["rejet_redacted"] += 1
+            continue
         if not a["publication_number"]:
             c["sans_id"] += 1
             continue
@@ -465,6 +484,7 @@ def _afficher_entonnoir(c):
     print("  Hors FY (legacy)       : {}".format(c["hors_fy"]))
     print("  Rejetes -- secteur FI  : {}".format(c["rejet_fi"]))
     print("  Hors perimetre (pays)  : {}".format(c["hors_perimetre"]))
+    print("  Rejetes -- Redacted    : {}".format(c["rejet_redacted"]))
     print("  Deja connus (sautes)   : {}".format(c["deja_connus"]))
     print("  Sans identifiant       : {}".format(c["sans_id"]))
     print("  RETENUS                : {}".format(c["retenus"]))
