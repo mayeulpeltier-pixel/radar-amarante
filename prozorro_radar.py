@@ -68,6 +68,7 @@ BUDGET_LLM = int(os.environ.get("PROZORRO_BUDGET", "60"))            # plafond d
 NB_JOURS = int(os.environ.get("PROZORRO_JOURS", str(ted.NB_JOURS_FENETRE)))
 JOURS_ATTRIB = int(os.environ.get("PROZORRO_ATTRIB_JOURS", "365"))
 PAGES_MAX = int(os.environ.get("PROZORRO_PAGES_MAX", "60"))          # garde-fou anti-firehose
+DEBUG_FICHES = int(os.environ.get("PROZORRO_DEBUG_FICHES", "40"))   # echantillon de fiches en DEBUG
 MONTANT_MIN_UAH = float(os.environ.get("PROZORRO_MONTANT_MIN_UAH", "0"))  # 0 = pas de seuil
 
 PAYS_EXEC = "UKR"                            # marche national ukrainien, par construction
@@ -531,9 +532,13 @@ def ecrire_attributions(feuille, attributions):
 # ===========================================================================
 # COLLECTE (feed -> fiches -> avis / attributions)
 # ===========================================================================
-def collecter(jeu, connus=None, fetch_feed=None, fetch_fiche=None, aujourd_hui=None):
+def collecter(jeu, connus=None, fetch_feed=None, fetch_fiche=None, aujourd_hui=None,
+              max_fiches=None):
     """Retourne (avis_list, attributions_list, echantillon_fiches, stats).
-    `echantillon_fiches` sert au dump DEBUG (structure awards[])."""
+    `echantillon_fiches` sert au dump DEBUG (structure awards[]).
+    `max_fiches` : plafond de fiches a rapatrier (DEBUG). Le feed etant un
+    firehose, un probe compte le volume (via `stats['candidats']`, plein) mais
+    n'echantillonne que quelques fiches -- sinon des milliers de GET sequentiels."""
     veut_avis = jeu in ("avis", "tout")
     veut_attrib = jeu in ("attributions", "tout")
     statuts = (STATUTS_AVIS | STATUTS_ATTRIB) if jeu == "tout" else \
@@ -543,11 +548,15 @@ def collecter(jeu, connus=None, fetch_feed=None, fetch_fiche=None, aujourd_hui=N
 
     candidats, stats = collecter_candidats(
         fetch_feed=fetch_feed, connus=connus, borne_jours=borne, statuts=statuts)
-    stats.update({"fiches_lues": 0, "hors_cpv": 0,
-                  "avis": 0, "fiches_avec_award": 0, "attributions": 0})
+    stats.update({"fiches_lues": 0, "hors_cpv": 0, "avis": 0,
+                  "fiches_avec_award": 0, "attributions": 0,
+                  "fiches_plafonnees": False})
 
     avis_list, attributions, echantillon = [], [], []
     for c in candidats:
+        if max_fiches is not None and stats["fiches_lues"] >= max_fiches:
+            stats["fiches_plafonnees"] = True
+            break                      # probe : on s'arrete apres l'echantillon
         try:
             fiche = lire_fiche(c["id"], fetch=fetch_fiche)
         except Exception as e:
@@ -584,6 +593,9 @@ def _dump_debug(avis_list, attributions, echantillon, stats):
                 "hors_fenetre", "candidats", "fiches_lues", "hors_cpv",
                 "avis", "fiches_avec_award", "attributions"):
         print("    {:16} = {}".format(cle, stats.get(cle, 0)))
+    if stats.get("fiches_plafonnees"):
+        print("    /!\\ fiches_lues est un ECHANTILLON plafonne : `candidats` est"
+              " le VRAI volume a rapatrier en mode reel (mesure du firehose).")
 
     print("\n[AVIS] {} avis dans le perimetre CPV (12 plus riches) :".format(len(avis_list)))
     for a in avis_list[:12]:
@@ -640,7 +652,8 @@ def main():
             print("  (info) memoire indisponible ({}). On analysera large.".format(_plat(e, 60)))
 
     try:
-        avis_list, attributions, echantillon, stats = collecter(JEU, connus=connus)
+        avis_list, attributions, echantillon, stats = collecter(
+            JEU, connus=connus, max_fiches=(DEBUG_FICHES if DEBUG else None))
     except Exception as e:
         print("ERREUR : collecte Prozorro impossible ({}).".format(_plat(e, 200)))
         print("(info) Les autres collecteurs et le dashboard ne sont pas affectes.")
