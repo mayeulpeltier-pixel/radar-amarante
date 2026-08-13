@@ -91,9 +91,13 @@ CREATE TABLE IF NOT EXISTS radar_statuts (
     onglet             TEXT        NOT NULL,
     publication_number TEXT        NOT NULL,
     statut             TEXT        NOT NULL,
+    motif              TEXT        NOT NULL DEFAULT '',
     maj                TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (onglet, publication_number)
 );
+-- Migration idempotente : ajoute 'motif' aux bases anterieures a cette colonne
+-- (bouton « Pas pertinent » : on stocke la RAISON pour apprendre, 12/08/2026).
+ALTER TABLE radar_statuts ADD COLUMN IF NOT EXISTS motif TEXT NOT NULL DEFAULT '';
 """
 
 
@@ -249,15 +253,16 @@ def lire_onglet(conn, onglet):
 # `radar_lignes` a rafraichir ses lignes sans risque pour le travail humain.
 # ---------------------------------------------------------------------------
 
-def definir_statut(conn, onglet, publication_number, statut):
-    """Upsert ASSUME du statut d'un lead. Cle : (onglet, publication_number)."""
+def definir_statut(conn, onglet, publication_number, statut, motif=""):
+    """Upsert ASSUME du statut d'un lead. Cle : (onglet, publication_number).
+    `motif` (optionnel) trace la RAISON d'un ecartement (« Pas pertinent »)."""
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO radar_statuts (onglet, publication_number, statut)"
-            " VALUES (%s, %s, %s)"
+            "INSERT INTO radar_statuts (onglet, publication_number, statut, motif)"
+            " VALUES (%s, %s, %s, %s)"
             " ON CONFLICT (onglet, publication_number)"
-            " DO UPDATE SET statut = EXCLUDED.statut, maj = now()",
-            (onglet, str(publication_number or ""), str(statut or "")))
+            " DO UPDATE SET statut = EXCLUDED.statut, motif = EXCLUDED.motif, maj = now()",
+            (onglet, str(publication_number or ""), str(statut or ""), str(motif or "")))
 
 
 def lire_statuts(conn):
@@ -266,6 +271,19 @@ def lire_statuts(conn):
     with conn.cursor() as cur:
         cur.execute("SELECT onglet, publication_number, statut FROM radar_statuts")
         return {(o, p): s for o, p, s in cur.fetchall()}
+
+
+def lire_motifs(conn):
+    """{(onglet, publication_number): motif} pour les leads ecartes. Sert a
+    afficher POURQUOI un lead a ete ecarte (section « Ecartes ») et a agreger
+    les raisons pour l'apprentissage. Vide si la colonne n'existe pas encore."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT onglet, publication_number, motif FROM radar_statuts"
+                        " WHERE motif <> ''")
+            return {(o, p): m for o, p, m in cur.fetchall()}
+    except Exception:
+        return {}
 
 
 def inventaire(conn):
