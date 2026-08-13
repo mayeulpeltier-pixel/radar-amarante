@@ -237,6 +237,16 @@ class TestIntegrationPostgres(unittest.TestCase):
             st.lire_statuts(self.conn)[("attributions_radar", "ISDB-route-kg")],
             "contacte")
 
+    def test_motif_ecartement_persiste(self):
+        """« Pas pertinent » stocke la RAISON dans radar_statuts.motif et la
+        relit via lire_motifs (apprentissage). Un statut sans motif reste vide."""
+        st.definir_statut(self.conn, "ted_radar", "TED-1", "non_pertinent",
+                          motif="hors_zone")
+        st.definir_statut(self.conn, "ted_radar", "TED-2", "contacte")
+        motifs = st.lire_motifs(self.conn)
+        self.assertEqual(motifs.get(("ted_radar", "TED-1")), "hors_zone")
+        self.assertNotIn(("ted_radar", "TED-2"), motifs)      # motif vide -> absent
+
     def test_meme_publication_dans_deux_onglets_coexiste(self):
         """L'unicite est PAR ONGLET : 'BM-1' peut exister dans les avis et
         dans les attributions sans collision."""
