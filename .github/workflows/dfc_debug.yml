@@ -1,0 +1,32 @@
+name: DFC DEBUG (jetable)
+# Valide le collecteur DFC EN ISOLATION, a la demande. Mode DEBUG : AUCUNE
+# ecriture, aucun appel LLM, aucun secret requis (Excel DFC ouvert). But : lire
+# l'entonnoir reel (FY / crible FI / perimetre) et REVELER les pays DFC non
+# mappes vers l'ISO3, pour completer les alias avant de brancher pour de vrai.
+# NB : le collecteur DFC requiert openpyxl (a ajouter aussi a
+# requirements-radar.txt pour le run reel).
+# A SUPPRIMER une fois DFC valide et passe en reel dans radar.yml.
+on:
+  workflow_dispatch:
+
+jobs:
+  dfc-debug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer les dependances
+        run: |
+          pip install -r requirements-radar.txt
+          pip install openpyxl
+      - name: Tester le collecteur DFC
+        run: python -m unittest test_dfc -v
+      - name: Sonder DFC (DEBUG, aucune ecriture)
+        env:
+          RADAR_DFC_DEBUG: "1"
+        run: python dfc_radar.py
