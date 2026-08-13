@@ -246,16 +246,21 @@ CHAMP_STATUT = {"attributions_radar": "statut_prospection"}
 
 def superposer_statuts(conn, onglets_nommes):
     """Applique radar_statuts (zone humaine, en base) par-dessus les lignes de
-    collecte. La base des STATUTS prime sur la valeur figee au rattrapage."""
+    collecte. La base des STATUTS prime sur la valeur figee au rattrapage. Le
+    MOTIF d'ecartement (« Pas pertinent ») est superpose dans `motif_ecart`
+    pour que la section « Ecartes » affiche la raison, meme cross-device."""
     statuts = st.lire_statuts(conn)
     if not statuts:
         return
+    motifs = st.lire_motifs(conn)
     for nom, lignes in onglets_nommes:
         champ = CHAMP_STATUT.get(nom, "statut_suivi")
         for ligne in lignes:
             cle = (nom, str(ligne.get("publication_number", "") or ""))
             if cle[1] and cle in statuts:
                 ligne[champ] = statuts[cle]
+                if cle in motifs:
+                    ligne["motif_ecart"] = motifs[cle]
 
 
 def generer_page(conn):
@@ -321,6 +326,7 @@ class Statut(BaseModel):
     onglet: str
     publication_number: str
     statut: str
+    motif: str = ""
 
 
 _basic = HTTPBasic()
@@ -398,7 +404,7 @@ def creer_application():
         with st.connexion() as conn:
             _initialiser_une_fois(conn)
             st.definir_statut(conn, s.onglet.strip(), s.publication_number.strip(),
-                              s.statut.strip())
+                              s.statut.strip(), s.motif.strip())
         # L'utilisateur doit VOIR son action au rafraichissement suivant.
         invalider_cache()
         return JSONResponse({"ok": True}, headers=EN_TETES_PRIVES)
