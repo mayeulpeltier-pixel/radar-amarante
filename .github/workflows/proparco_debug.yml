@@ -1,0 +1,29 @@
+name: Proparco DEBUG (jetable)
+# Valide le collecteur Proparco EN ISOLATION, a la demande. Mode DEBUG : AUCUNE
+# ecriture, aucun appel LLM, aucun secret requis (API Opendatasoft ouverte).
+# But : lire l'entonnoir reel (perimetre, crible FI, fenetre) et REVELER les
+# noms de pays Proparco NON mappes vers l'ISO3, pour completer les alias avant
+# de brancher la source pour de vrai.
+# A SUPPRIMER une fois Proparco valide et passe en reel dans radar.yml.
+on:
+  workflow_dispatch:
+
+jobs:
+  proparco-debug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer les dependances
+        run: pip install -r requirements-radar.txt
+      - name: Tester le collecteur Proparco
+        run: python -m unittest test_proparco -v
+      - name: Sonder Proparco (DEBUG, aucune ecriture)
+        env:
+          RADAR_PROPARCO_DEBUG: "1"
+        run: python proparco_radar.py
