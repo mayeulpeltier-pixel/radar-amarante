@@ -109,8 +109,14 @@ def _construire_carte_pays():
         "tanzanie": "TZA", "republique unie de tanzanie": "TZA",
         "eswatini": "SWZ", "cap vert": "CPV", "cap-vert": "CPV",
         "territoires palestiniens": "PSE", "palestine": "PSE",
+        "territoires autonomes palestiniens": "PSE",       # libelle Proparco exact
         "birmanie": "MMR", "myanmar (birmanie)": "MMR",
         "republique dominicaine": "DOM",
+        # Pays presents chez Proparco mais HORS perimetre de risque : mappes pour
+        # nettoyer l'alerte "non mappe" ; dans_le_perimetre les exclut de toute
+        # facon. A promouvoir dans les dicts TED si la doctrine evolue.
+        "inde": "IND", "panama": "PAN", "vietnam": "VNM", "viet nam": "VNM",
+        "costa rica": "CRI", "chine": "CHN", "nicaragua": "NIC",
     }
     carte.update(alias)
     return carte
@@ -121,6 +127,24 @@ CARTE_PAYS = _construire_carte_pays()
 
 def iso3_depuis_nom(nom_pays):
     return CARTE_PAYS.get(_norm(nom_pays), "")
+
+
+def resoudre_pays(rec):
+    """Pays d'execution -> (libelle, ISO3). Gere les projets MULTI-PAYS (libelle
+    'Multi-Pays ...') : le pays direct n'est pas mappable, on cherche alors un
+    pays DU PERIMETRE dans `detail_multi_pays`. Robuste au format (scan de
+    noms), donc pas de supposition sur la structure exacte du champ."""
+    nom = (rec.get("pays_de_realisation") or rec.get("pays_du_siege_social") or "").strip()
+    iso3 = iso3_depuis_nom(nom)
+    if iso3:
+        return nom, iso3
+    detail = _norm(rec.get("detail_multi_pays") or "")
+    if detail:
+        for nom_norm, code in CARTE_PAYS.items():
+            if (len(nom_norm) >= 4 and ted.dans_le_perimetre(code)
+                    and re.search(r"\b" + re.escape(nom_norm) + r"\b", detail)):
+                return (nom or nom_norm.title()), code
+    return nom, ""
 
 
 def est_client_financier(nature):
@@ -168,8 +192,7 @@ def _dans_fenetre(rec, aujourd_hui):
 
 
 def rec_vers_avis(rec):
-    pays_nom = rec.get("pays_de_realisation") or rec.get("pays_du_siege_social") or ""
-    iso3 = iso3_depuis_nom(pays_nom)
+    pays_nom, iso3 = resoudre_pays(rec)
     client = (rec.get("nom_du_client") or "").strip()
     montant = rec.get("montant_du_financement_en_euro")
     ident = (rec.get("id_concours") or rec.get("id_projet") or "").strip()
@@ -211,8 +234,7 @@ def collecte(deja_vus=None, fetch=None, aujourd_hui=None):
             break
         for rec in recs:
             c["records_vus"] += 1
-            pays_nom = rec.get("pays_de_realisation") or rec.get("pays_du_siege_social") or ""
-            iso3 = iso3_depuis_nom(pays_nom)
+            pays_nom, iso3 = resoudre_pays(rec)
             if not iso3 or not ted.dans_le_perimetre(iso3):
                 c["hors_perimetre"] += 1
                 if pays_nom and not iso3:
