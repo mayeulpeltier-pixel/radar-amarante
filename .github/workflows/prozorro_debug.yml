@@ -1,0 +1,37 @@
+name: Prozorro DEBUG (jetable)
+# Valide le collecteur Prozorro EN ISOLATION, a la demande, sans toucher au run
+# complet. Mode DEBUG : AUCUNE ecriture, aucun appel LLM, aucun secret requis
+# (le feed Prozorro est public et ouvert). But : lire l'entonnoir reel et le
+# dump de la structure awards[] avant de brancher la source pour de vrai.
+#
+# A SUPPRIMER une fois Prozorro valide et passe en reel dans radar.yml.
+on:
+  workflow_dispatch:
+    inputs:
+      jeu:
+        description: "Jeu a sonder (avis | attributions | tout)"
+        required: false
+        default: "tout"
+
+jobs:
+  prozorro-debug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer les dependances
+        run: pip install -r requirements-radar.txt
+      # Les tests d'abord : si le collecteur est casse, on s'arrete ici.
+      - name: Tester le collecteur Prozorro
+        run: python -m unittest test_prozorro -v
+      # Run DEBUG : mesure l'entonnoir + dumpe awards[]. N'ecrit rien.
+      - name: Sonder Prozorro (DEBUG, aucune ecriture)
+        env:
+          RADAR_PROZORRO_DEBUG: "1"
+          RADAR_PROZORRO_JEU: ${{ github.event.inputs.jeu }}
+        run: python prozorro_radar.py
