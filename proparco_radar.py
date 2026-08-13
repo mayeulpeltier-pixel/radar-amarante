@@ -110,13 +110,17 @@ def _construire_carte_pays():
         "eswatini": "SWZ", "cap vert": "CPV", "cap-vert": "CPV",
         "territoires palestiniens": "PSE", "palestine": "PSE",
         "territoires autonomes palestiniens": "PSE",       # libelle Proparco exact
+        "terr.auto.pales": "PSE", "terr auto pales": "PSE",  # abreviation Proparco
+        "congo-kinshasa": "COD", "congo kinshasa": "COD",   # = RDC
+        "iraq": "IRQ",                                       # graphie anglaise (dicts TED : "irak")
         "birmanie": "MMR", "myanmar (birmanie)": "MMR",
         "republique dominicaine": "DOM",
         # Pays presents chez Proparco mais HORS perimetre de risque : mappes pour
         # nettoyer l'alerte "non mappe" ; dans_le_perimetre les exclut de toute
         # facon. A promouvoir dans les dicts TED si la doctrine evolue.
         "inde": "IND", "panama": "PAN", "vietnam": "VNM", "viet nam": "VNM",
-        "costa rica": "CRI", "chine": "CHN", "nicaragua": "NIC",
+        "viet-nam": "VNM", "costa rica": "CRI", "chine": "CHN",
+        "nicaragua": "NIC", "el salvador": "SLV",
     }
     carte.update(alias)
     return carte
