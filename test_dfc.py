@@ -122,3 +122,25 @@ class TestArite(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestRedactedEtAlias(unittest.TestCase):
+    def test_alias_hors_perimetre(self):
+        self.assertEqual(d.iso3_depuis_nom("India"), "IND")
+        self.assertEqual(d.iso3_depuis_nom("El Salvador"), "SLV")
+
+    def test_redacted_ecarte(self):
+        lignes = [
+            _ligne(num="OK", pays="Ukraine", nom="MHP SE", naics="Manufacturing"),
+            _ligne(num="R1", pays="Ukraine", nom="Redacted", naics="Redacted"),
+        ]
+        avis, c = d.collecte(deja_vus=set(), fetch=faux_fetch(lignes))
+        self.assertEqual({a["publication_number"] for a in avis}, {"OK"})
+        self.assertEqual(c["rejet_redacted"], 1)
+
+    def test_inde_mappe_reste_hors_perimetre(self):
+        lignes = [_ligne(num="X", pays="India")]
+        avis, c = d.collecte(deja_vus=set(), fetch=faux_fetch(lignes))
+        self.assertEqual(avis, [])
+        self.assertEqual(c["hors_perimetre"], 1)
+        self.assertNotIn("India", c.get("pays_non_mappes", {}))
