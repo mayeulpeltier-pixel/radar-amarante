@@ -1709,6 +1709,14 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .ec-titre{color:var(--bone-dim);font-size:0.82rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .ec-motif{font-family:var(--mono);font-size:0.6rem;letter-spacing:0.08em;text-transform:uppercase;color:var(--fort)}
   .ecrow .act{font-size:11px}
+  /* Surveiller un projet amont */
+  .foot .act.surv{border-color:transparent;color:var(--bone-faint)}
+  .foot .act.surv:hover{border-color:rgba(120,170,190,0.5);color:#8fbccf}
+  .badge.surveille{background:rgba(120,170,190,0.14);color:#8fbccf;border:1px solid rgba(120,170,190,0.45)}
+  .badge.attribok{background:rgba(95,160,110,0.18);color:#86c596;border:1px solid rgba(95,160,110,0.55);font-weight:600}
+  .surv-head{font-family:var(--mono);font-size:0.6rem;letter-spacing:0.14em;text-transform:uppercase;color:var(--bone-dim);margin:10px 0 4px}
+  .surv-gagnant{font-family:var(--mono);font-size:0.66rem;color:#86c596}
+  .surv-attente{font-family:var(--mono);font-size:0.6rem;letter-spacing:0.08em;text-transform:uppercase;color:var(--bone-faint)}
   .modal-ov{position:fixed;inset:0;background:rgba(10,6,8,.72);backdrop-filter:blur(3px);
     display:none;align-items:flex-start;justify-content:center;z-index:1000;padding:40px 16px;overflow:auto}
   .modal-ov.open{display:flex}
@@ -1825,6 +1833,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
     <div class="exec" id="exec"></div>
     <details class="conv" id="conv"><summary>Conversion observée (gagné / perdu)</summary><div id="convbody"></div></details>
     <details class="conv ecartes" id="ecartes"><summary id="ecartes-sum">Écartés</summary><div id="ecartes-body"></div></details>
+    <details class="conv surveillance" id="surveillance"><summary id="surv-sum">Surveillance</summary><div id="surv-body"></div></details>
   </header>
   <section class="geo">
     <div class="panel">
@@ -1967,6 +1976,48 @@ function renderEcartes(){
       '<button class="act" type="button" data-restaurer="'+esc(cid)+'">↺ Restaurer</button></div>';
   }).join('');
   box.innerHTML='<div class="ec-learn">Raisons : '+(top||'—')+'</div>'+lignes;
+}
+// --- Surveiller un projet amont : le run verifie si l'attribution a paru ---
+let SURVEILLES=new Set();
+try{SURVEILLES=new Set(JSON.parse(localStorage.getItem('surveilles')||'[]'));}catch(e){}
+function estSurveille(l){return (l&&(l.statut==='surveille'||l.statut==='attribution_publiee'))||SURVEILLES.has(leadId(l));}
+function attribPubliee(l){return l&&l.statut==='attribution_publiee';}
+function gagnantSurveille(l){return attribPubliee(l)?(l.motif_ecart||''):'';}
+function marquerSurveille(idx){
+  const l=AFFICHES[idx]; if(!l)return;
+  SURVEILLES.add(leadId(l));
+  try{localStorage.setItem('surveilles',JSON.stringify([...SURVEILLES]));}catch(e){}
+  _envoyerStatut(l,'surveille','');
+  render();
+}
+function arreterSurveille(cid){
+  const l=LEADS.find(x=>leadId(x)===cid);
+  SURVEILLES.delete(cid);
+  try{localStorage.setItem('surveilles',JSON.stringify([...SURVEILLES]));}catch(e){}
+  if(l)_envoyerStatut(l,'nouveau','');
+  render();
+}
+function renderSurveillance(){
+  const box=document.getElementById('surv-body');
+  const sum=document.getElementById('surv-sum');
+  const dets=document.getElementById('surveillance');
+  if(!box||!dets)return;
+  const surv=LEADS.filter(l=>estSurveille(l));
+  const publies=surv.filter(l=>attribPubliee(l));
+  sum.textContent = surv.length ? ('Surveillance · '+surv.length+(publies.length?' · '+publies.length+' attribution(s)':'')) : 'Surveillance';
+  if(!surv.length){ dets.style.display='none'; box.innerHTML=''; return; }
+  dets.style.display='';
+  const ligne=(l,gagnant)=>{
+    const cid=leadId(l);
+    return '<div class="ecrow"><span class="src '+l.src.toLowerCase()+'">'+esc(SRC_LABEL[l.src]||l.src)+'</span>'+
+      '<span class="ec-titre">'+esc(l.pays)+' · '+esc(l.titre)+'</span>'+
+      (gagnant?'<span class="surv-gagnant">✓ '+esc(gagnant)+'</span>':'<span class="surv-attente">en attente</span>')+
+      '<button class="act" type="button" data-arreter-surv="'+esc(cid)+'">arrêter</button></div>';
+  };
+  const secPub = publies.length ? '<div class="surv-head">Attribution publiée</div>'+publies.map(l=>ligne(l,gagnantSurveille(l))).join('') : '';
+  const attente = surv.filter(l=>!attribPubliee(l));
+  const secAtt = attente.length ? '<div class="surv-head">En attente d\'attribution</div>'+attente.map(l=>ligne(l,'')).join('') : '';
+  box.innerHTML=secPub+secAtt;
 }
 function marquerContacte(idx,btn){
   const l=AFFICHES[idx]; if(!l||!SUIVI_ON)return;
@@ -2835,6 +2886,7 @@ function renderTodo(){
 
 function render(){
   renderEcartes();
+  renderSurveillance();
   if(state.lens==='todo'){ renderTodo(); return; }
 
   if(state.lens==='geo'){ renderGeo(); return; }
@@ -2879,9 +2931,11 @@ function leadCard(l,i){
     const ecart=l.ecart?`<span class="badge ecart" title="Écart d'évaluation entre les deux passes, lire la justification">⚠ écart</span>`:'';
     const stKey=(l.statut||'nouveau').toLowerCase();
     const stCls=stKey.includes('gagn')?'gagne':stKey.includes('perd')?'perdu':stKey.includes('contact')?'contacte':stKey.includes('relanc')?'relance':'';
-    const statut=(stKey!=='nouveau')?`<span class="statut ${stCls}">${esc(l.statut)}</span>`:'';
+    const stMasque=(stKey==='non_pertinent'||stKey==='surveille'||stKey==='attribution_publiee');
+    const statut=(stKey!=='nouveau'&&!stMasque)?`<span class="statut ${stCls}">${esc(l.statut)}</span>`:'';
     const dateChip=l.mois_label&&l.mois_label!=='Sans date'?`<span class="datedet">détecté ${esc(l.mois_label)}</span>`:'';
     const geoBadge=l.geo_boost?`<span class="badge geoboost" title="${esc(l.geo_motif||'Pays en aggravation récente')} — score rehaussé de +${(l.geo_boost*0.5).toFixed(1)}">▲ pays en aggravation +${(l.geo_boost*0.5).toFixed(1)}</span>`:'';
+    const survBadge=attribPubliee(l)?`<span class="badge attribok" title="Une attribution correspondante a été détectée">✓ Attribution publiée${l.motif_ecart?' : '+esc(l.motif_ecart):''}</span>`:(estSurveille(l)?`<span class="badge surveille">👁 Surveillé</span>`:'');
     const scoreBase=l.geo_boost&&l.final_base!=null?`<span class="sfbase" title="Score avant rehausse géopolitique">${l.final_base.toFixed(1)}</span> `:'';
     const hasContact=(l.nom&&l.nom!=='n.c.')||(l.email&&l.email!=='n.c.')||(l.tel&&l.tel!=='n.c.');
     const contactRows = hasContact ? `
@@ -2892,11 +2946,11 @@ function leadCard(l,i){
       <div class="lhead"><div class="lmeta"><span class="src ${l.src.toLowerCase()}">${SRC_LABEL[l.src]||l.src}</span><span class="pays">${esc(l.pays)}</span><span>· ${esc(l.zone)}</span></div>
       <div class="scorebox"><div class="sf">${scoreBase}${l.final.toFixed(1)}</div><div class="sd">sûreté ${l.surete.toFixed(1)} · com ${l.comm.toFixed(1)}</div><div class="se">${echelleLabel(l)}</div></div></div>
       <h3 class="ltitle">${esc(l.titre)}</h3>
-      <div class="badges">${geoBadge}${(l.justif||'').indexOf('[DÉPLACEMENT CONCURRENT]')===0?'<span class="badge deplacement">⚔ Déplacement concurrent</span>':''}<span class="badge win-${win}">${winLabel[win]}</span>${badgeDeadline(l)}${ecart}${statut}${dateChip}</div>
+      <div class="badges">${geoBadge}${survBadge}${(l.justif||'').indexOf('[DÉPLACEMENT CONCURRENT]')===0?'<span class="badge deplacement">⚔ Déplacement concurrent</span>':''}<span class="badge win-${win}">${winLabel[win]}</span>${badgeDeadline(l)}${ecart}${statut}${dateChip}</div>
       <div class="contact"><div class="row"><span class="k">Agence</span><span class="v">${esc(l.agence)}</span></div>${contactRows}</div>
       <div class="cible"><b>Qui démarcher.</b> ${esc(l.cible)}</div>
       ${l.justif?`<details class="just"><summary><span class="chev">▸</span> Justification sûreté</summary><p>${esc((l.justif||'').replace('[DÉPLACEMENT CONCURRENT]','').trim())}</p></details>`:''}
-      </div><div class="foot"><span class="grp">Groupe ${esc(l.grp)}</span><span class="footacts">${SUIVI_ON?`<button class="act contact${done?' done':''}" type="button" data-contact="${i}"${done?' disabled':''}>${done?'✓ Contacté':'☎ Je contacte'}</button>`:''}<button class="act" type="button" data-fiche="${i}">Fiche ↗</button><a class="act mail" href="${mailtoHref(l)}">✉ Rédiger email</a>${l.lien?`<a class="act" href="${esc(l.lien)}" target="_blank" rel="noopener">Voir l'avis ↗</a>`:''}<button class="act ecart" type="button" data-ecart="${i}" title="Pas pertinent : écarter et enregistrer la raison">✕ Pas pertinent</button></span></div></article>`;
+      </div><div class="foot"><span class="grp">Groupe ${esc(l.grp)}</span><span class="footacts">${SUIVI_ON?`<button class="act contact${done?' done':''}" type="button" data-contact="${i}"${done?' disabled':''}>${done?'✓ Contacté':'☎ Je contacte'}</button>`:''}<button class="act" type="button" data-fiche="${i}">Fiche ↗</button><a class="act mail" href="${mailtoHref(l)}">✉ Rédiger email</a>${l.lien?`<a class="act" href="${esc(l.lien)}" target="_blank" rel="noopener">Voir l'avis ↗</a>`:''}${estSurveille(l)?'':`<button class="act surv" type="button" data-surveiller="${i}" title="Surveiller : le radar vérifiera à chaque run si l'attribution paraît">👁 Surveiller</button>`}<button class="act ecart" type="button" data-ecart="${i}" title="Pas pertinent : écarter et enregistrer la raison">✕ Pas pertinent</button></span></div></article>`;
 }
 
 // --- Rendu de la lentille Entreprises ---
@@ -3042,6 +3096,8 @@ document.getElementById('leads').addEventListener('click',e=>{
     return;}
   const bm=e.target.closest('[data-ecartmotif]');
   if(bm){e.preventDefault();const [i,m]=bm.getAttribute('data-ecartmotif').split('|');marquerNonPertinent(+i,m);return;}
+  const bsv=e.target.closest('[data-surveiller]');
+  if(bsv){e.preventDefault();marquerSurveille(+bsv.getAttribute('data-surveiller'));return;}
   const ba=e.target.closest('[data-ecartannule]');
   if(ba){e.preventDefault();const fa=ba.closest('.footacts');if(fa&&fa.dataset.saved){fa.innerHTML=fa.dataset.saved;}return;}
   const br=e.target.closest('[data-restaurer]');
@@ -3054,6 +3110,10 @@ document.getElementById('leads').addEventListener('click',e=>{
 document.getElementById('ecartes').addEventListener('click',e=>{
   const br=e.target.closest('[data-restaurer]');
   if(br){e.preventDefault();restaurerEcarte(br.getAttribute('data-restaurer'));}
+});
+document.getElementById('surveillance').addEventListener('click',e=>{
+  const ba=e.target.closest('[data-arreter-surv]');
+  if(ba){e.preventDefault();arreterSurveille(ba.getAttribute('data-arreter-surv'));}
 });
 document.getElementById('modal').addEventListener('click',e=>{if(e.target.id==='modal')closeFiche();});
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeFiche();});
