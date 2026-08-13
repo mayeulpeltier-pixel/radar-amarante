@@ -119,3 +119,28 @@ class TestArite(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestMultiPaysEtAlias(unittest.TestCase):
+    def test_palestine_alias_exact(self):
+        self.assertEqual(pz.iso3_depuis_nom("Territoires autonomes palestiniens"), "PSE")
+
+    def test_multipays_resolu_via_detail(self):
+        rec = _rec(id_concours="MP", pays_de_realisation="Multi-Pays Afrique",
+                   detail_multi_pays="Mali, Sénégal, France")
+        nom, iso3 = pz.resoudre_pays(rec)
+        self.assertEqual(iso3, "MLI")                 # 1er pays du perimetre trouve
+
+    def test_multipays_sans_pays_perimetre_reste_exclu(self):
+        rec = _rec(id_concours="MP2", pays_de_realisation="Multi-Pays Etranger",
+                   detail_multi_pays="France, Allemagne")
+        _nom, iso3 = pz.resoudre_pays(rec)
+        self.assertEqual(iso3, "")
+
+    def test_hors_perimetre_mappe_reste_exclu(self):
+        # Inde est mappe (IND) mais hors perimetre -> exclu, pas "non mappe".
+        records = [_rec(id_concours="X", pays_de_realisation="Inde")]
+        avis, c = pz.collecte(deja_vus=set(), fetch=faux_fetch(records))
+        self.assertEqual(avis, [])
+        self.assertEqual(c["hors_perimetre"], 1)
+        self.assertNotIn("Inde", c.get("pays_non_mappes", {}))
