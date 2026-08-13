@@ -268,6 +268,31 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python ifc_radar.py
 
+      # 4d-quinquies) PROZORRO (Ukraine) -- Vague 3. Marches publics NATIONAUX
+      #     ukrainiens (reconstruction), qu'aucune autre source ne remonte : TED
+      #     ignore le national UA. Feed OCDS public ouvert, lu en `descending`
+      #     avec pre-filtre `opt_fields` (on jette le belowThreshold, le bruit
+      #     local) ; le CPV est au format europeen, donc la doctrine CPV du coeur
+      #     TED est reutilisee. DOUBLE PASSE : avis (onglet dedie prozorro_radar,
+      #     pipeline LLM) ET attributions (titulaires awards[], onglet PARTAGE
+      #     attributions_radar, aucun cablage dashboard). Isole : un echec ici
+      #     n'affecte ni les autres collecteurs ni la publication.
+      #     NOUVELLE SOURCE => DEMARRE EN VERIFICATION (motif IsDB/IDB) :
+      #     RADAR_PROZORRO_DEBUG=1 n'ecrit RIEN, mesure l'entonnoir reel et DUMPE
+      #     la structure brute de awards[] pour valider le parsing des titulaires
+      #     AVANT toute ecriture. Passer a "0" une fois l'entonnoir et awards[]
+      #     valides sur donnees reelles. RADAR_PROZORRO=0 coupe la source.
+      - name: Collecter Prozorro (Ukraine)
+        if: always() && steps.cle.outcome == 'success'
+        env:
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          RADAR_PROZORRO_DEBUG: "1"
+          RADAR_PROZORRO_JEU: "tout"
+        run: python prozorro_radar.py
+
       - name: Collecter les projets amont Banque Mondiale
         if: always() && steps.cle.outcome == 'success'
         env:
