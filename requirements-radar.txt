@@ -50,6 +50,7 @@ google-auth==2.56.2
 # --- Analyse de donnees sources --------------------------------------------
 python-dateutil==2.9.0.post0    # ted_complet_bm : dates de la Banque Mondiale
 pypdf==5.9.0                    # ted_complet_attributions : PDF des titulaires
+openpyxl==3.1.5                 # dfc_radar : lecture de l'Excel annuel DFC
 
 # --- Postgres (memoire inter-runs, miroir) ---------------------------------
 psycopg[binary]==3.3.4
