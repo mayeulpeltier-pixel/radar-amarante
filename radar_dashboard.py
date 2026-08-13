@@ -583,6 +583,7 @@ def ligne_vers_lead(row, source):
         "mois_label": mois_label,
         "date_det": date_det,
         "statut": statut,
+        "motif_ecart": _txt(row.get("motif_ecart")),
         "deadline": _txt(row.get("deadline")),
         "conf": _txt(row.get("confiance")),
         "modele": _txt(row.get("modele")),
@@ -698,6 +699,7 @@ def attribution_vers_lead(row):
         "analysee": False,
         "ecart": False, "secu": False, "mois": mois_cle, "mois_label": mois_label,
         "date_det": date_det, "statut": _txt(row.get("statut_prospection")) or "nouveau",
+        "motif_ecart": _txt(row.get("motif_ecart")),
         "deadline": "", "conf": "", "modele": "",
         "pub": _txt(row.get("publication_number")),
         "entreprise": gagnant or "Titulaire",
@@ -1695,6 +1697,18 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .foot .act.contact:hover{background:var(--oxblood);color:#fff}
   .foot .act.contact.done{border-color:rgba(120,190,150,0.5);color:#7fae8f;background:transparent;cursor:default}
   .foot .act.contact.done:hover{background:transparent;color:#7fae8f}
+  /* Écarter « pas pertinent » */
+  .foot .act.ecart{border-color:transparent;color:var(--bone-faint);margin-left:auto}
+  .foot .act.ecart:hover{border-color:rgba(150,150,150,0.4);color:var(--bone-dim)}
+  .motifmenu{display:inline-flex;flex-wrap:wrap;gap:5px;align-items:center}
+  .motifchip{font-size:11px}
+  .motifchip:hover{border-color:var(--oxblood);color:var(--bone)}
+  .motifannule{color:var(--bone-faint);border-color:transparent}
+  .ecartes .ec-learn{font-family:var(--mono);font-size:0.66rem;color:var(--bone-dim);letter-spacing:0.05em;margin-bottom:9px}
+  .ecrow{display:grid;grid-template-columns:auto 1fr auto auto;gap:10px;align-items:center;padding:6px 0;border-top:1px solid var(--line)}
+  .ec-titre{color:var(--bone-dim);font-size:0.82rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ec-motif{font-family:var(--mono);font-size:0.6rem;letter-spacing:0.08em;text-transform:uppercase;color:var(--fort)}
+  .ecrow .act{font-size:11px}
   .modal-ov{position:fixed;inset:0;background:rgba(10,6,8,.72);backdrop-filter:blur(3px);
     display:none;align-items:flex-start;justify-content:center;z-index:1000;padding:40px 16px;overflow:auto}
   .modal-ov.open{display:flex}
@@ -1810,6 +1824,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
     <div class="stats" id="stats"></div>
     <div class="exec" id="exec"></div>
     <details class="conv" id="conv"><summary>Conversion observée (gagné / perdu)</summary><div id="convbody"></div></details>
+    <details class="conv ecartes" id="ecartes"><summary id="ecartes-sum">Écartés</summary><div id="ecartes-body"></div></details>
   </header>
   <section class="geo">
     <div class="panel">
@@ -1885,6 +1900,74 @@ function dejaContacte(l){const s=String(l.statut||'').toLowerCase();
 const CONTACTES = new Set((()=>{try{return JSON.parse(localStorage.getItem('suivi_contactes')||'[]')}catch(e){return[]}})());
 const SRC_SUIVI = {TED:'TED',BM:'Banque Mondiale','PRIVÉ':'Privé BITD',RW:'ReliefWeb',ONG:'ReliefWeb'};
 function leadId(l){return l.pub||l.lien||(l.src+'|'+l.pays+'|'+l.agence+'|'+l.titre);}
+// --- Ecarter une opportunite « pas pertinente » (12/08/2026) ---
+// Bouton -> statut 'non_pertinent' + RAISON. Le lead disparait des vues (masque)
+// et part dans la section « Ecartes » (reversible). Persistance : /api/statut
+// (Postgres) + Apps Script + localStorage (affichage immediat, meme hors ligne).
+const MOTIFS_ECART=[
+  {k:'hors_zone',l:'Hors zone'},{k:'secteur',l:'Secteur non pertinent'},
+  {k:'trop_petit',l:'Trop petit'},{k:'pas_terrain',l:'Pas de déploiement terrain'},
+  {k:'doublon',l:'Doublon'},{k:'autre',l:'Autre'}];
+const MOTIF_LABEL=Object.fromEntries(MOTIFS_ECART.map(m=>[m.k,m.l]));
+let ECARTES=new Set(); let MOTIFS_LOCAUX={};
+try{ECARTES=new Set(JSON.parse(localStorage.getItem('ecartes')||'[]'));}catch(e){}
+try{MOTIFS_LOCAUX=JSON.parse(localStorage.getItem('ecartes_motifs')||'{}');}catch(e){}
+function estEcarte(l){return (l&&l.statut==='non_pertinent')||ECARTES.has(leadId(l));}
+function motifDe(l){return MOTIFS_LOCAUX[leadId(l)]||(l&&l.motif_ecart)||'';}
+function _sauverEcartes(){
+  try{localStorage.setItem('ecartes',JSON.stringify([...ECARTES]));}catch(e){}
+  try{localStorage.setItem('ecartes_motifs',JSON.stringify(MOTIFS_LOCAUX));}catch(e){}
+}
+function _envoyerStatut(l,statut,motif){
+  const cid=leadId(l);
+  if(SUIVI_URL){const p={token:SUIVI_TOKEN,id:cid,source:SRC_SUIVI[l.src]||l.src,
+    statut:statut,motif:motif||'',pays:l.pays||'',zone:l.zone||'',agence:l.agence||'',
+    titre:l.titre||'',lien:l.lien||'',score:l.final};
+    fetch(SUIVI_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(p)}).catch(function(){});}
+  if(API_STATUT&&l.pub&&ONGLET_SRC[l.src]){
+    fetch('/api/statut',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({onglet:ONGLET_SRC[l.src],publication_number:l.pub,statut:statut,motif:motif||''})}).catch(function(){});}
+}
+function marquerNonPertinent(idx,motif){
+  const l=AFFICHES[idx]; if(!l)return;
+  const cid=leadId(l); ECARTES.add(cid); MOTIFS_LOCAUX[cid]=motif||'autre'; _sauverEcartes();
+  _envoyerStatut(l,'non_pertinent',motif||'autre');
+  render();
+}
+function restaurerEcarte(cid){
+  // Retrouver le lead par son id pour renvoyer le statut au serveur.
+  const l=LEADS.find(x=>leadId(x)===cid);
+  ECARTES.delete(cid); delete MOTIFS_LOCAUX[cid]; _sauverEcartes();
+  if(l) _envoyerStatut(l,'nouveau','');
+  render();
+}
+function menuRaisons(idx){
+  return '<span class="motifmenu">'+MOTIFS_ECART.map(m=>
+    '<button class="act motifchip" type="button" data-ecartmotif="'+idx+'|'+m.k+'">'+esc(m.l)+'</button>').join('')+
+    '<button class="act motifannule" type="button" data-ecartannule="1">annuler</button></span>';
+}
+function renderEcartes(){
+  const box=document.getElementById('ecartes-body');
+  const sum=document.getElementById('ecartes-sum');
+  const dets=document.getElementById('ecartes');
+  if(!box||!dets)return;
+  const ecs=LEADS.filter(l=>estEcarte(l));
+  sum.textContent = ecs.length ? ('Écartés · '+ecs.length) : 'Écartés';
+  if(!ecs.length){ dets.style.display='none'; box.innerHTML=''; return; }
+  dets.style.display='';
+  const parMotif={};
+  ecs.forEach(l=>{ const m=motifDe(l)||'autre'; parMotif[m]=(parMotif[m]||0)+1; });
+  const top=Object.entries(parMotif).sort((a,b)=>b[1]-a[1])
+    .map(([k,v])=>(MOTIF_LABEL[k]||k)+' ×'+v).join(' · ');
+  const lignes=ecs.map(l=>{
+    const cid=leadId(l), m=motifDe(l);
+    return '<div class="ecrow"><span class="src '+l.src.toLowerCase()+'">'+esc(SRC_LABEL[l.src]||l.src)+'</span>'+
+      '<span class="ec-titre">'+esc(l.titre)+'</span>'+
+      '<span class="ec-motif">'+(m?esc(MOTIF_LABEL[m]||m):'—')+'</span>'+
+      '<button class="act" type="button" data-restaurer="'+esc(cid)+'">↺ Restaurer</button></div>';
+  }).join('');
+  box.innerHTML='<div class="ec-learn">Raisons : '+(top||'—')+'</div>'+lignes;
+}
 function marquerContacte(idx,btn){
   const l=AFFICHES[idx]; if(!l||!SUIVI_ON)return;
   const cid=leadId(l);
@@ -1975,6 +2058,7 @@ let state={zone:null,src:'all',q:'',action:'contacter',mois:null,tri:'score',len
 function match(l, ignore){
   ignore = ignore || {};
   if(l.src==='PRIVÉ' || l.src==='ATTRIB') return false;
+  if(!ignore.ecarte && estEcarte(l)) return false;
   if(!ignore.action && state.action!=='all' && l.action!==state.action) return false;
   if(!ignore.secteur && state.secteur!=='all' && (l.sect||'Autre')!==state.secteur) return false;
   if(!ignore.mois && state.mois && l.mois!==state.mois) return false;
@@ -2680,6 +2764,7 @@ function _dateContactLocale(l){ try{ const m=JSON.parse(localStorage.getItem('su
 // Bucket le plus prioritaire d'un lead, ou null s'il n'est pas actionnable.
 function bucketTodo(l){
   if(_clos(l)) return null;                       // gagné/perdu -> hors pipeline
+  if(estEcarte(l)) return null;                   // écarté « pas pertinent »
   if(l.src==='ATTRIB'){                            // titulaires = prospects
     if(_engage(l)) return 'suivre';
     return (l.final||0)>=6 ? 'contacter' : null;   // seuls les indices forts
@@ -2749,7 +2834,9 @@ function renderTodo(){
 }
 
 function render(){
+  renderEcartes();
   if(state.lens==='todo'){ renderTodo(); return; }
+
   if(state.lens==='geo'){ renderGeo(); return; }
   buildZoneChart();
   if(vueFiches()){ renderFiches(fichesCourantes()); return; }
@@ -2809,7 +2896,7 @@ function leadCard(l,i){
       <div class="contact"><div class="row"><span class="k">Agence</span><span class="v">${esc(l.agence)}</span></div>${contactRows}</div>
       <div class="cible"><b>Qui démarcher.</b> ${esc(l.cible)}</div>
       ${l.justif?`<details class="just"><summary><span class="chev">▸</span> Justification sûreté</summary><p>${esc((l.justif||'').replace('[DÉPLACEMENT CONCURRENT]','').trim())}</p></details>`:''}
-      </div><div class="foot"><span class="grp">Groupe ${esc(l.grp)}</span><span class="footacts">${SUIVI_ON?`<button class="act contact${done?' done':''}" type="button" data-contact="${i}"${done?' disabled':''}>${done?'✓ Contacté':'☎ Je contacte'}</button>`:''}<button class="act" type="button" data-fiche="${i}">Fiche ↗</button><a class="act mail" href="${mailtoHref(l)}">✉ Rédiger email</a>${l.lien?`<a class="act" href="${esc(l.lien)}" target="_blank" rel="noopener">Voir l'avis ↗</a>`:''}</span></div></article>`;
+      </div><div class="foot"><span class="grp">Groupe ${esc(l.grp)}</span><span class="footacts">${SUIVI_ON?`<button class="act contact${done?' done':''}" type="button" data-contact="${i}"${done?' disabled':''}>${done?'✓ Contacté':'☎ Je contacte'}</button>`:''}<button class="act" type="button" data-fiche="${i}">Fiche ↗</button><a class="act mail" href="${mailtoHref(l)}">✉ Rédiger email</a>${l.lien?`<a class="act" href="${esc(l.lien)}" target="_blank" rel="noopener">Voir l'avis ↗</a>`:''}<button class="act ecart" type="button" data-ecart="${i}" title="Pas pertinent : écarter et enregistrer la raison">✕ Pas pertinent</button></span></div></article>`;
 }
 
 // --- Rendu de la lentille Entreprises ---
@@ -2949,10 +3036,24 @@ function closeFiche(){document.getElementById('modal').classList.remove('open');
 document.getElementById('leads').addEventListener('click',e=>{
   const bc=e.target.closest('[data-contact]');
   if(bc){e.preventDefault();marquerContacte(+bc.getAttribute('data-contact'),bc);return;}
+  const bec=e.target.closest('[data-ecart]');
+  if(bec){e.preventDefault();
+    const footacts=bec.closest('.footacts'); if(footacts){footacts.dataset.saved=footacts.innerHTML; footacts.innerHTML=menuRaisons(+bec.getAttribute('data-ecart'));}
+    return;}
+  const bm=e.target.closest('[data-ecartmotif]');
+  if(bm){e.preventDefault();const [i,m]=bm.getAttribute('data-ecartmotif').split('|');marquerNonPertinent(+i,m);return;}
+  const ba=e.target.closest('[data-ecartannule]');
+  if(ba){e.preventDefault();const fa=ba.closest('.footacts');if(fa&&fa.dataset.saved){fa.innerHTML=fa.dataset.saved;}return;}
+  const br=e.target.closest('[data-restaurer]');
+  if(br){e.preventDefault();restaurerEcarte(br.getAttribute('data-restaurer'));return;}
   const b=e.target.closest('[data-fiche]');
   if(b){e.preventDefault();openFiche(AFFICHES[+b.getAttribute('data-fiche')]);return;}
   const be=e.target.closest('[data-fiche-ent]');
   if(be){e.preventDefault();openFicheEnt(+be.getAttribute('data-fiche-ent'));}
+});
+document.getElementById('ecartes').addEventListener('click',e=>{
+  const br=e.target.closest('[data-restaurer]');
+  if(br){e.preventDefault();restaurerEcarte(br.getAttribute('data-restaurer'));}
 });
 document.getElementById('modal').addEventListener('click',e=>{if(e.target.id==='modal')closeFiche();});
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeFiche();});
