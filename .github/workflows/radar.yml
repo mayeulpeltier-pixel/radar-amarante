@@ -330,6 +330,14 @@ jobs:
           RADAR_DECOUVERTE: ${{ vars.RADAR_DECOUVERTE }}
         run: python signaux_deploiement.py
 
+      - name: Verifier les attributions des projets surveilles
+        if: always() && steps.cle.outcome == 'success'
+        env:
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python surveillance_attributions.py
+
       # 5) Generer le tableau de bord depuis le Sheet (public/index.html).
       #    if: always() => le dashboard se rafraichit meme si un collecteur a eu
       #    un souci, en lisant le dernier etat du Sheet. L'echec reste visible
