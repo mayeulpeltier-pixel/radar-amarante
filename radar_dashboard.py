@@ -30,6 +30,11 @@ try:
     import pays_reference          # referentiel pays officiel (eForms-SDK)
 except Exception:
     pays_reference = None
+try:
+    import bm_attributions as _bm_dev   # table de change TAUX_USD (conversion valeur)
+except Exception:
+    _bm_dev = None
+_RE_DEVISE = re.compile(r"\b([A-Z]{3})\b")
 
 NOM_ONGLET_TED = "ted_radar"
 NOM_ONGLET_BM = "bm_radar"
@@ -632,8 +637,37 @@ _MOTS_SECTEUR_FORT = ("construction", "travaux", "works", "génie", "route",
     "aéroport", "airport", "port", "barrage", "dam", "pipeline")
 
 
+def _facteur_eur(txt):
+    """Facteur de conversion vers EUR de la devise detectee dans le texte.
+
+    Derive de bm_attributions.TAUX_USD (unites par USD) :
+        taux_eur(devise) = TAUX_USD["EUR"] / TAUX_USD[devise].
+    Renvoie 1.0 si EUR, si aucune devise connue n'est reperee, ou si la table
+    est indisponible -> le montant est laisse inchange (comportement d'avant).
+
+    POURQUOI : le mini-score pondere par la valeur. Les attributions TED
+    restaient en devise LOCALE (seule la Banque Mondiale convertissait deja),
+    si bien qu'un marche de 50 000 000 XOF (~76 000 EUR, franc CFA du Sahel)
+    etait pese comme un marche de 50 M. On normalise donc tout en EUR ici, au
+    point de scoring commun. Pivot EUR : les marches TED en euros (la majorite)
+    restent inchanges, seules les devises etrangeres sont converties.
+    """
+    if _bm_dev is None:
+        return 1.0
+    taux = getattr(_bm_dev, "TAUX_USD", None) or {}
+    ref = taux.get("EUR")
+    if not ref:
+        return 1.0
+    for m in _RE_DEVISE.finditer(str(txt or "").upper()):
+        d = taux.get(m.group(1))
+        if d:
+            return ref / d
+    return 1.0
+
+
 def _valeur_en_millions(txt):
-    """Extrait un montant en millions depuis un texte libre (best-effort)."""
+    """Extrait un montant en millions depuis un texte libre (best-effort),
+    NORMALISE EN EUR selon la devise detectee (voir _facteur_eur)."""
     if not txt:
         return 0.0
     t = txt.replace("\u202f", "").replace("\u00a0", "").replace(" ", "")
@@ -647,7 +681,7 @@ def _valeur_en_millions(txt):
         val *= 1000.0
     elif "million" in bas or "mn" in bas or (val > 100000):
         val = val / 1_000_000.0 if val > 100000 else val
-    return val
+    return val * _facteur_eur(txt)
 
 
 def score_attribution(zone, secteur, marche, valeur):
