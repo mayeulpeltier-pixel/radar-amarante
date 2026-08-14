@@ -620,8 +620,12 @@ def session_robuste():
     return session
 
 
-def poster_ted(corps, timeout=30):
+def poster_ted(corps, timeout=30, session=None):
     """POST vers TED avec bascule automatique sur l'endpoint secondaire.
+
+    session : optionnelle. Permet a d'autres collecteurs (ex. attributions) de
+    reutiliser ce failover en injectant leur propre session ; None -> la session
+    robuste partagee. Ne change rien aux appelants existants (interroger_ted).
 
     Deux niveaux de resilience empiles :
       1. session_robuste() retente deja, sur la MEME url, les 429/5xx et les
@@ -639,7 +643,7 @@ def poster_ted(corps, timeout=30):
     par exception, la derniere exception est propagee (comportement identique a
     l'ancien appel direct a un endpoint unique).
     """
-    session = session_robuste()
+    session = session or session_robuste()
     reponse = None
     for i, url in enumerate(TED_ENDPOINTS):
         dernier = (i == len(TED_ENDPOINTS) - 1)
