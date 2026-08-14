@@ -1,0 +1,31 @@
+name: ACLED Sonde (jetable)
+# Valide l'acces ACLED (OAuth + data + agregation) EN ISOLATION, a la demande.
+# Lecture seule, aucune ecriture. Mappe explicitement les secrets myACLED en
+# variables d'environnement (GitHub ne les expose PAS automatiquement).
+# A SUPPRIMER une fois ACLED valide et le collecteur cable.
+#
+# PREREQUIS : compte gratuit sur acleddata.com, puis deux secrets de depot :
+#   Settings > Secrets and variables > Actions > New repository secret
+#     ACLED_EMAIL     = l'email du compte myACLED
+#     ACLED_PASSWORD  = le mot de passe du compte myACLED
+on:
+  workflow_dispatch:
+
+jobs:
+  acled-sonde:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer les dependances
+        run: pip install -r requirements-radar.txt
+      - name: Sonder ACLED (OAuth + data, aucune ecriture)
+        env:
+          ACLED_EMAIL: ${{ secrets.ACLED_EMAIL }}
+          ACLED_PASSWORD: ${{ secrets.ACLED_PASSWORD }}
+        run: python sonde_acled.py
