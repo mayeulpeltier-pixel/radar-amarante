@@ -58,6 +58,12 @@ TED_ENDPOINT = "https://api.ted.europa.eu/v3/notices/search"
 # declenche que sur echec reel, donc le pire cas vaut le comportement actuel.
 TED_ENDPOINT_SECONDAIRE = "https://tedweb.api.ted.europa.eu/v3/notices/search"
 TED_ENDPOINTS = [TED_ENDPOINT, TED_ENDPOINT_SECONDAIRE]
+# Enrichissement (pepite 4) : a l'escalade, on peut donner au modele le plus
+# capable le TEXTE INTEGRAL de la notice (PDF rendu serveur, fiable) au lieu des
+# seuls champs structures. Cible uniquement les avis escalades (peu nombreux) ->
+# cout maitrise. Active par RADAR_TED_ENRICHIR=1 (defaut OFF).
+LIEN_NOTICE_PDF = "https://ted.europa.eu/en/notice/{}/pdf"
+PLAFOND_ENRICHISSEMENT = 6000  # caracteres du texte integral injectes (tokens maitrises)
 
 CODES_CPV = [
     "71520000", "71247000", "71521000", "71300000", "71351000",
@@ -664,6 +670,73 @@ def poster_ted(corps, timeout=30, session=None):
             continue
         return reponse
     return reponse  # atteint seulement si le dernier endpoint renvoie un 5xx
+
+
+def _pdf_en_texte(octets):
+    """Extrait le texte d'un PDF (octets) via pypdf. Renvoie '' si pypdf est
+    absent ou si le PDF est illisible (jamais bloquant).
+
+    Jumeau volontaire de ted_complet_attributions._pdf_en_texte : v14 est le
+    socle importe PAR attributions, il ne peut donc pas importer attributions
+    (cycle d'import). La fonction est minuscule et sans etat ; une dedup
+    passerait par la remontee de lire_notice dans ce socle (evolution possible).
+    """
+    try:
+        import io
+        from pypdf import PdfReader
+    except Exception:
+        print("  (info) pypdf absent : enrichissement texte integral ignore ce run.")
+        return ""
+    try:
+        lecteur = PdfReader(io.BytesIO(octets))
+        return "\n".join((p.extract_text() or "") for p in lecteur.pages)
+    except Exception:
+        return ""
+
+
+def texte_integral_notice(pub_number, fetch=None, session=None):
+    """Texte integral d'une notice TED via son PDF (rendu serveur, contrairement
+    a /html qui est du JavaScript). `fetch` injectable pour tests :
+    callable(pub)->texte. Renvoie '' si indisponible -- JAMAIS bloquant : un
+    echec d'enrichissement ne doit pas empecher l'escalade de tourner.
+    """
+    if not pub_number:
+        return ""
+    if fetch is not None:
+        return fetch(pub_number)
+    try:
+        session = session or session_robuste()
+        rep = session.get(LIEN_NOTICE_PDF.format(pub_number), timeout=60)
+        rep.raise_for_status()
+        return _pdf_en_texte(rep.content)
+    except Exception as e:
+        print("  (info) enrichissement notice {} indisponible : {}.".format(pub_number, e))
+        return ""
+
+
+def avis_enrichi_pour_escalade(avis, fetch=None, session=None):
+    """Renvoie une COPIE de l'avis dont la `description` est augmentee du texte
+    integral de la notice, pour donner au modele d'escalade le contexte le plus
+    riche (conditions d'execution, lots, exigences operateurs... absents des
+    champs structures). Regles :
+      - si le texte est indisponible ('' ), renvoie l'avis INCHANGE (pas de copie
+        inutile, comportement d'escalade identique a avant) ;
+      - ne modifie JAMAIS l'avis d'origine (le scoring/affichage restent sur les
+        champs originaux ; seule la LECTURE Sonnet est enrichie) ;
+      - plafonne le texte injecte a PLAFOND_ENRICHISSEMENT (tokens maitrises).
+    """
+    texte = texte_integral_notice(
+        avis.get("publication_number", ""), fetch=fetch, session=session)
+    if not texte:
+        return avis
+    copie = dict(avis)
+    base = (copie.get("description") or "").strip()
+    ajout = texte.strip()[:PLAFOND_ENRICHISSEMENT]
+    copie["description"] = (
+        (base + "\n\n" if base else "") + "[TEXTE INTEGRAL DE LA NOTICE]\n" + ajout
+    ).strip()
+    copie["enrichi_pdf"] = True
+    return copie
 
 
 def interroger_ted(corps_requete=None, max_pages=MAX_PAGES):
@@ -2066,12 +2139,21 @@ def main():
 
     a_escalader = [r for r in resultats if merite_escalade(r)]
     if a_escalader:
-        print("\n{} avis remplissent un critere d'escalade (score, confiance ou securite detectee), vers {}...\n".format(
-            len(a_escalader), MODELE_RAFFINEMENT
+        enrichir_actif = os.environ.get("RADAR_TED_ENRICHIR", "0") != "0"
+        mention = " (texte integral)" if enrichir_actif else ""
+        print("\n{} avis remplissent un critere d'escalade (score, confiance ou securite detectee), vers {}{}...\n".format(
+            len(a_escalader), MODELE_RAFFINEMENT, mention
         ))
         for i, r in enumerate(a_escalader, start=1):
             print("[{}/{}] Raffinement : {}...".format(i, len(a_escalader), r["avis"]["titre"][:60]))
-            extraction_raffinee = appeler_llm(r["avis"], modele=MODELE_RAFFINEMENT)
+            # Enrichissement cible (pepite 4) : on donne au modele le plus capable
+            # le texte integral de la notice, seulement pour ces avis escalades.
+            avis_pour_sonnet = r["avis"]
+            if enrichir_actif:
+                avis_pour_sonnet = avis_enrichi_pour_escalade(r["avis"])
+                if avis_pour_sonnet.get("enrichi_pdf"):
+                    r["enrichi_pdf"] = True
+            extraction_raffinee = appeler_llm(avis_pour_sonnet, modele=MODELE_RAFFINEMENT)
             if extraction_raffinee is not None:
                 s, c, f = calculer_scores(r["avis"], extraction_raffinee)
                 r["extraction"] = extraction_raffinee  # affichage = la lecture la plus capable
