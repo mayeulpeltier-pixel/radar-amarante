@@ -75,11 +75,13 @@ def requete(pn):
         "            epo:hasNoticePublicationNumber ?pn .\n"
         "    FILTER(STR(?pn) IN (%s))\n"
         "    ?tender a epo:Tender ;\n"
-        "            epo:isSubmitedBy ?tenderer ;\n"
-        "            epo:hasFinancialOfferValue ?ov .\n"
-        "    ?ov epo:hasAmountValue ?montant ;\n"
-        "        epo:hasCurrency ?devise .\n"
+        "            epo:isSubmitedBy ?tenderer .\n"
         "    ?tenderer epo:playedBy / epo:hasLegalName ?nom .\n"
+        "    OPTIONAL {\n"
+        "      ?tender epo:hasFinancialOfferValue ?ov .\n"
+        "      ?ov epo:hasAmountValue ?montant ;\n"
+        "          epo:hasCurrency ?devise .\n"
+        "    }\n"
         "  }\n"
         "} LIMIT 50" % vs
     )
