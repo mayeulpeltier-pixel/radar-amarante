@@ -46,6 +46,10 @@ except ModuleNotFoundError:
         "ERREUR : ted_complet_v14.py doit etre dans le MEME dossier que ce "
         "collecteur (il en reutilise la session, le nettoyage HTML, le Sheet)."
     )
+try:
+    import cpv_reference          # divisions CPV officielles (eForms-SDK)
+except Exception:                 # module absent : on garde la table metier seule
+    cpv_reference = None
 
 
 # ===========================================================================
@@ -370,10 +374,18 @@ def lire_notice(pub, fetch=None, session=None):
 # ===========================================================================
 
 def secteur_lisible(codes_cpv):
+    # 1) Table metier Amarante (libelles courts, prioritaire).
     for c in codes_cpv:
         lib = SECTEUR_PAR_DIVISION.get(c[:2])
         if lib:
             return lib
+    # 2) Fallback : division officielle CPV (eForms-SDK) pour les divisions
+    #    hors table metier -> evite un "Autre" quand un secteur existe.
+    if cpv_reference is not None:
+        for c in codes_cpv:
+            lib = cpv_reference.division_lisible(c)
+            if lib:
+                return lib
     return "Autre"
 
 
