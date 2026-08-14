@@ -132,6 +132,7 @@ NOM_EN = {
     "GEO": "Georgia", "GHA": "Ghana", "GIN": "Guinea", "GMB": "The Gambia",
     "GNB": "Guinea-Bissau", "GNQ": "Equatorial Guinea", "GTM": "Guatemala",
     "GUF": "French Guiana", "GUY": "Guyana", "HND": "Honduras", "HTI": "Haiti",
+    "SLV": "El Salvador", "NIC": "Nicaragua", "PAN": "Panama",
     "IDN": "Indonesia", "IRN": "Iran", "IRQ": "Iraq", "ISR": "Israel",
     "JAM": "Jamaica", "JOR": "Jordan", "KAZ": "Kazakhstan", "KEN": "Kenya",
     "KGZ": "Kyrgyzstan", "KHM": "Cambodia", "KWT": "Kuwait", "LAO": "Laos",
