@@ -41,6 +41,7 @@ AUCUNE ECRITURE. Aucun secret. Sortie toujours en code 0.
 
 import json
 import os
+import re
 import sys
 
 try:
@@ -120,15 +121,34 @@ def qA_echantillon():
     )
 
 
+def _variantes_pn(pub):
+    """Formats plausibles d'un publication-number, pour absorber le decalage
+    entre ce que Radar stocke (souvent 6 chiffres, ex "302871-2026") et le
+    triplestore (8 chiffres zero-paddes, ex "00302871-2026")."""
+    pub = str(pub or "").strip()
+    variantes = {pub}
+    m = re.match(r"0*(\d+)-(\d{4})$", pub)
+    if m:
+        num, an = m.group(1), m.group(2)
+        variantes.add("{}-{}".format(num, an))            # sans zeros de tete
+        variantes.add("{:08d}-{}".format(int(num), an))   # 8 chiffres zero-paddes
+    return sorted(variantes)
+
+
+def _filtre_pn(pub):
+    vs = ", ".join('"%s"' % v for v in _variantes_pn(pub))
+    return "    FILTER(STR(?pn) IN (%s))\n" % vs
+
+
 def q1_notice(pub):
     return PREFIXES + (
         "SELECT ?g ?notice ?pn WHERE {\n"
         "  GRAPH ?g {\n"
         "    ?notice a epo:Notice ;\n"
         "            epo:hasNoticePublicationNumber ?pn .\n"
-        '    FILTER(STR(?pn) = "%s")\n'
+        + _filtre_pn(pub) +
         "  }\n"
-        "} LIMIT 5" % pub
+        "} LIMIT 5"
     )
 
 
@@ -138,10 +158,10 @@ def q2_predicats(pub):
         "  GRAPH ?g {\n"
         "    ?notice a epo:Notice ;\n"
         "            epo:hasNoticePublicationNumber ?pn .\n"
-        '    FILTER(STR(?pn) = "%s")\n'
+        + _filtre_pn(pub) +
         "    ?s ?p ?o .\n"
         "  }\n"
-        "} GROUP BY ?p ORDER BY DESC(?n) LIMIT 200" % pub
+        "} GROUP BY ?p ORDER BY DESC(?n) LIMIT 200"
     )
 
 
@@ -151,7 +171,7 @@ def q3_titulaires(pub):
         "  GRAPH ?g {\n"
         "    ?notice a epo:Notice ;\n"
         "            epo:hasNoticePublicationNumber ?pn .\n"
-        '    FILTER(STR(?pn) = "%s")\n'
+        + _filtre_pn(pub) +
         "    ?tender a epo:Tender ;\n"
         "            epo:isSubmitedBy ?tenderer ;\n"
         "            epo:hasFinancialOfferValue ?offerValue .\n"
@@ -160,7 +180,7 @@ def q3_titulaires(pub):
         "    ?tenderer epo:playedBy / epo:hasLegalName ?tendererLegalName .\n"
         "  }\n"
         '  OPTIONAL { ?currencyUri skos:prefLabel ?currency . FILTER(lang(?currency) = "en") }\n'
-        "} LIMIT 50" % pub
+        "} LIMIT 50"
     )
 
 
