@@ -594,7 +594,7 @@ def ligne_vers_lead(row, source):
         "pub": _txt(row.get("publication_number")),
         # Nom de l'entreprise cible (pour la lentille Entreprises). Cote PRIVÉ,
         # c'est l'entreprise surveillee ; ailleurs le gagnant est inconnu.
-        "entreprise": (_txt(row.get("acheteur")) or "n.c.") if source == "PRIVÉ" else "",
+        "entreprise": (_txt(row.get("acheteur")) or "n.c.") if source in ("PRIVÉ", "IFC", "MIGA", "PROPARCO", "DFC") else "",
         # Secteur canonique (filtre + regroupement). Estime cote avis.
         "sect": _secteur_du_lead(row, source, groupe),
     }
@@ -1796,6 +1796,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .fiche .fsrc{font-family:var(--mono);font-size:0.5rem;letter-spacing:.08em;text-transform:uppercase;padding:2px 6px;border-radius:3px;white-space:nowrap;border:1px solid var(--line-2);color:var(--bone-dim)}
   .fiche .fsrc.titulaire{color:#e08e98;border-color:rgba(224,142,152,.45)}
   .fiche .fsrc.signal{color:#dcb079;border-color:rgba(200,137,59,.4)}
+  .fiche .fsrc.dfi{color:#8fb9d9;border-color:rgba(143,185,217,.4)}
   .fiche .fsig{border-top:1px solid var(--line);margin-top:12px;padding-top:10px;display:flex;flex-direction:column;gap:7px}
   .fiche .fsr{display:flex;align-items:center;gap:10px;font-size:12.5px}
   .fiche .fsr .fsi{color:var(--bone);flex:1;min-width:0}
@@ -2231,6 +2232,10 @@ function agregerTitulaires(){
 // d'un marche apparait UNE SEULE FOIS, avec tous ses signaux et des facettes de
 // provenance (Watchlist / Signal / Titulaire). Repond a "tout ce que je sais
 // sur X" au lieu de fragmenter la meme entreprise en deux lentilles.
+// Sources DFI a sponsor prive nomme : elles nourrissent les fiches (une
+// entreprise financee par IFC/MIGA/Proparco/DFC est un prospect, pas une
+// agence). Les avis-tender (TED/BM/AfDB...) nomment l'acheteur -> exclus.
+const SRC_DFI=new Set(['IFC','MIGA','PROPARCO','DFC']);
 function agregerEntreprises(){
   const parCle={};
   function fiche(cle,nom){
@@ -2244,11 +2249,11 @@ function agregerEntreprises(){
     if(w.secteur) f.secteurs.add(w.secteur);
     if(w.sect) f.sectSet.add(w.sect);
   });
-  LEADS.filter(l=>l.src==='PRIVÉ'||l.src==='ATTRIB').forEach(l=>{
+  LEADS.filter(l=>l.src==='PRIVÉ'||l.src==='ATTRIB'||SRC_DFI.has(l.src)).forEach(l=>{
     const nom=(l.entreprise&&l.entreprise!=='n.c.')?l.entreprise:(l.agence||'?');
     const cle=l.ent_cle||normEntreprise(nom)||sansAccent(nom);
     const f=fiche(cle,nom); f.nom=meilleurNom(f.nom,nom);
-    f.signaux.push(l); f.srcSet.add(l.src==='PRIVÉ'?'signal':'titulaire');
+    f.signaux.push(l); f.srcSet.add(l.src==='PRIVÉ'?'signal':(l.src==='ATTRIB'?'titulaire':'dfi'));
     if(l.zone&&l.zone!=='Non classé') f.zones.add(l.zone);
     if(l.grp&&l.grp!=='signal'&&l.grp!=='AT') f.secteurs.add(l.grp.replace(/_/g,' '));
     if(l.sect) f.sectSet.add(l.sect);
@@ -2256,7 +2261,7 @@ function agregerEntreprises(){
   return Object.values(parCle).map(f=>{
     const x=finaliserFiche(f);
     // Ordre lisible des facettes : watchlist, signal, titulaire.
-    x.srcs=['watchlist','signal','titulaire'].filter(s=>f.srcSet.has(s));
+    x.srcs=['watchlist','dfi','signal','titulaire'].filter(s=>f.srcSet.has(s));
     return x;
   }).sort(_triFiches);
 }
@@ -2996,7 +3001,7 @@ function ficheCard(f,i){
   return `<article class="fiche" data-fidx="${i}">
     <div class="fhead"><div class="fav">${esc(initiales)}</div>
       <div style="flex:1;min-width:0">
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="fnom">${esc(f.nom)}</span><span class="fprio ${f.prio}">${prioLabel}</span>${(f.srcs||[]).map(s=>`<span class="fsrc ${s}">${({watchlist:'Watchlist',signal:'Signal',titulaire:'Titulaire'})[s]||s}</span>`).join('')}</div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="fnom">${esc(f.nom)}</span><span class="fprio ${f.prio}">${prioLabel}</span>${(f.srcs||[]).map(s=>`<span class="fsrc ${s}">${({watchlist:'Watchlist',dfi:'Financement DFI',signal:'Signal',titulaire:'Titulaire'})[s]||s}</span>`).join('')}</div>
         <div class="fmeta">${esc(meta)}</div>
       </div></div>
     ${sansSignal?'<div class="fnosig">Cible surveillée, aucun signal récent capté. Elle reste dans le radar dès qu\'une actualité tombe.</div>':`<div class="fsig">${sig}</div>`}
@@ -3036,7 +3041,7 @@ function openFicheEnt(i){
   const manque=!f.enr.nom&&!f.enr.email;
   document.getElementById('modalcard').innerHTML=`
    <div class="mhead"><button class="mclose" type="button" onclick="closeFiche()" aria-label="Fermer">×</button>
-     <div class="msrc">Fiche entreprise · ${esc(prioLabel)}${(f.srcs||[]).map(s=>` · ${({watchlist:'Watchlist',signal:'Signal',titulaire:'Titulaire'})[s]||s}`).join('')}</div>
+     <div class="msrc">Fiche entreprise · ${esc(prioLabel)}${(f.srcs||[]).map(s=>` · ${({watchlist:'Watchlist',dfi:'Financement DFI',signal:'Signal',titulaire:'Titulaire'})[s]||s}`).join('')}</div>
      <h2>${esc(f.nom)}</h2>
      <div class="mscore"><span class="big">${f.n}</span><span class="sub">signal(aux) · ${f.zones.length} zone(s)</span></div>
    </div>
