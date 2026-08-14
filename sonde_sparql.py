@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-RADAR AMARANTE -- SONDE SPARQL (jetable) : titulaires via TED Open Data.
+RADAR AMARANTE -- SONDE SPARQL v2 (jetable) : titulaires via TED Open Data.
 ===============================================================================
 
 BUT
@@ -8,36 +8,35 @@ BUT
 Verifier si l'endpoint SPARQL public de l'Office des Publications
 (https://publications.europa.eu/webapi/rdf/sparql) permet de recuperer, de
 maniere STRUCTUREE, le(s) titulaire(s) d'une attribution TED : nom, montant,
-devise. Si oui, on pourra remplacer le parsing PDF par regex (fragile) de
+devise. Si oui, on remplace le parsing PDF par regex (fragile) de
 `ted_complet_attributions` par une requete propre.
 
-L'ontologie utilisee (confirmee depuis les requetes curees de data.ted.europa.eu) :
-    ?notice  a epo:Notice ; epo:hasNoticePublicationNumber ?pn .
-    ?tender  a epo:Tender ;
-             epo:isSubmitedBy ?tenderer ;              # (orthographe ePO exacte)
-             epo:hasFinancialOfferValue ?offerValue .
-    ?offerValue epo:hasAmountValue ?amount ; epo:hasCurrency ?curUri .
+v2 : la CONNECTIVITE etant confirmee (HTTP 200), on ajoute une etape
+AUTO-SUFFISANTE (A) qui trouve elle-meme des attributions ayant un titulaire,
+SANS qu'on fournisse de numero -> prouve la chaine ontologique de bout en bout
+et REVELE le format reel des publication-number (a comparer a ceux de Radar).
+
+Ontologie (confirmee depuis les requetes curees de data.ted.europa.eu) :
+    ?tender epo:isSubmitedBy ?tenderer ; epo:hasFinancialOfferValue ?ov .
+    ?ov epo:hasAmountValue ?montant ; epo:hasCurrency ?curUri .
     ?tenderer epo:playedBy / epo:hasLegalName ?nom .
 
-CE QUE CETTE SONDE ETABLIT, ET RIEN D'AUTRE
--------------------------------------------
-  0. CONNECTIVITE : l'endpoint repond-il, et dans quel format.
-  1. NOTICE : trouve-t-on la notice par son publication-number (le champ que
-     Radar stocke deja pour chaque attribution).
-  2. STRUCTURE : quels predicats existent dans le graphe de la notice -> revele
-     la forme reelle (au cas ou l'award/winner differe du modele ci-dessus).
-  3. TITULAIRES : la requete ciblee renvoie-t-elle nom + montant + devise.
+ETAPES
+------
+  0. CONNECTIVITE (deja OK, garde comme garde-fou).
+  A. ECHANTILLON : des attributions AVEC titulaire, sans filtre -> prouve la
+     faisabilite et montre le format des publication-number.
+  1-3. CIBLE (seulement si SONDE_PUB fourni) : notice, predicats, titulaires
+     pour UN publication-number precis (utile pour caler le collecteur sur un
+     avis reel de l'onglet attributions_radar).
 
 USAGE
 -----
-Fournir un VRAI numero d'attribution TED via la variable SONDE_PUB (en prendre
-un dans l'onglet attributions_radar, colonne publication-number). Exemple :
-    SONDE_PUB="00123456-2024" python sonde_sparql.py
+    python sonde_sparql.py                      # etapes 0 + A (auto)
+    SONDE_PUB="00123456-2024" python sonde_sparql.py   # + etapes 1-3 ciblees
+    SONDE_SPARQL_DRYRUN=1 python sonde_sparql.py        # affiche les requetes
 
-Mode hors-ligne (affiche les requetes sans les envoyer, pour relecture) :
-    SONDE_SPARQL_DRYRUN=1 python sonde_sparql.py
-
-AUCUNE ECRITURE. Aucun secret. Sortie toujours en code 0 (c'est une sonde).
+AUCUNE ECRITURE. Aucun secret. Sortie toujours en code 0.
 """
 
 import json
@@ -53,7 +52,7 @@ except ImportError:
 
 ENDPOINT = "https://publications.europa.eu/webapi/rdf/sparql"
 ACCEPT_JSON = "application/sparql-results+json"
-TIMEOUT = 45
+TIMEOUT = 50
 PUB = os.environ.get("SONDE_PUB", "").strip()
 DRYRUN = os.environ.get("SONDE_SPARQL_DRYRUN") == "1"
 
@@ -65,8 +64,7 @@ PREFIXES = (
 
 
 def interroger(query, accept=ACCEPT_JSON):
-    """POST la requete a l'endpoint. Renvoie (statut, objet_json_ou_texte).
-    Ne leve jamais : une sonde rapporte, elle ne casse pas."""
+    """POST la requete. Renvoie (statut, objet_json_ou_texte). Ne leve jamais."""
     try:
         rep = requests.post(
             ENDPOINT,
@@ -75,7 +73,7 @@ def interroger(query, accept=ACCEPT_JSON):
             timeout=TIMEOUT,
         )
     except Exception as e:
-        return None, "ERREUR RESEAU : {}".format(e)
+        return None, "ERREUR RESEAU / TIMEOUT : {}".format(e)
     corps = rep.text
     if "json" in accept:
         try:
@@ -86,7 +84,6 @@ def interroger(query, accept=ACCEPT_JSON):
 
 
 def lignes(data):
-    """bindings d'un resultat SELECT."""
     if isinstance(data, dict):
         return data.get("results", {}).get("bindings", [])
     return []
@@ -103,9 +100,29 @@ def q0_connectivite():
     return "SELECT ?s WHERE { ?s ?p ?o } LIMIT 1"
 
 
+def qA_echantillon():
+    # Sans filtre sur le publication-number : trouve DES attributions ayant un
+    # titulaire. Prouve la chaine et montre le format des ?pn. LIMIT bas pour
+    # borner le cout.
+    return PREFIXES + (
+        "SELECT ?pn ?tendererLegalName ?offerAmountValue ?currencyUri WHERE {\n"
+        "  GRAPH ?g {\n"
+        "    ?notice a epo:Notice ;\n"
+        "            epo:hasNoticePublicationNumber ?pn .\n"
+        "    ?tender a epo:Tender ;\n"
+        "            epo:isSubmitedBy ?tenderer ;\n"
+        "            epo:hasFinancialOfferValue ?ov .\n"
+        "    ?ov epo:hasAmountValue ?offerAmountValue ;\n"
+        "        epo:hasCurrency ?currencyUri .\n"
+        "    ?tenderer epo:playedBy / epo:hasLegalName ?tendererLegalName .\n"
+        "  }\n"
+        "} LIMIT 5"
+    )
+
+
 def q1_notice(pub):
     return PREFIXES + (
-        "SELECT ?g ?notice WHERE {\n"
+        "SELECT ?g ?notice ?pn WHERE {\n"
         "  GRAPH ?g {\n"
         "    ?notice a epo:Notice ;\n"
         "            epo:hasNoticePublicationNumber ?pn .\n"
@@ -154,22 +171,24 @@ def _titre(t):
     print("\n" + "=" * 70 + "\n" + t + "\n" + "=" * 70)
 
 
-def _rapporter(statut, corps, apercu_lignes=8):
+def _rapporter(statut, corps, apercu=8):
     print("HTTP:", statut)
     if isinstance(corps, str):
         print(corps[:1500])
         return
     bs = lignes(corps)
     print("resultats:", len(bs))
-    for b in bs[:apercu_lignes]:
+    for b in bs[:apercu]:
         print("  " + json.dumps({k: val(b, k) for k in b}, ensure_ascii=False))
 
 
 def main():
-    print("SONDE SPARQL -- titulaires TED via", ENDPOINT)
+    print("SONDE SPARQL v2 -- titulaires TED via", ENDPOINT)
 
     requetes = [
         ("0. CONNECTIVITE", q0_connectivite()),
+        ("A. ECHANTILLON d'attributions AVEC titulaire (auto, sans numero)",
+         qA_echantillon()),
     ]
     if PUB:
         requetes += [
@@ -183,7 +202,7 @@ def main():
         for titre, q in requetes:
             _titre(titre)
             print(q)
-        print("\n[DRYRUN] fin. Aucun appel reseau.")
+        print("\n[DRYRUN] fin.")
         return 0
 
     for titre, q in requetes:
@@ -192,9 +211,10 @@ def main():
         _rapporter(statut, corps)
 
     if not PUB:
-        _titre("ETAPES 1-3 IGNOREES")
-        print("Fournir SONDE_PUB=<publication-number d'une attribution> pour")
-        print("tester la recuperation des titulaires. Ex : SONDE_PUB=\"00123456-2024\"")
+        _titre("ETAPES CIBLEES 1-3 IGNOREES (optionnel)")
+        print("Pour valider sur un avis PRECIS de l'onglet attributions_radar,")
+        print('relancer avec SONDE_PUB="<publication-number>". Comparer d\'abord')
+        print("le format attendu aux ?pn affiches en etape A ci-dessus.")
 
     print("\nFin de sonde.")
     return 0
