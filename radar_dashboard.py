@@ -134,6 +134,8 @@ ZONE_PAR_NOM = {
     "haiti": ("Haïti", "Caraïbes"), "jamaica": ("Jamaïque", "Caraïbes"),
     "mexico": ("Mexique", "Amérique latine"), "ecuador": ("Équateur", "Amérique latine"),
     "brazil": ("Brésil", "Amérique latine"), "colombia": ("Colombie", "Amérique latine"),
+    "el salvador": ("El Salvador", "Amérique latine"), "salvador": ("El Salvador", "Amérique latine"),
+    "panama": ("Panama", "Amérique latine"), "nicaragua": ("Nicaragua", "Amérique latine"),
     # Europe de l'Ouest (TED, faible interet operationnel)
     "france": ("France", "Europe de l'Ouest"), "germany": ("Allemagne", "Europe de l'Ouest"),
     "denmark": ("Danemark", "Europe de l'Ouest"), "new caledonia": ("Nouvelle-Calédonie", "Outre-mer"),
@@ -190,6 +192,8 @@ ZONE_PAR_ISO3 = {
     "MEX": ("Mexique", "Amérique latine"), "ECU": ("Équateur", "Amérique latine"),
     # Perimetre commercial elargi le 22/07/2026 (Amerique centrale + Mongolie).
     "HND": ("Honduras", "Amérique latine"), "GTM": ("Guatemala", "Amérique latine"),
+    "SLV": ("El Salvador", "Amérique latine"), "PAN": ("Panama", "Amérique latine"),
+    "NIC": ("Nicaragua", "Amérique latine"),
     "MNG": ("Mongolie", "Asie centrale"),
     "BRA": ("Brésil", "Amérique latine"), "OMN": ("Oman", "Péninsule arabique"),
     "FRA": ("France", "Europe de l'Ouest"), "DEU": ("Allemagne", "Europe de l'Ouest"),
