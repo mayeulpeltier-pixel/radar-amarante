@@ -425,7 +425,7 @@ def ligne_depuis_resultat(r):
         "fenetre_action": ted.calculer_fenetre_action(avis),
         "niveau_opportunite_amarante": e.get("niveau_opportunite_amarante", ""),
         "titre": avis.get("titre", ""), "acheteur": avis.get("acheteur", ""),
-        "pays_execution": avis.get("pays_execution", ""),
+        "pays_execution": avis.get("pays_iso3") or avis.get("pays_execution", ""),
         "secteur": avis.get("secteur", ""),
         "categorie_es": avis.get("categorie_es", ""),
         "sovereign": avis.get("sovereign", ""),
