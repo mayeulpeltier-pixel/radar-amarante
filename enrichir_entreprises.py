@@ -66,6 +66,9 @@ PAUSE = 0.4                            # politesse API (7 req/s max cote gouv)
 # dashboard.
 NOM_ONGLET_WATCHLIST_PRIVES = "watchlist_prives"
 NOM_ONGLET_ATTRIBUTIONS = "attributions_radar"
+# Sponsors prives DFI (sponsor prive nomme) : leurs societes ETRANGERES
+# entrent aussi dans l'enrichissement (GLEIF identite + Hunter reliquat).
+NOM_ONGLETS_DFI = ("proparco_radar", "dfc_radar", "ifc_radar", "miga_radar")
 # Budget firmographique par run (gouv + GLEIF, tous deux gratuits) : borne le
 # temps CI. Le cache de fraicheur fait fondre la file a chaque run, donc la
 # couverture complete s'etale sur quelques runs, sans re-enrichir avant le DELAI.
@@ -75,6 +78,7 @@ RADAR_ENRICH_BUDGET = int(os.environ.get("RADAR_ENRICH_BUDGET", "80"))
 # Plafond d'attributaires injectes par construction de liste (ils sont nombreux
 # et croissants) : evite de noyer defense + watchlist.
 RADAR_ENRICH_ATTRIB_MAX = int(os.environ.get("RADAR_ENRICH_ATTRIB_MAX", "150"))
+RADAR_ENRICH_DFI_MAX = int(os.environ.get("RADAR_ENRICH_DFI_MAX", "120"))
 
 # --- Recherche de contacts (Hunter.io), OPTIONNEL et frugal en quota ---------
 # Palier gratuit Hunter : 25 recherches/mois. On cible donc les seules
@@ -496,8 +500,8 @@ def selectionner_cibles_hunter(comptes, infos, deja, budget):
         vus = {c[0].lower() for c in cibles} | set(deja)
         titulaires = []
         for w in comptes:
-            if w.get("origine") != "attributaire" or not w.get("etranger"):
-                continue                          # etrangers uniquement (Q2-A)
+            if w.get("origine") not in ("attributaire", "dfi") or not w.get("etranger"):
+                continue                          # etrangers uniquement (Q2-A) + sponsors DFI
             nom = w.get("entreprise", "").strip()
             if not nom or nom.lower() in vus:
                 continue
@@ -598,6 +602,7 @@ def _valeur_num(brut):
     """'45 millions EUR' / '120 000' / '1.2M' -> float (0 si illisible). Sert a
     trier les titulaires par taille de contrat (les plus gros d'abord)."""
     s = str(brut or "").lower().replace("\u00a0", " ").replace(",", ".")
+    s = re.sub(r"(?<=\d) (?=\d)", "", s)   # milliers separes par espace : 70 982 396 -> 70982396
     m = re.search(r"([0-9]+(?:\.[0-9]+)?)", s)
     if not m:
         return 0.0
@@ -650,6 +655,35 @@ def entreprises_attributaires(valeurs, max_comptes=None):
     return out
 
 
+def entreprises_dfi(valeurs, max_comptes=None):
+    """Onglet DFI a sponsor prive ('*_radar' IFC/MIGA/Proparco/DFC) ->
+    [{entreprise, priorite_socle:'Moyenne', origine:'dfi', etranger:True,
+    valeur:float}]. Le sponsor prive (colonne 'acheteur') est une societe
+    ETRANGERE qui deploie en zone a risque : GLEIF pour l'identite officielle,
+    Hunter sur le RELIQUAT (mode generique RGPD, apres la watchlist Haute), trie
+    par montant de financement. Dedup par nom. Fonction PURE (testable)."""
+    if not valeurs or len(valeurs) < 2:
+        return []
+    entetes = [str(c).strip().lower() for c in valeurs[0]]
+    if "acheteur" not in entetes:
+        return []
+    i_ent = entetes.index("acheteur")
+    i_val = entetes.index("valeur_estimee") if "valeur_estimee" in entetes else -1
+    vus, out = set(), []
+    for row in valeurs[1:]:
+        nom = str(row[i_ent]).strip() if i_ent < len(row) else ""
+        cle = nom.lower()
+        if len(nom) < 3 or cle in vus or "redacted" in cle:
+            continue
+        vus.add(cle)
+        val = _valeur_num(row[i_val]) if 0 <= i_val < len(row) else 0.0
+        out.append({"entreprise": nom, "priorite_socle": "Moyenne",
+                    "origine": "dfi", "etranger": True, "valeur": val})
+        if max_comptes and len(out) >= max_comptes:
+            break
+    return out
+
+
 def construire_liste_enrichissement(sheet_id, fichier_cs, ouvrir=None):
     """Fusionne defense (comptes_cibles_bitd) + watchlist_prives + attributaires
     publies. Dedup par nom, 1re occurrence prioritaire (defense > watchlist >
@@ -675,6 +709,16 @@ def construire_liste_enrichissement(sheet_id, fichier_cs, ouvrir=None):
             comptes += entreprises_attributaires(
                 _lire_valeurs(classeur, NOM_ONGLET_ATTRIBUTIONS),
                 max_comptes=RADAR_ENRICH_ATTRIB_MAX)
+            # 4. Sponsors prives DFI : societes etrangeres financees (GLEIF pour
+            #    toutes, Hunter sur le reliquat comme les titulaires etrangers).
+            restant_dfi = RADAR_ENRICH_DFI_MAX
+            for _onglet_dfi in NOM_ONGLETS_DFI:
+                if restant_dfi <= 0:
+                    break
+                lot_dfi = entreprises_dfi(_lire_valeurs(classeur, _onglet_dfi),
+                                          max_comptes=restant_dfi)
+                comptes += lot_dfi
+                restant_dfi -= len(lot_dfi)
     # Dedup par nom, 1re occurrence gagne (defense d'abord = prioritaire).
     vus, uniques = set(), []
     for c in comptes:
