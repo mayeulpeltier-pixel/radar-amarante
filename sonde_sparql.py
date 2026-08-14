@@ -166,20 +166,23 @@ def q2_predicats(pub):
 
 
 def q3_titulaires(pub):
+    # Montant et devise OPTIONNELS : beaucoup d'attributions ne publient pas le
+    # montant -> le titulaire doit sortir meme sans offre financiere.
     return PREFIXES + (
-        "SELECT ?tendererLegalName ?offerAmountValue ?currency WHERE {\n"
+        "SELECT ?tendererLegalName ?offerAmountValue ?currencyUri WHERE {\n"
         "  GRAPH ?g {\n"
         "    ?notice a epo:Notice ;\n"
         "            epo:hasNoticePublicationNumber ?pn .\n"
         + _filtre_pn(pub) +
         "    ?tender a epo:Tender ;\n"
-        "            epo:isSubmitedBy ?tenderer ;\n"
-        "            epo:hasFinancialOfferValue ?offerValue .\n"
-        "    ?offerValue epo:hasAmountValue ?offerAmountValue ;\n"
-        "                epo:hasCurrency ?currencyUri .\n"
+        "            epo:isSubmitedBy ?tenderer .\n"
         "    ?tenderer epo:playedBy / epo:hasLegalName ?tendererLegalName .\n"
+        "    OPTIONAL {\n"
+        "      ?tender epo:hasFinancialOfferValue ?offerValue .\n"
+        "      ?offerValue epo:hasAmountValue ?offerAmountValue ;\n"
+        "                  epo:hasCurrency ?currencyUri .\n"
+        "    }\n"
         "  }\n"
-        '  OPTIONAL { ?currencyUri skos:prefLabel ?currency . FILTER(lang(?currency) = "en") }\n'
         "} LIMIT 50"
     )
 
@@ -191,7 +194,7 @@ def _titre(t):
     print("\n" + "=" * 70 + "\n" + t + "\n" + "=" * 70)
 
 
-def _rapporter(statut, corps, apercu=8):
+def _rapporter(statut, corps, apercu=120):
     print("HTTP:", statut)
     if isinstance(corps, str):
         print(corps[:1500])
@@ -213,7 +216,7 @@ def main():
     if PUB:
         requetes += [
             ("1. NOTICE par publication-number (" + PUB + ")", q1_notice(PUB)),
-            ("2. PREDICATS du graphe de la notice", q2_predicats(PUB)),
+            ("2. PREDICATS du graphe de la notice (tous)", q2_predicats(PUB)),
             ("3. TITULAIRES (nom + montant + devise)", q3_titulaires(PUB)),
         ]
 
