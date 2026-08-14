@@ -113,6 +113,17 @@ class TestPosterTedFailover(_Base):
         with self.assertRaises(requests.exceptions.Timeout):
             ted.poster_ted({"q": "x"})
 
+    def test_session_injectee_est_utilisee(self):
+        """Le param session (utilise par le collecteur d'attributions) doit
+        primer sur session_robuste()."""
+        # session_robuste ne doit PAS etre appelee si une session est fournie.
+        ted.session_robuste = lambda: (_ for _ in ()).throw(
+            AssertionError("session_robuste ne devrait pas etre appelee"))
+        injectee = _SessionScriptee({PRIMAIRE: lambda: _Rep(200)})
+        rep = ted.poster_ted({"q": "x"}, session=injectee)
+        self.assertEqual(rep.status_code, 200)
+        self.assertEqual(injectee.urls_appelees, [PRIMAIRE])
+
     def test_dernier_endpoint_5xx_est_retourne(self):
         """Si meme le secondaire renvoie 5xx, on retourne cette reponse (pas de
         bascule possible) : l'appelant fera raise_for_status comme avant."""
