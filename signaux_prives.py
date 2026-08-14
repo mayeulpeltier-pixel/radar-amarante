@@ -44,6 +44,10 @@ import radar_resilience
 import bitd_signaux as bitd
 import radar_etat
 import radar_retroaction
+try:
+    import pays_reference          # referentiel pays officiel (eForms-SDK)
+except Exception:                  # module absent : on retombe sur les tables manuelles
+    pays_reference = None
 
 
 # ===========================================================================
@@ -232,11 +236,18 @@ _ADZUNA_STATS = {"appels": 0, "offres": 0, "erreurs": 0, "coupe": False}
 # de risque du coeur (PAYS_ROUGE : nom_fr -> iso3).
 def _noms_pays_risque():
     noms = set()
-    for nom in getattr(ted, "PAYS_ROUGE", {}):
+    for nom, iso3 in getattr(ted, "PAYS_ROUGE", {}).items():
         n = str(nom).strip().lower()
         if len(n) >= 4:
             noms.add(n)
-    # quelques alias anglais frequents dans les annonces
+        # Formes officielles (FR accentue + FR sans accent + EN) via le
+        # referentiel eForms-SDK : comble les variantes que la liste manuelle
+        # ratait (ex. "iraq" vs "irak", "equateur" accentue).
+        if pays_reference is not None:
+            for forme in pays_reference.noms_pour(iso3):
+                if len(forme) >= 4:
+                    noms.add(forme)
+    # quelques alias anglais frequents dans les annonces (filet historique)
     noms.update(["ukraine", "mali", "niger", "nigeria", "chad", "sudan",
                  "south sudan", "somalia", "iraq", "libya", "yemen", "haiti",
                  "afghanistan", "burkina", "congo", "mozambique", "kazakhstan",
