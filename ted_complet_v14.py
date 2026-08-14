@@ -116,6 +116,9 @@ PAYS_ORANGE = {
     "Papouasie-Nouvelle-Guinee": "PNG", "Montenegro": "MNE",
     "Albanie": "ALB", "Madagascar": "MDG", "Oman": "OMN",
     "Emirats Arabes Unis": "ARE", "Turquie": "TUR", "Afrique du Sud": "ZAF",
+    # Amerique centrale (ajout : deploiements et missions Amarante confirmes).
+    "Salvador": "SLV",    # gangs (MS-13, Barrio 18), volatilite malgre l'accalmie
+    "Nicaragua": "NIC",   # repression politique, instabilite
 }
 AFRIQUE = {
     "Algerie": "DZA", "Angola": "AGO", "Benin": "BEN", "Botswana": "BWA",
@@ -149,6 +152,7 @@ AMERIQUE_DU_SUD = {
     "Uruguay": "URY", "Venezuela": "VEN",
     # Amerique centrale (ajout du 22/07/2026) : perimetre commercial Amarante.
     "Honduras": "HND", "Guatemala": "GTM",
+    "Salvador": "SLV", "Panama": "PAN", "Nicaragua": "NIC",
 }
 
 # ELARGISSEMENT (sur demande explicite : "Europe de l'Est, Ukraine,
@@ -240,8 +244,8 @@ PAYS_COUVERTS_AMARANTE = set(filter(None, (
     os.environ.get("RADAR_PAYS_COUVERTS", "").split(",")))) or {
     # Amerique latine : perimetre valide par l'analyste le 22/07/2026.
     "MEX", "VEN", "ECU", "HND",              # rouges (1.0)
-    "COL", "GTM", "PER", "BOL",              # oranges (0.6)
-    "BRA", "ARG", "CHL",                     # couverts, risque faible (0.3)
+    "COL", "GTM", "PER", "BOL", "SLV", "NIC",  # oranges (0.6)
+    "BRA", "ARG", "CHL", "PAN",              # couverts, risque faible (0.3)
     # Asie.
     "IDN",                                   # orange (0.6)
     "MNG",                                   # couvert, risque faible (0.3)
