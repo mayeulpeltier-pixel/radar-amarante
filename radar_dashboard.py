@@ -26,6 +26,10 @@ import sys
 import unicodedata
 import radar_retroaction
 from datetime import date
+try:
+    import pays_reference          # referentiel pays officiel (eForms-SDK)
+except Exception:
+    pays_reference = None
 
 NOM_ONGLET_TED = "ted_radar"
 NOM_ONGLET_BM = "bm_radar"
@@ -269,6 +273,17 @@ def resoudre_pays(brut, source):
     cle2 = nom.lower().strip()
     if cle2 in ZONE_PAR_NOM:
         return ZONE_PAR_NOM[cle2]
+    # Fallback referentiel officiel (eForms-SDK) : un nom mal orthographie
+    # (accents, "Iraq" vs "Irak"...) est resolu en ISO3, puis rattache a sa
+    # zone si elle est connue. Ne s'active QUE sur les noms non deja mappes,
+    # donc n'altere aucun cas existant.
+    if pays_reference is not None:
+        try:
+            iso3 = pays_reference.resoudre(brut)
+        except Exception:
+            iso3 = None
+        if iso3 and iso3 in ZONE_PAR_ISO3:
+            return ZONE_PAR_ISO3[iso3]
     return (nom or brut, "Non classé")
 
 
