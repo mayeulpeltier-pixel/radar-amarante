@@ -268,30 +268,33 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python ifc_radar.py
 
-      # 4d-quinquies) PROZORRO (Ukraine) -- Vague 3. Marches publics NATIONAUX
-      #     ukrainiens (reconstruction), qu'aucune autre source ne remonte : TED
-      #     ignore le national UA. Feed OCDS public ouvert, lu en `descending`
-      #     avec pre-filtre `opt_fields` (on jette le belowThreshold, le bruit
-      #     local) ; le CPV est au format europeen, donc la doctrine CPV du coeur
-      #     TED est reutilisee. DOUBLE PASSE : avis (onglet dedie prozorro_radar,
-      #     pipeline LLM) ET attributions (titulaires awards[], onglet PARTAGE
-      #     attributions_radar, aucun cablage dashboard). Isole : un echec ici
-      #     n'affecte ni les autres collecteurs ni la publication.
-      #     NOUVELLE SOURCE => DEMARRE EN VERIFICATION (motif IsDB/IDB) :
-      #     RADAR_PROZORRO_DEBUG=1 n'ecrit RIEN, mesure l'entonnoir reel et DUMPE
-      #     la structure brute de awards[] pour valider le parsing des titulaires
-      #     AVANT toute ecriture. Passer a "0" une fois l'entonnoir et awards[]
-      #     valides sur donnees reelles. RADAR_PROZORRO=0 coupe la source.
-      - name: Collecter Prozorro (Ukraine)
+      # 4d-quinquies) Proparco (DFI francais, groupe AFD) -- Vague 3.
+      #     Entreprises PRIVEES financees par Proparco en zones a risque
+      #     (API Opendatasoft ouverte, maj mensuelle). Nominatif (client, pays,
+      #     secteur, montant). Cribles FI + perimetre + fenetre. Onglet dedie.
+      #     RADAR_PROPARCO_DEBUG=1 pour revalider ; RADAR_PROPARCO=0 pour couper.
+      - name: Collecter les projets Proparco (investissements prives FR)
         if: always() && steps.cle.outcome == 'success'
         env:
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          RADAR_PROZORRO_DEBUG: "1"
-          RADAR_PROZORRO_JEU: "tout"
-        run: python prozorro_radar.py
+        run: python proparco_radar.py
+
+      # 4d-sexies) DFC (U.S. International Development Finance Corp) -- Vague 3.
+      #     Borrowers PRIVES finances par la DFC (mining, LNG, petrole, manuf.).
+      #     Excel annuel statique. Cribles FI (NAICS) + Fiscal Year + perimetre
+      #     + Redacted. Requiert openpyxl (dans requirements-radar.txt). Onglet
+      #     dedie. RADAR_DFC_DEBUG=1 pour revalider ; RADAR_DFC=0 pour couper.
+      - name: Collecter les projets DFC (investissements prives US)
+        if: always() && steps.cle.outcome == 'success'
+        env:
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python dfc_radar.py
 
       - name: Collecter les projets amont Banque Mondiale
         if: always() && steps.cle.outcome == 'success'
