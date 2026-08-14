@@ -251,7 +251,7 @@ def resoudre_pays(brut, source):
     brut = _txt(brut)
     if not brut:
         return ("Pays non précisé", "Non classé")
-    if source in ("TED", "AFDB", "ADB", "EBRD", "UNGM", "IDB", "BMP"):
+    if source in ("TED", "AFDB", "ADB", "EBRD", "UNGM", "IDB", "BMP", "PROPARCO", "DFC"):
         # Sources ISO : pays_execution stocke en code ISO3 (scoring direct).
         code = brut.split(",")[0].strip().upper()
         if code in ZONE_PAR_ISO3:
@@ -379,7 +379,7 @@ SANTE_CALME_JOURS = int(os.environ.get("RADAR_SANTE_CALME_JOURS") or "14")
 # Sources attendues, dans l'ordre d'affichage. Une source de cette liste ABSENTE
 # des leads s'affiche a 0 (c'est ainsi qu'une source morte se voit).
 CATALOGUE_SOURCES = ("TED", "BM", "AFDB", "ADB", "EBRD", "UNGM", "RW",
-                     "MIGA", "IFC", "IDB", "BMP", "ATTRIB", "PRIVÉ")
+                     "MIGA", "IFC", "PROPARCO", "DFC", "IDB", "BMP", "ATTRIB", "PRIVÉ")
 
 
 def sante_run(leads, aujourdhui=None):
@@ -533,7 +533,7 @@ def ligne_vers_lead(row, source):
         cible = _txt(row.get("cible_commerciale_reelle")) or \
             "Organisation qui recrute et déploie : viser direction sûreté / logistique / RH terrain."
         groupe = _txt(row.get("categorie")) or "humanitaire"
-    elif source in ("MIGA", "IFC"):
+    elif source in ("MIGA", "IFC", "PROPARCO", "DFC"):
         # Vague 2 : investisseur prive / entreprise projet qui deploie en
         # zone a risque (deja formule par le collecteur). Groupe = type de
         # document (SPI/ESRS = pre-board, signal precoce).
@@ -821,7 +821,7 @@ def construire_leads(lignes_ted, lignes_bm, lignes_prive=None,
                      lignes_afdb=None, lignes_adb=None, lignes_ebrd=None,
                      lignes_ungm=None, analyses_attrib=None,
                      lignes_miga=None, lignes_ifc=None, lignes_idb=None,
-                     lignes_bmp=None):
+                     lignes_bmp=None, lignes_proparco=None, lignes_dfc=None):
     """Fusionne les onglets (TED, Banque Mondiale, AfDB, ADB, EBRD, ReliefWeb,
     PRIVÉ/BITD), deduplique, trie. Pour les leads PRIVÉ, remonte le dirigeant
     (enrichissement) comme contact.
@@ -840,6 +840,8 @@ def construire_leads(lignes_ted, lignes_bm, lignes_prive=None,
     leads += [ligne_vers_lead(r, "IFC") for r in (lignes_ifc or [])]
     leads += [ligne_vers_lead(r, "IDB") for r in (lignes_idb or [])]
     leads += [ligne_vers_lead(r, "BMP") for r in (lignes_bmp or [])]
+    leads += [ligne_vers_lead(r, "PROPARCO") for r in (lignes_proparco or [])]
+    leads += [ligne_vers_lead(r, "DFC") for r in (lignes_dfc or [])]
     leads_prive = [ligne_vers_lead(r, "PRIVÉ") for r in (lignes_prive or [])]
 
     # Index d'enrichissement : clefs brutes (minuscules) + alias normalises,
@@ -1037,6 +1039,10 @@ def lire_onglets(sheet_id, fichier_cs):
     # AfDB/ADB. Son onglet `idb_radar` était collecté mais jamais lu (orphelin,
     # 10/08/2026). Branché ici. Les attributions IDB restent dans attributions_radar.
     lignes_idb = _lire_bailleur("idb_radar", "idb_radar", "TOUTES_COLONNES_IDB", "NOM_ONGLET")
+    # Vague 3 : Proparco (DFI FR) et DFC (DFI US) -- investissements prives
+    # nominatifs. Pays en ISO3 (comme AfDB/IDB). Onglets dedies.
+    lignes_proparco = _lire_bailleur("proparco_radar", "proparco_radar", "TOUTES_COLONNES", "NOM_ONGLET")
+    lignes_dfc = _lire_bailleur("dfc_radar", "dfc_radar", "TOUTES_COLONNES", "NOM_ONGLET")
 
     # Watchlist des cibles privees (comptes_cibles_bitd) : liste curee a la main
     # (oil & gas, BTP, luxe...). Lue telle quelle (colonnes libres), pour la
@@ -1126,7 +1132,7 @@ def lire_onglets(sheet_id, fichier_cs):
     return (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
             lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
             lignes_ungm, analyses_attrib, lignes_alertes, lignes_miga, lignes_ifc,
-            lignes_idb, lignes_bmp)
+            lignes_idb, lignes_bmp, lignes_proparco, lignes_dfc)
 
 
 def charger_leads(sheet_id, fichier_cs):
@@ -1153,12 +1159,13 @@ def charger_leads(sheet_id, fichier_cs):
     (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
      lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
      lignes_ungm, analyses_attrib, lignes_alertes, lignes_miga, lignes_ifc,
-     lignes_idb, lignes_bmp) = onglets
+     lignes_idb, lignes_bmp, lignes_proparco, lignes_dfc) = onglets
     leads = construire_leads(
         lignes_ted, lignes_bm, lignes_prive, enrichissement, lignes_attrib,
         lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_ungm,
         analyses_attrib, lignes_miga=lignes_miga, lignes_ifc=lignes_ifc,
-        lignes_idb=lignes_idb, lignes_bmp=lignes_bmp)
+        lignes_idb=lignes_idb, lignes_bmp=lignes_bmp,
+        lignes_proparco=lignes_proparco, lignes_dfc=lignes_dfc)
     return leads, onglets
 
 
@@ -1220,7 +1227,7 @@ BOOST_GEO_JOURS = int(os.environ.get("RADAR_BOOST_GEO_JOURS", "14"))
 BOOST_GEO_MAX = float(os.environ.get("RADAR_BOOST_GEO_MAX", "1.5"))   # sur sûreté
 # Familles boostables : les AVIS uniquement. PRIVÉ/ATTRIB ont d'autres baremes,
 # non comparables, et ne sont pas des « avis dans un pays qui bascule ».
-SRC_BOOSTABLES = {"TED", "BM", "AFDB", "ADB", "EBRD", "UNGM", "RW", "MIGA", "IFC", "IDB"}
+SRC_BOOSTABLES = {"TED", "BM", "AFDB", "ADB", "EBRD", "UNGM", "RW", "MIGA", "IFC", "IDB", "PROPARCO", "DFC"}
 
 
 def _boost_par_pays(alertes, aujourdhui=None):
@@ -1404,7 +1411,7 @@ def main():
     (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
      lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
      lignes_ungm, analyses_attrib, lignes_alertes, lignes_miga, lignes_ifc,
-     lignes_idb, lignes_bmp) = onglets
+     lignes_idb, lignes_bmp, lignes_proparco, lignes_dfc) = onglets
 
     # Persistance de la tendance (best-effort) : le snapshot sante par source
     # s'accumule dans 'runs_radar' une fois par run (etape "Generer le tableau
@@ -1901,7 +1908,7 @@ const SUIVI_ON = !!SUIVI_URL || API_STATUT;
 // Correspondance source -> onglet, cle d'ecriture dans radar_statuts.
 const ONGLET_SRC = {TED:'ted_radar',BM:'bm_radar',AFDB:'afdb_radar',ADB:'adb_radar',
   EBRD:'ebrd_radar',UNGM:'ungm_radar',RW:'reliefweb_radar','PRIVÉ':'prive_radar',
-  ATTRIB:'attributions_radar',MIGA:'miga_radar',IFC:'ifc_radar',IDB:'idb_radar',BMP:'bm_projets_radar'};
+  ATTRIB:'attributions_radar',MIGA:'miga_radar',IFC:'ifc_radar',IDB:'idb_radar',BMP:'bm_projets_radar',PROPARCO:'proparco_radar',DFC:'dfc_radar'};
 // Statut CRM deja pose (serveur) : survit au changement de navigateur, ce que
 // le localStorage seul ne permettait pas.
 function dejaContacte(l){const s=String(l.statut||'').toLowerCase();
