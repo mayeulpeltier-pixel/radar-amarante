@@ -232,11 +232,14 @@ def lire_onglets_pg(conn):
     lignes_idb = _onglet(conn, "idb_radar")
     # BM Projects (amont) : projets approuves, aligne sur dash.lire_onglets.
     lignes_bmp = _onglet(conn, "bm_projets_radar")
+    # Vague 3 : Proparco (DFI FR) et DFC (DFI US), alignes sur dash.lire_onglets.
+    lignes_proparco = _onglet(conn, "proparco_radar")
+    lignes_dfc = _onglet(conn, "dfc_radar")
 
     return (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
             lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
             lignes_ungm, analyses_attrib, lignes_alertes, lignes_miga, lignes_ifc,
-            lignes_idb, lignes_bmp)
+            lignes_idb, lignes_bmp, lignes_proparco, lignes_dfc)
 
 
 # Quel champ humain pour quel onglet (avis = statut_suivi ; attributions =
@@ -268,7 +271,8 @@ def generer_page(conn):
     (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
      lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
      lignes_ungm, analyses_attrib, lignes_alertes,
-     lignes_miga, lignes_ifc, lignes_idb, lignes_bmp) = lire_onglets_pg(conn)
+     lignes_miga, lignes_ifc, lignes_idb, lignes_bmp,
+     lignes_proparco, lignes_dfc) = lire_onglets_pg(conn)
     superposer_statuts(conn, [
         ("ted_radar", lignes_ted), ("bm_radar", lignes_bm),
         ("prive_radar", lignes_prive), ("attributions_radar", lignes_attrib),
@@ -276,12 +280,14 @@ def generer_page(conn):
         ("adb_radar", lignes_adb), ("ebrd_radar", lignes_ebrd),
         ("ungm_radar", lignes_ungm), ("miga_radar", lignes_miga),
         ("ifc_radar", lignes_ifc), ("idb_radar", lignes_idb),
-        ("bm_projets_radar", lignes_bmp)])
+        ("bm_projets_radar", lignes_bmp),
+        ("proparco_radar", lignes_proparco), ("dfc_radar", lignes_dfc)])
     leads = dash.construire_leads(
         lignes_ted, lignes_bm, lignes_prive, enrichissement, lignes_attrib,
         lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_ungm,
         analyses_attrib, lignes_miga=lignes_miga, lignes_ifc=lignes_ifc,
-        lignes_idb=lignes_idb, lignes_bmp=lignes_bmp)
+        lignes_idb=lignes_idb, lignes_bmp=lignes_bmp,
+        lignes_proparco=lignes_proparco, lignes_dfc=lignes_dfc)
     # api_statut=True : sur l'application, le bouton ecrit aussi en base.
     return dash.generer_html(leads, lignes_watchlist, api_statut=True,
                              alertes=lignes_alertes)
