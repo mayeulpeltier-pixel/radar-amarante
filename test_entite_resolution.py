@@ -95,6 +95,16 @@ def _row_attrib(gagnant, pub):
             "lien_avis": "http://a/" + pub, "date_publication": date.today().isoformat()}
 
 
+def _row_dfi(nom, pub):
+    """Ligne d'une source DFI a sponsor prive (Proparco/DFC/IFC/MIGA)."""
+    return {"score_final": "6.0", "score_surete": "6.0", "score_commercial": "6.0",
+            "action_recommandee": "surveiller", "fenetre_action": "court_terme",
+            "titre": "Projet finance", "acheteur": nom, "pays_execution": "TUR",
+            "valeur_estimee": "70 M EUR", "justification": "j", "confiance": "0.8",
+            "modele": "m", "publication_number": pub, "lien_avis": "http://d/" + pub,
+            "date_detection": date.today().isoformat()}
+
+
 class TestEntCleSurLeads(unittest.TestCase):
     def test_chaque_lead_porte_ent_cle(self):
         leads = dash.construire_leads([], [], lignes_prive=[_row_prive("Acme Security Ltd", "P:1")])
@@ -130,3 +140,48 @@ class TestCablageJs(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestFicheDFI(unittest.TestCase):
+    """Roadmap #6 : les sources DFI a sponsor prive nourrissent les fiches."""
+
+    def test_lead_dfi_porte_entreprise(self):
+        # Un lead Proparco doit porter le sponsor dans `entreprise` (pour la
+        # fiche + l'enrichissement contact), pas seulement dans `agence`.
+        leads = dash.construire_leads([], [],
+            lignes_proparco=[_row_dfi("Enerjisa Enerji Uretim A.S.", "PP:1")])
+        self.assertTrue(leads)
+        self.assertEqual(leads[0]["src"], "PROPARCO")
+        self.assertTrue(leads[0]["entreprise"] and leads[0]["entreprise"] != "n.c.",
+                        "Lead DFI : entreprise doit porter le sponsor.")
+
+    def test_meme_societe_proparco_et_dfc_meme_cle(self):
+        # Enerjisa via Proparco ET via DFC (graphies differentes, accents,
+        # forme juridique) -> meme ent_cle -> une seule fiche.
+        leads = dash.construire_leads([], [],
+            lignes_proparco=[_row_dfi("Enerjisa Enerji Uretim A.S.", "PP:1")],
+            lignes_dfc=[_row_dfi("Enerjisa Enerji \u00dcretim A.\u015e.", "DFC:1")])
+        cles = {l["src"]: l["ent_cle"] for l in leads}
+        self.assertIn("PROPARCO", cles)
+        self.assertIn("DFC", cles)
+        self.assertEqual(cles["PROPARCO"], cles["DFC"],
+                         "Enerjisa via Proparco et DFC -> meme ent_cle (fusion).")
+
+    def test_dfi_et_prive_fusionnent(self):
+        # Une societe vue en signal PRIVE (presse) ET financee par DFC, sous le
+        # MEME nom (normalise), fusionne en une fiche. NB : la resolution est un
+        # match exact normalise (formes juridiques/accents retires), pas du
+        # sous-chaine : "Enerjisa" seul NE fusionne PAS avec le nom complet --
+        # choix sur : evite les faux positifs. Amelioration fuzzy = hors scope.
+        leads = dash.construire_leads([], [],
+            lignes_prive=[_row_prive("Enerjisa Enerji Uretim AS", "P:1")],
+            lignes_dfc=[_row_dfi("Enerjisa Enerji Uretim A.S.", "DFC:1")])
+        cles = {l["src"]: l["ent_cle"] for l in leads}
+        self.assertEqual(cles["PRIVÉ"], cles["DFC"],
+                         "Meme nom normalise sur deux sources -> meme fiche.")
+
+    def test_js_agrege_les_sources_dfi(self):
+        # Le JS de la fiche doit inclure le set SRC_DFI dans son filtre.
+        html = dash.generer_html(dash.construire_leads([], []))
+        self.assertIn("SRC_DFI", html)
+        self.assertIn("SRC_DFI.has(l.src)", html)
