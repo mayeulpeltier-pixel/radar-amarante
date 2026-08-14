@@ -187,6 +187,23 @@ def q3_titulaires(pub):
     )
 
 
+def q4_montant_total(pub):
+    # 10759-2026 n'a pas de montant par offre mais un epo:hasTotalAwardedValue.
+    # On revele sa structure (litteral direct ? noeud avec hasAmountValue /
+    # hasCurrency ?) pour caler le repli montant du collecteur.
+    return PREFIXES + (
+        "SELECT ?total ?p ?o WHERE {\n"
+        "  GRAPH ?g {\n"
+        "    ?notice a epo:Notice ;\n"
+        "            epo:hasNoticePublicationNumber ?pn .\n"
+        + _filtre_pn(pub) +
+        "    ?notice epo:hasTotalAwardedValue ?total .\n"
+        "    OPTIONAL { ?total ?p ?o . }\n"
+        "  }\n"
+        "} LIMIT 30"
+    )
+
+
 # --------------------------------------------------------------------------
 # ORCHESTRATION
 # --------------------------------------------------------------------------
@@ -218,6 +235,7 @@ def main():
             ("1. NOTICE par publication-number (" + PUB + ")", q1_notice(PUB)),
             ("2. PREDICATS du graphe de la notice (tous)", q2_predicats(PUB)),
             ("3. TITULAIRES (nom + montant + devise)", q3_titulaires(PUB)),
+            ("4. MONTANT TOTAL (structure de hasTotalAwardedValue)", q4_montant_total(PUB)),
         ]
 
     if DRYRUN:
