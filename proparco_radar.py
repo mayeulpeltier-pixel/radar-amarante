@@ -51,6 +51,10 @@ from datetime import date, datetime, timedelta
 
 import ted_complet_v14 as ted
 import radar_resilience
+try:
+    import pays_reference          # referentiel pays officiel (eForms-SDK)
+except Exception:
+    pays_reference = None
 
 # ===========================================================================
 # CONFIGURATION
@@ -130,7 +134,14 @@ CARTE_PAYS = _construire_carte_pays()
 
 
 def iso3_depuis_nom(nom_pays):
-    return CARTE_PAYS.get(_norm(nom_pays), "")
+    code = CARTE_PAYS.get(_norm(nom_pays), "")
+    if code:
+        return code
+    # Fallback referentiel officiel (eForms-SDK) : comble les variantes que la
+    # carte locale ratait (accents, "Iraq" vs "Irak", noms officiels UE).
+    if pays_reference is not None:
+        return pays_reference.resoudre(nom_pays) or ""
+    return ""
 
 
 def resoudre_pays(rec):
