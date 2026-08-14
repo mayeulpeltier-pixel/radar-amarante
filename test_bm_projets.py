@@ -159,7 +159,7 @@ class TestCablageDashboard(unittest.TestCase):
         import radar_dashboard as rd
         self.assertIn("BMP", rd.CATALOGUE_SOURCES)
 
-    def test_lire_onglets_dix_sept(self):
+    def test_lire_onglets_dix_neuf(self):
         import ast
         src = open("radar_dashboard.py", encoding="utf-8").read()
         arbre = ast.parse(src)
@@ -167,7 +167,7 @@ class TestCablageDashboard(unittest.TestCase):
                     if isinstance(n, ast.FunctionDef) and n.name == "lire_onglets")
         ret = next(n for n in ast.walk(fonc)
                    if isinstance(n, ast.Return) and isinstance(n.value, ast.Tuple))
-        self.assertEqual(len(ret.value.elts), 17)
+        self.assertEqual(len(ret.value.elts), 19)  # +Proparco +DFC (vague 3)
 
 
 if __name__ == "__main__":
