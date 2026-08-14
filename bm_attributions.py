@@ -262,6 +262,13 @@ TAUX_USD = {
     "SBD": 8.4, "VUV": 119.0, "WST": 2.7, "TOP": 2.4, "XPF": 110.0,
     "AMD": 390.0, "MDL": 17.5, "BAM": 1.8, "RSD": 108.0, "MKD": 57.0,
     "ALL": 90.0, "TMT": 3.5, "IRR": 42000.0, "TWD": 32.0,
+    # Complement issu du TED Open Data Service (exchange-rates.json, taux BCE) :
+    # devises UE-hors-euro et grandes devises absentes ci-dessus, qui peuvent
+    # apparaitre dans des attributions TED. Converties vers USD (unites / USD).
+    "AED": 3.67, "ANG": 1.79, "AUD": 1.53, "BGN": 1.80, "BRL": 5.64,
+    "CAD": 1.35, "CNY": 7.24, "CZK": 23.0, "DKK": 6.87, "HKD": 7.80,
+    "HUF": 368.0, "ISK": 137.0, "MYR": 4.38, "NOK": 10.82, "PLN": 3.95,
+    "RON": 4.58, "SEK": 10.45, "THB": 34.07,
 }
 
 
