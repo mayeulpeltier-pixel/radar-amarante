@@ -524,7 +524,7 @@ Description (source la plus riche quand elle est présente : conditions d'exécu
 # PARTIE 3 -- COLLECTE (Sprint 1, logique inchangee)
 # ===========================================================================
 
-def construire_requete(depuis_date=None):
+def construire_requete(depuis_date=None, jusqu_date=None, forcer_bornes=False):
     """Corps de requete TED.
 
     FILTRE DATE COTE SERVEUR (nouveau, active par RADAR_TED_FILTRE_DATE=1)
@@ -547,6 +547,11 @@ def construire_requete(depuis_date=None):
     jamais les nouveaux.
 
     depuis_date : override AAAAMMJJ (tests). None -> today - NB_JOURS_FENETRE.
+    jusqu_date  : borne HAUTE optionnelle (AAAAMMJJ), utilisee par le backfill
+      par tranches (collecter_backfill) pour borner chaque fenetre.
+    forcer_bornes : le backfill impose ses bornes de date INDEPENDAMMENT du flag
+      RADAR_TED_FILTRE_DATE (c'est un mode explicite, pilote a la main). Le run
+      quotidien, lui, reste gouverne par le flag (garde-fou inchange).
 
     ACTIVATION PROGRESSIVE : defaut OFF. La syntaxe exacte du filtre doit etre
     validee sur un vrai run (RADAR_TED_FILTRE_DATE=1 en debug) avant de basculer
@@ -558,12 +563,15 @@ def construire_requete(depuis_date=None):
     query = "classification-cpv IN ({}) AND place-of-performance IN ({})".format(
         clause_cpv, clause_pays
     )
-    if os.environ.get("RADAR_TED_FILTRE_DATE", "0") != "0":
+    if forcer_bornes or os.environ.get("RADAR_TED_FILTRE_DATE", "0") != "0":
         if depuis_date is None:
             seuil = date.today() - timedelta(days=NB_JOURS_FENETRE)
             depuis_date = seuil.strftime("%Y%m%d")
-        query = "{} AND publication-date>={} SORT BY publication-date DESC".format(
-            query, depuis_date
+        clauses = ["publication-date>={}".format(depuis_date)]
+        if jusqu_date:
+            clauses.append("publication-date<={}".format(jusqu_date))
+        query = "{} AND {} SORT BY publication-date DESC".format(
+            query, " AND ".join(clauses)
         )
     return {
         "query": query,
@@ -824,6 +832,60 @@ def interroger_ted(corps_requete=None, max_pages=MAX_PAGES):
               ))
 
     return tous_resultats
+
+
+def _en_date(valeur):
+    """Accepte un objet date ou une chaine 'AAAA-MM-JJ...' -> date."""
+    if isinstance(valeur, date):
+        return valeur
+    return date.fromisoformat(str(valeur)[:10])
+
+
+def collecter_backfill(depuis, jusqu, pas_jours=7, max_pages=MAX_PAGES):
+    """Backfill par TRANCHES de dates (pepite 2, alternative a ITERATION).
+
+    POURQUOI (et pourquoi PAS ITERATION)
+    ------------------------------------
+    Le mode PAGE_NUMBER plafonne a 15 000 resultats par requete. Pour rejouer une
+    large plage historique (ou rattraper une longue panne), on ne force pas un
+    mode ITERATION dont le contrat n'a pas ete sonde : on DECOUPE la plage en
+    fenetres de `pas_jours` jours. Chaque tranche, bornee par
+    publication-date>=debut AND publication-date<=fin, ramene peu d'avis et tient
+    donc largement sous le plafond. Simple, robuste, et 100 % assis sur le filtre
+    date deja en place.
+
+    Tranches DISJOINTES ([J, J+pas-1], [J+pas, ...]) + dedup par
+    publication-number en filet (un avis republie ne compte qu'une fois). Les
+    avis sans numero sont conserves tels quels.
+
+    depuis, jusqu : date ou 'AAAA-MM-JJ'. Renvoie la liste agregee des avis bruts.
+    Exerce la meme syntaxe de bornes que la pepite 1 : la valider sur une tranche
+    courte confirme du meme coup le filtre date.
+    """
+    d0, d1 = _en_date(depuis), _en_date(jusqu)
+    if d0 > d1:
+        d0, d1 = d1, d0
+    pas = max(1, int(pas_jours))
+    par_numero = {}
+    sans_numero = []
+    cur = d0
+    n_tranches = 0
+    while cur <= d1:
+        fin = min(cur + timedelta(days=pas - 1), d1)
+        corps = construire_requete(
+            cur.strftime("%Y%m%d"), fin.strftime("%Y%m%d"), forcer_bornes=True)
+        lot = interroger_ted(corps, max_pages=max_pages)
+        n_tranches += 1
+        for avis in lot:
+            num = extraire_texte(avis.get("publication-number"))
+            if num:
+                par_numero.setdefault(num, avis)
+            else:
+                sans_numero.append(avis)
+        cur = fin + timedelta(days=1)
+    print("  Backfill : {} tranche(s) de {} j, {} avis unique(s) (+{} sans numero).".format(
+        n_tranches, pas, len(par_numero), len(sans_numero)))
+    return list(par_numero.values()) + sans_numero
 
 
 def extraire_texte(valeur):
@@ -2040,10 +2102,21 @@ def main():
         )
         return
 
-    print("Etape 1/2 -- Collecte TED Mode A (filtre CPV + pays + dedup)...")
-    avis_bruts = interroger_ted()
+    depuis_bf = os.environ.get("RADAR_TED_BACKFILL_DEPUIS")
+    if depuis_bf:
+        jusqu_bf = os.environ.get("RADAR_TED_BACKFILL_JUSQU") or date.today().isoformat()
+        pas_bf = int(os.environ.get("RADAR_TED_BACKFILL_PAS", "7"))
+        print("Etape 1/2 -- BACKFILL par tranches de dates : {} -> {} (pas {} j)...".format(
+            depuis_bf, jusqu_bf, pas_bf))
+        avis_bruts = collecter_backfill(depuis_bf, jusqu_bf, pas_jours=pas_bf)
+        # En backfill on veut TOUTE la fenetre demandee : le filet `recents` ne
+        # doit pas la recouper a today - NB_JOURS_FENETRE.
+        seuil = str(depuis_bf)[:10]
+    else:
+        print("Etape 1/2 -- Collecte TED Mode A (filtre CPV + pays + dedup)...")
+        avis_bruts = interroger_ted()
+        seuil = (date.today() - timedelta(days=NB_JOURS_FENETRE)).isoformat()
     pertinents = [a for a in avis_bruts if avis_correspond(a)]
-    seuil = (date.today() - timedelta(days=NB_JOURS_FENETRE)).isoformat()
     recents = [a for a in pertinents if extraire_texte(a.get("publication-date")) >= seuil]
     avis_normalises = [normaliser(a) for a in recents]
     print("Mode A -- Bruts : {} | pertinents : {} | dans la fenetre : {}".format(
