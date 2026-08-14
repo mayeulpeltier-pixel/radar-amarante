@@ -1,0 +1,34 @@
+name: Sonde SPARQL titulaires (jetable)
+# Sonde l'endpoint SPARQL public de l'Office des Publications pour voir si l'on
+# peut recuperer les TITULAIRES d'une attribution TED (nom, montant, devise) de
+# maniere structuree, et ainsi remplacer le parsing PDF regex de
+# ted_complet_attributions. Mode DEBUG : aucune ecriture, aucun secret.
+#
+# A lancer a la main (onglet Actions -> "Sonde SPARQL titulaires" -> Run) en
+# fournissant un vrai publication-number pris dans l'onglet attributions_radar.
+# A SUPPRIMER une fois la voie SPARQL tranchee.
+on:
+  workflow_dispatch:
+    inputs:
+      pub:
+        description: "publication-number d'une attribution TED (ex 00123456-2024)"
+        required: false
+        default: ""
+
+jobs:
+  sonde-sparql:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer requests
+        run: pip install requests
+      - name: Sonder l'endpoint SPARQL (aucune ecriture)
+        env:
+          SONDE_PUB: ${{ github.event.inputs.pub }}
+        run: python sonde_sparql.py
