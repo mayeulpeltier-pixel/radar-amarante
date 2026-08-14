@@ -188,19 +188,35 @@ def q3_titulaires(pub):
 
 
 def q4_montant_total(pub):
-    # 10759-2026 n'a pas de montant par offre mais un epo:hasTotalAwardedValue.
-    # On revele sa structure (litteral direct ? noeud avec hasAmountValue /
-    # hasCurrency ?) pour caler le repli montant du collecteur.
+    # hasTotalAwardedValue est porte par un noeud intermediaire (pas ?notice) :
+    # on le cherche sur N'IMPORTE quel sujet ?x du graphe, et on deplie ?total.
     return PREFIXES + (
         "SELECT ?total ?p ?o WHERE {\n"
         "  GRAPH ?g {\n"
         "    ?notice a epo:Notice ;\n"
         "            epo:hasNoticePublicationNumber ?pn .\n"
         + _filtre_pn(pub) +
-        "    ?notice epo:hasTotalAwardedValue ?total .\n"
+        "    ?x epo:hasTotalAwardedValue ?total .\n"
         "    OPTIONAL { ?total ?p ?o . }\n"
         "  }\n"
         "} LIMIT 30"
+    )
+
+
+def q5_noeud_monetaire(pub):
+    # hasAmountValue est absent des predicats mais hasCurrency present : on
+    # deplie un noeud porteur de devise pour voir SOUS QUEL predicat est le
+    # montant (le nombre qui accompagne la devise).
+    return PREFIXES + (
+        "SELECT ?mv ?p ?o WHERE {\n"
+        "  GRAPH ?g {\n"
+        "    ?notice a epo:Notice ;\n"
+        "            epo:hasNoticePublicationNumber ?pn .\n"
+        + _filtre_pn(pub) +
+        "    ?mv epo:hasCurrency ?cur .\n"
+        "    ?mv ?p ?o .\n"
+        "  }\n"
+        "} LIMIT 40"
     )
 
 
@@ -236,6 +252,7 @@ def main():
             ("2. PREDICATS du graphe de la notice (tous)", q2_predicats(PUB)),
             ("3. TITULAIRES (nom + montant + devise)", q3_titulaires(PUB)),
             ("4. MONTANT TOTAL (structure de hasTotalAwardedValue)", q4_montant_total(PUB)),
+            ("5. NOEUD MONETAIRE (ou est le montant sous hasCurrency)", q5_noeud_monetaire(PUB)),
         ]
 
     if DRYRUN:
