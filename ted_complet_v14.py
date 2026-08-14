@@ -510,12 +510,47 @@ Description (source la plus riche quand elle est présente : conditions d'exécu
 # PARTIE 3 -- COLLECTE (Sprint 1, logique inchangee)
 # ===========================================================================
 
-def construire_requete():
+def construire_requete(depuis_date=None):
+    """Corps de requete TED.
+
+    FILTRE DATE COTE SERVEUR (nouveau, active par RADAR_TED_FILTRE_DATE=1)
+    --------------------------------------------------------------------
+    Historiquement, on tirait TOUT le stock ACTIVE (jusqu'a MAX_PAGES), puis on
+    coupait cote client sur NB_JOURS_FENETRE. Deux defauts :
+      1. TROU MAX_PAGES : si le stock ACTIVE matchant CPV+pays depassait 5 pages
+         AVANT d'atteindre la fenetre, des avis recents pertinents etaient rates
+         (le propre commentaire d'interroger_ted le reconnaissait).
+      2. Volume tire inutilement large -> pression 429/503 accrue.
+
+    En demandant directement a TED `publication-date>=seuil`, on ne ramene que la
+    fenetre utile. Le filtre client `recents` du main() reste en FILET (ceinture
+    + bretelles) : si TED elargit un poil, on recoupe cote client.
+
+    Tri DESCENDANT (et non ascendant comme un ETL classique type Singer) : c'est
+    un radar, on veut le plus FRAIS d'abord. Si on plafonne malgre tout sur une
+    fenetre tres chargee, on sacrifie les avis LES PLUS ANCIENS de la fenetre
+    (souvent deja vus au run precedent, donc en memoire publication_number),
+    jamais les nouveaux.
+
+    depuis_date : override AAAAMMJJ (tests). None -> today - NB_JOURS_FENETRE.
+
+    ACTIVATION PROGRESSIVE : defaut OFF. La syntaxe exacte du filtre doit etre
+    validee sur un vrai run (RADAR_TED_FILTRE_DATE=1 en debug) avant de basculer
+    le defaut, car une clause mal formee ferait rejeter TOUTE la requete par TED
+    (400). Tant que le flag est absent/0, le comportement est identique a avant.
+    """
     clause_cpv = " ".join(CODES_CPV)
     clause_pays = " ".join(CODES_PAYS_SUIVIS)
     query = "classification-cpv IN ({}) AND place-of-performance IN ({})".format(
         clause_cpv, clause_pays
     )
+    if os.environ.get("RADAR_TED_FILTRE_DATE", "0") != "0":
+        if depuis_date is None:
+            seuil = date.today() - timedelta(days=NB_JOURS_FENETRE)
+            depuis_date = seuil.strftime("%Y%m%d")
+        query = "{} AND publication-date>={} SORT BY publication-date DESC".format(
+            query, depuis_date
+        )
     return {
         "query": query,
         "fields": [
