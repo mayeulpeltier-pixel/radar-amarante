@@ -18,9 +18,14 @@ import ted_complet_v14 as ted
 # --- Fausse session TED (aucun reseau) ------------------------------------
 
 class _FauxRepJSON:
-    """Reponse minimale imitant requests.Response cote TED."""
-    def __init__(self, notices):
+    """Reponse minimale imitant requests.Response cote TED.
+
+    status_code est requis depuis l'ajout de poster_ted (failover), qui
+    l'inspecte pour decider d'une bascule d'endpoint. 200 = pas de bascule.
+    """
+    def __init__(self, notices, status=200):
         self._notices = notices
+        self.status_code = status
 
     def raise_for_status(self):
         return None
