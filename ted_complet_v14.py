@@ -50,6 +50,14 @@ import radar_resilience  # retry Sheet 503/429
 # ===========================================================================
 
 TED_ENDPOINT = "https://api.ted.europa.eu/v3/notices/search"
+# Endpoint secondaire OFFICIEL (doc TED + Q&A ateliers reutilisateurs OP-EU) :
+# meme service, meme schema, publie comme URL de repli de la primaire. Sert de
+# FAILOVER quand la primaire est injoignable (timeout/connexion) ou en 5xx
+# persistant (retries urllib3 deja epuises). Ajout Pareto : si la primaire
+# repond, le comportement est strictement identique a avant ; la bascule ne se
+# declenche que sur echec reel, donc le pire cas vaut le comportement actuel.
+TED_ENDPOINT_SECONDAIRE = "https://tedweb.api.ted.europa.eu/v3/notices/search"
+TED_ENDPOINTS = [TED_ENDPOINT, TED_ENDPOINT_SECONDAIRE]
 
 CODES_CPV = [
     "71520000", "71247000", "71521000", "71300000", "71351000",
@@ -612,6 +620,48 @@ def session_robuste():
     return session
 
 
+def poster_ted(corps, timeout=30):
+    """POST vers TED avec bascule automatique sur l'endpoint secondaire.
+
+    Deux niveaux de resilience empiles :
+      1. session_robuste() retente deja, sur la MEME url, les 429/5xx et les
+         coupures transitoires (urllib3 Retry, POST autorise).
+      2. poster_ted intervient AU-DESSUS : si, malgre ces reessais, la primaire
+         reste injoignable (exception reseau/timeout) ou renvoie un 5xx, on
+         rejoue la requete sur l'endpoint secondaire officiel.
+
+    Ce qui NE declenche PAS de bascule : un 4xx (400, 401, 403, 404). C'est la
+    requete qui est en cause, pas l'endpoint -- les deux URLs repondront pareil,
+    et surtout la logique de degradation de champs d'interroger_ted DOIT voir le
+    400. On retourne donc la reponse telle quelle et l'appelant la gere.
+
+    Renvoie l'objet reponse (comme session.post). Si TOUS les endpoints echouent
+    par exception, la derniere exception est propagee (comportement identique a
+    l'ancien appel direct a un endpoint unique).
+    """
+    session = session_robuste()
+    reponse = None
+    for i, url in enumerate(TED_ENDPOINTS):
+        dernier = (i == len(TED_ENDPOINTS) - 1)
+        try:
+            reponse = session.post(url, json=corps, timeout=timeout)
+        except requests.exceptions.RequestException as e:
+            if dernier:
+                raise
+            print("  (info) TED : {} injoignable ({}), bascule sur l'endpoint "
+                  "secondaire.".format(url, type(e).__name__))
+            continue
+        # Reponse recue. Un 5xx PERSISTANT (retries deja epuises, ou statut hors
+        # forcelist) signale un serveur en carafe : on tente le suivant s'il en
+        # reste un. Un 4xx passe ici sans bascule (retour tel quel plus bas).
+        if reponse.status_code >= 500 and not dernier:
+            print("  (info) TED : {} en erreur {}, bascule sur l'endpoint "
+                  "secondaire.".format(url, reponse.status_code))
+            continue
+        return reponse
+    return reponse  # atteint seulement si le dernier endpoint renvoie un 5xx
+
+
 def interroger_ted(corps_requete=None, max_pages=MAX_PAGES):
     """Recupere TOUTES les pages disponibles (jusqu'a max_pages), pas
     seulement la premiere. CORRECTION (observe en conditions reelles) :
@@ -651,7 +701,7 @@ def interroger_ted(corps_requete=None, max_pages=MAX_PAGES):
             reponse = None
             for niveau in ("complet", "desc", "base"):
                 try:
-                    reponse = session_robuste().post(TED_ENDPOINT, json=corps_pour(niveau, page), timeout=30)
+                    reponse = poster_ted(corps_pour(niveau, page), timeout=30)
                     reponse.raise_for_status()
                     _NIVEAU_ENRICHISSEMENT = niveau
                     if niveau == "desc":
@@ -670,9 +720,7 @@ def interroger_ted(corps_requete=None, max_pages=MAX_PAGES):
                 # Meme le jeu de base echoue : ce n'est pas un probleme de champ.
                 raise RuntimeError("Requete TED en echec meme sans champ optionnel.")
         else:
-            reponse = session_robuste().post(
-                TED_ENDPOINT, json=corps_pour(_NIVEAU_ENRICHISSEMENT, page), timeout=30
-            )
+            reponse = poster_ted(corps_pour(_NIVEAU_ENRICHISSEMENT, page), timeout=30)
             reponse.raise_for_status()
         corps = reponse.json()
 
