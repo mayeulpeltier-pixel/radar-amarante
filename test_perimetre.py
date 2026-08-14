@@ -30,9 +30,10 @@ import ted_complet_v14 as ted
 ROUGES = {"MEX": "Mexique", "VEN": "Venezuela", "ECU": "Equateur",
           "HND": "Honduras"}
 ORANGES = {"COL": "Colombie", "GTM": "Guatemala", "PER": "Perou",
-           "BOL": "Bolivie", "IDN": "Indonesie"}
+           "BOL": "Bolivie", "IDN": "Indonesie",
+           "SLV": "Salvador", "NIC": "Nicaragua"}
 COUVERTS_RISQUE_FAIBLE = {"BRA": "Bresil", "ARG": "Argentine", "CHL": "Chili",
-                          "MNG": "Mongolie"}
+                          "MNG": "Mongolie", "PAN": "Panama"}
 
 
 class TestGrilleDeRisque(unittest.TestCase):
