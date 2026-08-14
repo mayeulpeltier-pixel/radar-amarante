@@ -78,5 +78,45 @@ class TestCablageDetectionPresse(unittest.TestCase):
             "Ouverture d'un bureau commercial a Lyon, France"))
 
 
+class TestCablageDashboard(unittest.TestCase):
+    """Le fallback officiel dans resoudre_pays doit rattacher a sa zone un nom
+    BM/RW mal orthographie, sans casser les cas deja mappes."""
+
+    def setUp(self):
+        import radar_dashboard
+        self.d = radar_dashboard
+
+    def test_nom_officiel_non_mappe_rattache_a_sa_zone(self):
+        # "Iraq" (forme UE) n'est pas dans ZONE_PAR_NOM -> avant : Non classe.
+        nom, zone = self.d.resoudre_pays("Iraq", "BM")
+        self.assertNotEqual(zone, "Non classé")
+
+    def test_accent_rattache_a_sa_zone(self):
+        nom, zone = self.d.resoudre_pays("Équateur", "RW")
+        self.assertNotEqual(zone, "Non classé")
+
+    def test_nom_inconnu_reste_non_classe(self):
+        nom, zone = self.d.resoudre_pays("Wakanda", "BM")
+        self.assertEqual(zone, "Non classé")
+
+    def test_source_iso_inchangee(self):
+        # La branche ISO (TED/UNGM...) ne doit pas etre affectee.
+        nom, zone = self.d.resoudre_pays("AFG", "UNGM")
+        self.assertEqual(nom, "Afghanistan")
+
+
+class TestCablageProparco(unittest.TestCase):
+    def setUp(self):
+        import proparco_radar
+        self.p = proparco_radar
+
+    def test_fallback_officiel_sur_variante(self):
+        self.assertEqual(self.p.iso3_depuis_nom("Iraq"), "IRQ")
+        self.assertEqual(self.p.iso3_depuis_nom("Équateur"), "ECU")
+
+    def test_inconnu_renvoie_chaine_vide(self):
+        self.assertEqual(self.p.iso3_depuis_nom("Wakanda"), "")
+
+
 if __name__ == "__main__":
     unittest.main()
