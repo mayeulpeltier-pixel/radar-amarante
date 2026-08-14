@@ -66,6 +66,15 @@ class TestParsing(unittest.TestCase):
         p = st.parse_depuis_sparql("1-2026", fetch=lambda q: _reponse([]))
         self.assertIsNone(p)
 
+    def test_titulaire_sans_montant(self):
+        # Cas reel (ex. 10759-2026) : offre financiere non publiee -> le
+        # titulaire doit quand meme sortir, valeur vide.
+        b = [_binding("Yandalux Solar GmbH")]
+        p = st.parse_depuis_sparql("10759-2026", fetch=lambda q: _reponse(b))
+        self.assertEqual(len(p["gagnants"]), 1)
+        self.assertEqual(p["gagnants"][0]["nom"], "Yandalux Solar GmbH")
+        self.assertEqual(p["gagnants"][0]["valeur"], "")
+
     def test_disjoncteur_coupe(self):
         st._ETAT["coupe"] = True
         r = st.titulaires_par_pn("1-2026", fetch=lambda q: _reponse([_binding("X")]))
