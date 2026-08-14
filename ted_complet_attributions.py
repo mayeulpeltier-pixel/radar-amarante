@@ -50,6 +50,10 @@ try:
     import cpv_reference          # divisions CPV officielles (eForms-SDK)
 except Exception:                 # module absent : on garde la table metier seule
     cpv_reference = None
+try:
+    import sparql_titulaires      # titulaires via SPARQL (TED Open Data)
+except Exception:                 # module absent : parsing PDF seul
+    sparql_titulaires = None
 
 
 # ===========================================================================
@@ -369,6 +373,27 @@ def lire_notice(pub, fetch=None, session=None):
     return _pdf_en_texte(rep.content)
 
 
+def obtenir_gagnants(pub, fetch=None, session=None, fetch_sparql=None):
+    """Titulaires d'une attribution, au format de parser_gagnants.
+
+    SPARQL PRIORITAIRE (structure, fiable) : si le flag RADAR_SPARQL_TITULAIRES
+    est actif ET que le triplestore repond avec au moins un titulaire, on
+    utilise ce resultat. SINON on retombe sur le PDF (parsing regex), qui reste
+    le filet -- notamment pour un avis trop frais pour etre deja dans l'ODS.
+    `fetch` (PDF) et `fetch_sparql` (JSON SPARQL) sont injectables pour tests.
+    """
+    if sparql_titulaires is not None and getattr(sparql_titulaires, "ACTIF", False):
+        try:
+            parse = sparql_titulaires.parse_depuis_sparql(
+                pub, fetch=fetch_sparql, session=session)
+            if parse:
+                return parse
+        except Exception:
+            pass                   # SPARQL en echec : on bascule sur le PDF
+    texte = lire_notice(pub, fetch=fetch, session=session)
+    return parser_gagnants(texte)
+
+
 # ===========================================================================
 # PARTIE 5 -- NORMALISATION
 # ===========================================================================
@@ -595,8 +620,7 @@ def main():
     for i, n in enumerate(uniques, 1):
         pub = _val(n.get("publication-number"))
         try:
-            texte = lire_notice(pub)
-            parse = parser_gagnants(texte)
+            parse = obtenir_gagnants(pub)
         except Exception as e:
             print("  [{}/{}] {} : lecture impossible ({}).".format(i, len(uniques), pub, e))
             parse = {"gagnants": [], "total": "", "sous_traitance": False}
