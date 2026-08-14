@@ -191,13 +191,12 @@ def collecte_attributions(fetch=None, session=None):
     Degradation : si le filtre notice-type est rejete (400), on relance sans
     lui et on garde les attributions cote client (notice-type commence par
     'can'). `fetch` injectable pour tests : callable(payload)->dict JSON."""
-    session = session or ted.session_robuste()
-    url = ted.TED_ENDPOINT
-
     def appeler(payload):
         if fetch is not None:
             return fetch(payload)
-        rep = session.post(url, json=payload, timeout=45)
+        # Failover primaire -> secondaire mutualise avec le collecteur d'appels
+        # (ted.poster_ted). `session` (None en prod) est resolue par poster_ted.
+        rep = ted.poster_ted(payload, timeout=45, session=session)
         rep.raise_for_status()
         return rep.json()
 
