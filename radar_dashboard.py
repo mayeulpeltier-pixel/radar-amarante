@@ -1919,7 +1919,7 @@ const ONGLET_SRC = {TED:'ted_radar',BM:'bm_radar',AFDB:'afdb_radar',ADB:'adb_rad
 function dejaContacte(l){const s=String(l.statut||'').toLowerCase();
   return s.indexOf('contact')>=0||s.indexOf('gagn')>=0||s.indexOf('perd')>=0||s.indexOf('relanc')>=0;}
 const CONTACTES = new Set((()=>{try{return JSON.parse(localStorage.getItem('suivi_contactes')||'[]')}catch(e){return[]}})());
-const SRC_SUIVI = {TED:'TED',BM:'Banque Mondiale','PRIVÉ':'Privé BITD',RW:'ReliefWeb',ONG:'ReliefWeb'};
+const SRC_SUIVI = {TED:'TED',BM:'Banque Mondiale','PRIVÉ':'Privé BITD',RW:'ReliefWeb',ONG:'ReliefWeb',PROPARCO:'Proparco',DFC:'DFC'};
 function leadId(l){return l.pub||l.lien||(l.src+'|'+l.pays+'|'+l.agence+'|'+l.titre);}
 // --- Ecarter une opportunite « pas pertinente » (12/08/2026) ---
 // Bouton -> statut 'non_pertinent' + RAISON. Le lead disparait des vues (masque)
@@ -2343,7 +2343,7 @@ function buildPeriod(){
   }));
 }
 
-const SRC_NOMS_META={TED:'TED',BM:'Banque Mondiale',AFDB:'AfDB',ADB:'ADB',EBRD:'EBRD',UNGM:'UNGM (agences ONU)',RW:'ReliefWeb','PRIVÉ':'Privé (BITD)',ATTRIB:'Titulaires',MIGA:'MIGA (garanties)',IFC:'IFC (invest. privé)',IDB:'IDB (Amérique latine)',BMP:'BM Projets (amont)'};
+const SRC_NOMS_META={TED:'TED',BM:'Banque Mondiale',AFDB:'AfDB',ADB:'ADB',EBRD:'EBRD',UNGM:'UNGM (agences ONU)',RW:'ReliefWeb','PRIVÉ':'Privé (BITD)',ATTRIB:'Titulaires',MIGA:'MIGA (garanties)',IFC:'IFC (invest. privé)',IDB:'IDB (Amérique latine)',BMP:'BM Projets (amont)',PROPARCO:'Proparco (invest. privé FR)',DFC:'DFC (invest. privé US)'};
 const SRC_PRESENTES=[...new Set(LEADS.map(l=>l.src))].map(s=>SRC_NOMS_META[s]||s);
 document.getElementById('runmeta').innerHTML =
   'Run du <b>'+META.date+'</b><br>'+META.total+' avis analysés<br>Sources : '+(SRC_PRESENTES.join(', ')||'aucune');
