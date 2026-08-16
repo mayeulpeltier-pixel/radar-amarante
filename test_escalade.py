@@ -27,11 +27,6 @@ Le critere vit desormais dans UNE fonction du coeur,
 `ted.escalade_pour_securite`, et ce fichier verrouille les deux choses :
 son comportement, et son CABLAGE effectif dans chaque collecteur.
 
-Note sur `ted_complet_boamp.py` : il porte lui aussi une copie du critere,
-mais il est CODE MORT (absent de radar_run.py, de radar.yml, et importe par
-aucun module). Il n'est donc pas cable ici. Voir le point 9 de la feuille de
-route (suppression du code mort).
-
 Aucun appel reseau ni LLM.
 """
 
