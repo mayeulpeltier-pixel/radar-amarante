@@ -1,11 +1,11 @@
-name: Sonde winner-status
+name: Sonde winner-status v2
 # Diagnostic ponctuel, DECLENCHEMENT MANUEL UNIQUEMENT (workflow_dispatch).
 # Ne touche a rien : ni Google Sheet, ni Postgres, ni etat, ni dashboard.
 # Verifie si l'API search TED expose le statut de selection du laureat
-# (BT-142 / winner-selection-status). Sonde jetable : supprimer une fois le
+# (catalogue champs + structure multi-lots + montant titulaire). Sonde jetable : supprimer une fois le
 # verdict rendu.
 #
-# UTILISATION : onglet Actions > "Sonde winner-status" > Run workflow.
+# UTILISATION : onglet Actions > "Sonde winner-status v2" > Run workflow.
 # Option pub : cibler une attribution precise (ex 10759-2026) ; vide = auto.
 on:
   workflow_dispatch:
@@ -35,4 +35,4 @@ jobs:
         env:
           SONDE_PUB: ${{ github.event.inputs.pub }}
           SONDE_WINNER_DRYRUN: ${{ github.event.inputs.dryrun }}
-        run: python sonde_winner_status.py
+        run: python sonde_winner_status_v2.py
