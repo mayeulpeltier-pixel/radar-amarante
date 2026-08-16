@@ -159,5 +159,23 @@ class TestIntegrite(unittest.TestCase):
         self.assertTrue(lead["analysee"])
 
 
+class TestRenouvellementExpose(unittest.TestCase):
+    """Le lead ATTRIB doit exposer les champs de renouvellement (calcules a la
+    collecte via SPARQL) pour que le dashboard affiche le badge d'echeance."""
+
+    def test_champs_exposes_quand_presents(self):
+        row = dict(ATTRIB, fin_contrat="2027-06-01",
+                   mois_avant_fin=9.5, statut_renouv="a_venir")
+        lead = dash.attribution_vers_lead(row)
+        self.assertEqual(lead["fin_contrat"], "2027-06-01")
+        self.assertEqual(lead["mois_avant_fin"], 9.5)
+        self.assertEqual(lead["statut_renouv"], "a_venir")
+
+    def test_champs_vides_quand_absents(self):
+        lead = dash.attribution_vers_lead(ATTRIB)
+        self.assertEqual(lead["statut_renouv"], "")
+        self.assertEqual(lead["fin_contrat"], "")
+
+
 if __name__ == "__main__":
     unittest.main()
