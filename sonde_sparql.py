@@ -61,6 +61,7 @@ PREFIXES = (
     "PREFIX adms: <http://www.w3.org/ns/adms#>\n"
     "PREFIX epo: <http://data.europa.eu/a4g/ontology#>\n"
     "PREFIX skos: <http://www.w3.org/2004/02/skos/core#>\n"
+    "PREFIX time: <http://www.w3.org/2006/time#>\n"
 )
 
 
@@ -220,6 +221,28 @@ def q5_noeud_monetaire(pub):
     )
 
 
+def q6_renouvellement(pub):
+    # Date de conclusion + duree du contrat -> permet de calculer la date de
+    # FIN estimee, base de la detection de renouvellement (alerter avant
+    # l'echeance). Predicats reperes a l'etape 2 : hasContractConclusionDate,
+    # definesContractDuration -> time:numericDuration + time:unitType.
+    return PREFIXES + (
+        "SELECT ?conclusion ?dureeVal ?dureeUnit WHERE {\n"
+        "  GRAPH ?g {\n"
+        "    ?notice a epo:Notice ;\n"
+        "            epo:hasNoticePublicationNumber ?pn .\n"
+        + _filtre_pn(pub) +
+        "    OPTIONAL { ?a epo:hasContractConclusionDate ?conclusion . }\n"
+        "    OPTIONAL {\n"
+        "      ?b epo:definesContractDuration ?dur .\n"
+        "      ?dur time:numericDuration ?dureeVal .\n"
+        "      OPTIONAL { ?dur time:unitType ?dureeUnit . }\n"
+        "    }\n"
+        "  }\n"
+        "} LIMIT 20"
+    )
+
+
 # --------------------------------------------------------------------------
 # ORCHESTRATION
 # --------------------------------------------------------------------------
@@ -253,6 +276,7 @@ def main():
             ("3. TITULAIRES (nom + montant + devise)", q3_titulaires(PUB)),
             ("4. MONTANT TOTAL (structure de hasTotalAwardedValue)", q4_montant_total(PUB)),
             ("5. NOEUD MONETAIRE (ou est le montant sous hasCurrency)", q5_noeud_monetaire(PUB)),
+            ("6. RENOUVELLEMENT (date de conclusion + duree du contrat)", q6_renouvellement(PUB)),
         ]
 
     if DRYRUN:
