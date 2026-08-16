@@ -488,5 +488,47 @@ class TestRattrapageIntegration(unittest.TestCase):
         self.assertNotIn("libre", st.inventaire(self.conn))
 
 
+class TestVuesAnalytiques(unittest.TestCase):
+    """Vues SQL posees sur le JSONB (palier 3). Tests PURS : on verifie la
+    definition et l'execution, sans base (l'integration contre un vrai Postgres
+    est couverte par la reexecution idempotente d'initialiser)."""
+
+    def test_les_trois_vues_sont_definies(self):
+        for v in ("v_attributions", "v_incumbents", "v_renouvellements"):
+            self.assertIn("CREATE VIEW " + v, st.VUES_SQL)
+
+    def test_vues_sur_le_bon_onglet_et_champs(self):
+        self.assertIn("attributions_radar", st.VUES_SQL)
+        self.assertIn("gagnant", st.VUES_SQL)
+        self.assertIn("statut_renouv", st.VUES_SQL)
+
+    def test_recreation_idempotente(self):
+        # DROP VIEW IF EXISTS avant chaque CREATE -> rejouable sans erreur.
+        self.assertEqual(st.VUES_SQL.count("DROP VIEW IF EXISTS"), 3)
+
+    def test_initialiser_execute_schema_puis_vues(self):
+        executes = []
+
+        class _Cur:
+            def __enter__(self_):
+                return self_
+
+            def __exit__(self_, *a):
+                return False
+
+            def execute(self_, sql):
+                executes.append(sql)
+
+        class _Conn:
+            def cursor(self_):
+                return _Cur()
+
+        st.initialiser(_Conn())
+        self.assertIn(st.SCHEMA_SQL, executes)
+        self.assertIn(st.VUES_SQL, executes)
+        # Les tables avant les vues (une vue qui precede sa table echouerait).
+        self.assertLess(executes.index(st.SCHEMA_SQL), executes.index(st.VUES_SQL))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
