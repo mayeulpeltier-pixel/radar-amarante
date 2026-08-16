@@ -1853,6 +1853,7 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .fiche .fsrc.titulaire{color:#e08e98;border-color:rgba(224,142,152,.45)}
   .fiche .fsrc.signal{color:#dcb079;border-color:rgba(200,137,59,.4)}
   .fiche .fsrc.dfi{color:#8fb9d9;border-color:rgba(143,185,217,.4)}
+  .fiche .fincumbent{font-family:var(--mono);font-size:0.5rem;letter-spacing:.08em;text-transform:uppercase;padding:2px 6px;border-radius:3px;white-space:nowrap;background:rgba(192,57,43,0.16);color:#f0a090;border:1px solid rgba(192,57,43,.5);font-weight:600}
   .fiche .fsig{border-top:1px solid var(--line);margin-top:12px;padding-top:10px;display:flex;flex-direction:column;gap:7px}
   .fiche .fsr{display:flex;align-items:center;gap:10px;font-size:12.5px}
   .fiche .fsr .fsi{color:var(--bone);flex:1;min-width:0}
@@ -2233,7 +2234,8 @@ function finaliserFiche(f){
   const sectClasses=[...(f.sectSet||new Set())];
   return Object.assign(f,{zones:[...f.zones],secteurs:[...f.secteurs],
     sectClasses,sectPrimary:sectClasses[0]||'Autre',
-    prio,enr,repr,meilleur,dernier,analysee,n:f.signaux.length});
+    prio,enr,repr,meilleur,dernier,analysee,n:f.signaux.length,
+    nAttrib:f.signaux.filter(s=>s.src==='ATTRIB').length});
 }
 function _triFiches(a,b){
   return (RANG_ACTION[b.prio]-RANG_ACTION[a.prio])
@@ -3049,6 +3051,9 @@ function ficheCard(f,i){
   const initiales=((f.nom||'?').split(/\s+/).slice(0,2).map(w=>w[0]||'').join('')||'?').toUpperCase();
   const prioLabel={contacter:'à contacter',surveiller:'à surveiller',ignorer:'faible',aucun:'sans signal'}[f.prio]||f.prio;
   const sansSignal=f.n===0;
+  const incumbent=f.nAttrib>=2
+    ? `<span class="fincumbent" title="Acteur récurrent : ${f.nAttrib} marchés remportés dans le périmètre (zones à risque, secteurs suivis). Incumbent à déplacer, ou partenaire local potentiel.">⚔ ${f.nAttrib} marchés gagnés</span>`
+    : '';
   const secteur=f.secteurs[0]||'secteur n.c.';
   const meta=sansSignal
     ? [secteur,'aucun signal récent'].join(' · ')
@@ -3066,7 +3071,7 @@ function ficheCard(f,i){
   return `<article class="fiche" data-fidx="${i}">
     <div class="fhead"><div class="fav">${esc(initiales)}</div>
       <div style="flex:1;min-width:0">
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="fnom">${esc(f.nom)}</span><span class="fprio ${f.prio}">${prioLabel}</span>${(f.srcs||[]).map(s=>`<span class="fsrc ${s}">${({watchlist:'Watchlist',dfi:'Financement DFI',signal:'Signal',titulaire:'Titulaire'})[s]||s}</span>`).join('')}</div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="fnom">${esc(f.nom)}</span><span class="fprio ${f.prio}">${prioLabel}</span>${incumbent}${(f.srcs||[]).map(s=>`<span class="fsrc ${s}">${({watchlist:'Watchlist',dfi:'Financement DFI',signal:'Signal',titulaire:'Titulaire'})[s]||s}</span>`).join('')}</div>
         <div class="fmeta">${esc(meta)}</div>
       </div></div>
     ${sansSignal?'<div class="fnosig">Cible surveillée, aucun signal récent capté. Elle reste dans le radar dès qu\'une actualité tombe.</div>':`<div class="fsig">${sig}</div>`}
