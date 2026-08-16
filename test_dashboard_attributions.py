@@ -177,5 +177,16 @@ class TestRenouvellementExpose(unittest.TestCase):
         self.assertEqual(lead["fin_contrat"], "")
 
 
+class TestIncumbentAffichage(unittest.TestCase):
+    """Intelligence concurrents : le code du badge 'incumbent' (acteur
+    recurrent, N marches gagnes) doit etre present dans la page. Garde-fou
+    contre une suppression accidentelle du JS/CSS."""
+
+    def test_code_du_badge_present(self):
+        html = dash.generer_html([], [], alertes=[])
+        self.assertIn("fincumbent", html)      # CSS + rendu du badge
+        self.assertIn("nAttrib", html)         # compteur de marches ATTRIB
+
+
 if __name__ == "__main__":
     unittest.main()
