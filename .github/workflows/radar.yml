@@ -112,6 +112,11 @@ jobs:
           # Zero risque, reversible. Passer a "1" pour l'activer en direct, "0"
           # pour couper toute mesure. Le KPI apparait en fin de log du run.
           RADAR_RETROACTION: "ombre"
+          # Titulaires d'attribution via SPARQL (TED Open Data), prioritaire sur
+          # le parsing PDF, avec repli PDF automatique si l'ODS n'a pas l'avis
+          # ou si l'endpoint rame (disjoncteur). "1" active, "0" (ou ligne
+          # retiree) revient au PDF seul. Reversible sans autre changement.
+          RADAR_SPARQL_TITULAIRES: "1"
           ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
           ADZUNA_APP_KEY: ${{ secrets.ADZUNA_APP_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
