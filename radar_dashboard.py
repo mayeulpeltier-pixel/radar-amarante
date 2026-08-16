@@ -745,6 +745,11 @@ def attribution_vers_lead(row):
                   "zone à risque. À démarcher (direction sûreté / opérations)."),
         "justif": justif_socle, "grp": secteur, "lien": _txt(row.get("lien")),
         "valeur": valeur,
+        # Renouvellement (chantier renouvellement) : fin de contrat estimee +
+        # alerte, calcules a la collecte via SPARQL. Vides si non disponibles.
+        "fin_contrat": _txt(row.get("fin_contrat")),
+        "mois_avant_fin": row.get("mois_avant_fin", ""),
+        "statut_renouv": _txt(row.get("statut_renouv")),
         # Champs exposes a la lentille Titulaires (badge etranger, filtre),
         # renseignes des la collecte. L'analyse LLM les affinera si elle existe.
         "origine": origine_det, "etranger_titulaire": etranger_det,
@@ -1774,6 +1779,8 @@ GABARIT_HTML = r"""<!DOCTYPE html>
   .foot .act.surv:hover{border-color:rgba(120,170,190,0.5);color:#8fbccf}
   .badge.surveille{background:rgba(120,170,190,0.14);color:#8fbccf;border:1px solid rgba(120,170,190,0.45)}
   .badge.attribok{background:rgba(95,160,110,0.18);color:#86c596;border:1px solid rgba(95,160,110,0.55);font-weight:600}
+  .badge.renouv-imminent{background:rgba(224,142,152,0.18);color:#e08e98;border:1px solid rgba(224,142,152,0.55);font-weight:600}
+  .badge.renouv-a_venir{background:rgba(120,170,190,0.14);color:#8fbccf;border:1px solid rgba(120,170,190,0.45)}
   .surv-head{font-family:var(--mono);font-size:0.6rem;letter-spacing:0.14em;text-transform:uppercase;color:var(--bone-dim);margin:10px 0 4px}
   .surv-gagnant{font-family:var(--mono);font-size:0.66rem;color:#86c596}
   .surv-attente{font-family:var(--mono);font-size:0.6rem;letter-spacing:0.08em;text-transform:uppercase;color:var(--bone-faint)}
@@ -2706,6 +2713,15 @@ function badgeDeadline(l){
   return `<span class="jx ${cls}">J-${jr}</span>`;
 }
 
+function badgeRenouv(l){
+  // Attribution dont le contrat arrive a echeance : opportunite de
+  // renouvellement a travailler en amont. Rempli par SPARQL a la collecte.
+  if(!l.statut_renouv)return '';
+  const m=l.mois_avant_fin;
+  const txt=(m!==''&&m!=null)?`⏳ expire dans ${Math.round(m)} mois`:'⏳ renouvellement';
+  return `<span class="badge renouv-${l.statut_renouv}" title="Contrat en cours arrivant a echeance (fin estimee ${esc(l.fin_contrat||'n.c.')}). Opportunite de renouvellement : approcher l'acheteur avant la relance.">${txt}</span>`;
+}
+
 // ===================== REGROUPEMENT (« Grouper par ») =====================
 // Clé de groupe d'un avis / d'une fiche selon state.group. Retourne un libellé
 // lisible ; l'ordre des groupes suit ORDRE_ZONES pour la zone, sinon la taille.
@@ -3011,7 +3027,7 @@ function leadCard(l,i){
       <div class="lhead"><div class="lmeta"><span class="src ${l.src.toLowerCase()}">${SRC_LABEL[l.src]||l.src}</span><span class="pays">${esc(l.pays)}</span><span>· ${esc(l.zone)}</span></div>
       <div class="scorebox"><div class="sf">${scoreBase}${l.final.toFixed(1)}</div><div class="sd">sûreté ${l.surete.toFixed(1)} · com ${l.comm.toFixed(1)}</div><div class="se">${echelleLabel(l)}</div></div></div>
       <h3 class="ltitle">${esc(l.titre)}</h3>
-      <div class="badges">${geoBadge}${survBadge}${(l.justif||'').indexOf('[DÉPLACEMENT CONCURRENT]')===0?'<span class="badge deplacement">⚔ Déplacement concurrent</span>':''}<span class="badge win-${win}">${winLabel[win]}</span>${badgeDeadline(l)}${ecart}${statut}${dateChip}</div>
+      <div class="badges">${geoBadge}${survBadge}${(l.justif||'').indexOf('[DÉPLACEMENT CONCURRENT]')===0?'<span class="badge deplacement">⚔ Déplacement concurrent</span>':''}<span class="badge win-${win}">${winLabel[win]}</span>${badgeDeadline(l)}${badgeRenouv(l)}${ecart}${statut}${dateChip}</div>
       <div class="contact"><div class="row"><span class="k">Agence</span><span class="v">${esc(l.agence)}</span></div>${contactRows}</div>
       <div class="cible"><b>Qui démarcher.</b> ${esc(l.cible)}</div>
       ${l.justif?`<details class="just"><summary><span class="chev">▸</span> Justification sûreté</summary><p>${esc((l.justif||'').replace('[DÉPLACEMENT CONCURRENT]','').trim())}</p></details>`:''}
