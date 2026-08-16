@@ -158,3 +158,93 @@ def parse_depuis_sparql(pn, fetch=None, session=None):
             vus.add(cle)
             uniques.append(g)
     return {"gagnants": uniques, "total": "", "sous_traitance": False}
+
+
+# ===========================================================================
+# RENOUVELLEMENT : date de fin de contrat = date de conclusion + duree.
+# Sonde confirmee : ?a epo:hasContractConclusionDate ?d (ex "2025-12-08") ;
+# ?b epo:definesContractDuration ?dur ; ?dur time:numericDuration ?val ;
+# ?dur time:unitType <.../unitMonth|unitYear|unitDay|unitWeek>.
+# ===========================================================================
+import datetime as _dt
+
+PREFIXES_RENOUV = PREFIXES + "PREFIX time: <http://www.w3.org/2006/time#>\n"
+
+# Horizons d'alerte (mois), configurables. Un marche public se retravaille en
+# amont de son echeance : imminent = a traiter, a_venir = a surveiller.
+HORIZON_IMMINENT = int(os.environ.get("RADAR_RENOUV_IMMINENT", "6"))
+HORIZON_VEILLE = int(os.environ.get("RADAR_RENOUV_VEILLE", "12"))
+
+_JOURS_PAR_UNITE = {"year": 365.25, "month": 30.44, "week": 7.0, "day": 1.0}
+
+
+def requete_renouvellement(pn):
+    vs = ", ".join('"%s"' % v for v in _variantes_pn(pn))
+    return PREFIXES_RENOUV + (
+        "SELECT ?conclusion ?dureeVal ?dureeUnit WHERE {\n"
+        "  GRAPH ?g {\n"
+        "    ?notice a epo:Notice ;\n"
+        "            epo:hasNoticePublicationNumber ?pn .\n"
+        "    FILTER(STR(?pn) IN (%s))\n"
+        "    OPTIONAL { ?a epo:hasContractConclusionDate ?conclusion . }\n"
+        "    OPTIONAL {\n"
+        "      ?b epo:definesContractDuration ?dur .\n"
+        "      ?dur time:numericDuration ?dureeVal .\n"
+        "      OPTIONAL { ?dur time:unitType ?dureeUnit . }\n"
+        "    }\n"
+        "  }\n"
+        "} LIMIT 50" % vs
+    )
+
+
+def _date_fin(conclusion, val, unit):
+    """date de conclusion + duree -> datetime.date de fin, ou None."""
+    try:
+        d = _dt.datetime.strptime(str(conclusion)[:10], "%Y-%m-%d").date()
+        v = float(val)
+    except (ValueError, TypeError):
+        return None
+    u = str(unit or "").lower()
+    facteur = next((j for cle, j in _JOURS_PAR_UNITE.items() if cle in u), None)
+    if facteur is None:
+        return None
+    return d + _dt.timedelta(days=v * facteur)
+
+
+def statut_renouvellement(mois_avant):
+    """imminent (<= HORIZON_IMMINENT), a_venir (<= HORIZON_VEILLE), sinon ''.
+    Un contrat deja expire ou trop lointain ne declenche pas d'alerte."""
+    if mois_avant is None or mois_avant < 0:
+        return ""
+    if mois_avant <= HORIZON_IMMINENT:
+        return "imminent"
+    if mois_avant <= HORIZON_VEILLE:
+        return "a_venir"
+    return ""
+
+
+def renouvellement_par_pn(pn, fetch=None, session=None, aujourdhui=None):
+    """Renvoie {"fin": "AAAA-MM-JJ", "mois_avant": int, "statut": str} pour une
+    attribution, ou {} si donnees absentes. On retient la date de fin la PLUS
+    LOINTAINE (le contrat court tant qu'un lot reste actif) et on deduplique les
+    lots identiques. `fetch` injectable pour tests : callable(query) -> dict."""
+    if _ETAT["coupe"]:
+        return {}
+    query = requete_renouvellement(pn)
+    data = fetch(query) if fetch is not None else _interroger(query, session)
+    if not isinstance(data, dict):
+        return {}
+    fin_max = None
+    for b in data.get("results", {}).get("bindings", []):
+        conclusion = (b.get("conclusion") or {}).get("value", "")
+        val = (b.get("dureeVal") or {}).get("value", "")
+        unit = (b.get("dureeUnit") or {}).get("value", "")
+        fin = _date_fin(conclusion, val, unit)
+        if fin and (fin_max is None or fin > fin_max):
+            fin_max = fin
+    if fin_max is None:
+        return {}
+    ref = aujourdhui or _dt.date.today()
+    mois_avant = round((fin_max - ref).days / 30.44, 1)
+    return {"fin": fin_max.isoformat(), "mois_avant": mois_avant,
+            "statut": statut_renouvellement(mois_avant)}
