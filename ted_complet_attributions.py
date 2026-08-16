@@ -373,25 +373,37 @@ def lire_notice(pub, fetch=None, session=None):
     return _pdf_en_texte(rep.content)
 
 
-def obtenir_gagnants(pub, fetch=None, session=None, fetch_sparql=None):
-    """Titulaires d'une attribution, au format de parser_gagnants.
+def obtenir_gagnants(pub, fetch=None, session=None, fetch_sparql=None, fetch_renouv=None):
+    """Titulaires d'une attribution, au format de parser_gagnants, enrichis du
+    RENOUVELLEMENT (date de fin de contrat) quand SPARQL est actif.
 
     SPARQL PRIORITAIRE (structure, fiable) : si le flag RADAR_SPARQL_TITULAIRES
     est actif ET que le triplestore repond avec au moins un titulaire, on
     utilise ce resultat. SINON on retombe sur le PDF (parsing regex), qui reste
     le filet -- notamment pour un avis trop frais pour etre deja dans l'ODS.
-    `fetch` (PDF) et `fetch_sparql` (JSON SPARQL) sont injectables pour tests.
+    Le renouvellement (conclusion + duree) est ajoute dans parse["renouvellement"]
+    s'il est disponible. `fetch` (PDF), `fetch_sparql` et `fetch_renouv` (JSON
+    SPARQL) sont injectables pour tests.
     """
+    parse = None
+    renouv = {}
     if sparql_titulaires is not None and getattr(sparql_titulaires, "ACTIF", False):
         try:
             parse = sparql_titulaires.parse_depuis_sparql(
                 pub, fetch=fetch_sparql, session=session)
-            if parse:
-                return parse
         except Exception:
-            pass                   # SPARQL en echec : on bascule sur le PDF
-    texte = lire_notice(pub, fetch=fetch, session=session)
-    return parser_gagnants(texte)
+            parse = None
+        try:
+            renouv = sparql_titulaires.renouvellement_par_pn(
+                pub, fetch=fetch_renouv, session=session) or {}
+        except Exception:
+            renouv = {}
+    if not parse:
+        texte = lire_notice(pub, fetch=fetch, session=session)
+        parse = parser_gagnants(texte)
+    if renouv:
+        parse["renouvellement"] = renouv
+    return parse
 
 
 # ===========================================================================
@@ -433,6 +445,7 @@ def normaliser(notice, parse):
     noms_gagnants = "; ".join(g["nom"] for g in parse["gagnants"]) or "(gagnant non publie)"
     valeurs = "; ".join(g["valeur"] for g in parse["gagnants"] if g["valeur"])
     tier = max([ted.MULTIPLICATEUR_ZONE.get(c, 0.2) for c in codes_iso] or [0.2])
+    renouv = parse.get("renouvellement", {})
     return {
         "publication_number": pub,
         "gagnant": noms_gagnants,
@@ -445,6 +458,10 @@ def normaliser(notice, parse):
         "titre": _val(notice.get("notice-title"))[:300],
         "date_publication": _val(notice.get("publication-date"))[:10],
         "lien": LIEN_NOTICE_HTML.format(pub),
+        # Renouvellement (SPARQL) : date de fin de contrat estimee et alerte.
+        "fin_contrat": renouv.get("fin", ""),
+        "mois_avant_fin": renouv.get("mois_avant", ""),
+        "statut_renouv": renouv.get("statut", ""),
         "_tier": tier,
         "_nb_gagnants": len(parse["gagnants"]),
     }
