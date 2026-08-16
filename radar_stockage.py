@@ -101,6 +101,60 @@ ALTER TABLE radar_statuts ADD COLUMN IF NOT EXISTS motif TEXT NOT NULL DEFAULT '
 """
 
 
+# Vues analytiques posees SUR le JSONB (sans toucher aux donnees). Recreees a
+# chaque init (idempotent). Elles ouvrent l'interrogation SQL ad hoc que le
+# JSONB seul rendait penible : attributions a plat, incumbents (titulaires
+# recurrents), pipeline de renouvellement. Le montant reste en devise locale
+# dans le JSONB -> on agrege par NOMBRE de marches, pas par valeur (la
+# conversion EUR se fait a l'affichage, pas en SQL).
+VUES_SQL = """
+DROP VIEW IF EXISTS v_attributions;
+CREATE VIEW v_attributions AS
+SELECT
+    publication_number,
+    donnees->>'gagnant'          AS gagnant,
+    donnees->>'acheteur'         AS acheteur,
+    donnees->>'pays_execution'   AS pays_execution,
+    donnees->>'secteur'          AS secteur,
+    donnees->>'valeur_attribuee' AS valeur_attribuee,
+    donnees->>'cpv'              AS cpv,
+    donnees->>'statut_renouv'    AS statut_renouv,
+    donnees->>'fin_contrat'      AS fin_contrat,
+    NULLIF(donnees->>'mois_avant_fin', '')::numeric AS mois_avant_fin,
+    donnees->>'date_publication' AS date_publication,
+    date_detection, maj
+FROM radar_lignes
+WHERE onglet = 'attributions_radar';
+
+DROP VIEW IF EXISTS v_incumbents;
+CREATE VIEW v_incumbents AS
+SELECT
+    donnees->>'gagnant'                              AS gagnant,
+    COUNT(*)                                         AS nb_marches,
+    COUNT(DISTINCT donnees->>'pays_execution')       AS nb_pays,
+    MAX(donnees->>'fin_contrat')                     AS derniere_fin
+FROM radar_lignes
+WHERE onglet = 'attributions_radar'
+  AND COALESCE(donnees->>'gagnant', '') NOT IN ('', '(gagnant non publie)', 'Titulaire')
+GROUP BY donnees->>'gagnant'
+HAVING COUNT(*) >= 2;
+
+DROP VIEW IF EXISTS v_renouvellements;
+CREATE VIEW v_renouvellements AS
+SELECT
+    publication_number,
+    donnees->>'gagnant'        AS gagnant,
+    donnees->>'acheteur'       AS acheteur,
+    donnees->>'pays_execution' AS pays_execution,
+    donnees->>'fin_contrat'    AS fin_contrat,
+    NULLIF(donnees->>'mois_avant_fin', '')::numeric AS mois_avant_fin,
+    donnees->>'statut_renouv'  AS statut_renouv
+FROM radar_lignes
+WHERE onglet = 'attributions_radar'
+  AND COALESCE(donnees->>'statut_renouv', '') IN ('imminent', 'a_venir');
+"""
+
+
 # ===========================================================================
 # OUTILS PURS (testables sans base)
 # ===========================================================================
@@ -167,6 +221,7 @@ def initialiser(conn):
     """Cree le schema. Idempotent : rejouable a chaque run sans danger."""
     with conn.cursor() as cur:
         cur.execute(SCHEMA_SQL)
+        cur.execute(VUES_SQL)
 
 
 def ajouter_lignes(conn, onglet, lignes):
