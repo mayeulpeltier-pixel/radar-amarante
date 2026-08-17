@@ -1,0 +1,38 @@
+name: Sonde montant attributions
+# Diagnostic ponctuel, DECLENCHEMENT MANUEL UNIQUEMENT (workflow_dispatch).
+# Ne touche a rien : ni Google Sheet, ni Postgres, ni etat, ni dashboard.
+# Verifie si l'API search TED expose le statut de selection du laureat
+# (montant exploitable au niveau notice d attribution). Sonde jetable : supprimer une fois le
+# verdict rendu.
+#
+# UTILISATION : onglet Actions > "Sonde montant attributions" > Run workflow.
+# Option pub : cibler une attribution precise (ex 10759-2026) ; vide = auto.
+on:
+  workflow_dispatch:
+    inputs:
+      pub:
+        description: "publication-number d'une attribution TED (ex 10759-2026), vide = auto"
+        required: false
+        default: ""
+      dryrun:
+        description: "1 = afficher les requetes sans les envoyer"
+        required: false
+        default: ""
+jobs:
+  sonde-winner:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer requests
+        run: pip install requests
+      - name: Sonder le statut laureat
+        env:
+          SONDE_PUB: ${{ github.event.inputs.pub }}
+          SONDE_WINNER_DRYRUN: ${{ github.event.inputs.dryrun }}
+        run: python sonde_montant_attributions.py
