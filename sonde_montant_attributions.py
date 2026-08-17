@@ -67,7 +67,7 @@ CHAMPS_MONTANT = [
     "estimated-value-lot", "estimated-value-cur-lot",
 ]
 
-NOTICE_TYPES_ATTRIB = ["can-standard", "can-social", "can-tport"]
+NOTICE_TYPES_ATTRIB = ["can-standard", "can-social"]  # can-tport invalide (rejete par l API, absent du SDK)
 
 
 def poster(corps):
