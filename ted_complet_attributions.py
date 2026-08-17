@@ -238,6 +238,10 @@ def _corps(page, include_type):
             # telecharger le PDF ; `winner-selection-status` distingue lot
             # attribue (selec-w) / infructueux (clos-nw) / en cours (open-nw).
             "winner-name", "winner-selection-status",
+            # Montant total de l'attribution (sonde v3, 17/08/2026) : rempli
+            # ~13/15 sur echantillon reel. FILET quand le PDF/SPARQL n'a pas de
+            # total. Sentinelle -1 = non publie (filtree dans _montant_api).
+            "total-value", "total-value-cur",
         ],
         "page": page,
         "limit": LIMITE,
@@ -337,6 +341,27 @@ _MOTS_VIDES = {"the", "a", "an", "le", "la", "les", "el", "der", "die", "das", "
 
 def _nettoyer_montant(num, devise):
     return "{} {}".format(re.sub(r"[\u00a0\u202f]", " ", num).strip(), devise)
+
+
+def _montant_api(notice):
+    """Montant total de l'attribution depuis `total-value` (API search), au
+    format 'montant DEVISE' attendu par le dashboard (radar_dashboard.
+    _valeur_en_millions applique alors le correctif de devise, dont CFA).
+
+    FILET : n'est utilise que si le PDF/SPARQL n'a pas fourni de total. Filtre
+    la sentinelle -1 (= montant non publie, vue sur 10759-2026), les valeurs
+    nulles ou non numeriques. La devise vient de `total-value-cur`."""
+    brut = _val(notice.get("total-value")).strip()
+    if not brut:
+        return ""
+    try:
+        montant = float(brut.replace(" ", "").replace("\u00a0", "").replace(",", "."))
+    except ValueError:
+        return ""
+    if montant <= 0:                 # -1 (sentinelle TED) ou 0 : non exploitable
+        return ""
+    devise = _val(notice.get("total-value-cur")).strip()
+    return _nettoyer_montant(brut, devise) if devise else brut
 
 
 def _nom_apres_official(bloc):
@@ -515,7 +540,7 @@ def normaliser(notice, parse):
     return {
         "publication_number": pub,
         "gagnant": noms_gagnants,
-        "valeur_attribuee": parse["total"] or valeurs,
+        "valeur_attribuee": parse["total"] or _montant_api(notice) or valeurs,
         "acheteur": _val(notice.get("buyer-name")),
         "pays_execution": pays_lisible(codes_iso) or _val(notice.get("place-of-performance")),
         "secteur": secteur_lisible(codes_cpv),
