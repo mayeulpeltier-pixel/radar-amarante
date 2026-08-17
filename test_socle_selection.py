@@ -172,6 +172,59 @@ class TestChampsRequete(unittest.TestCase):
         self.assertIn("winner-selection-status", fields)
 
 
+class TestMontantApi(unittest.TestCase):
+    """Filet montant via total-value (sonde v3)."""
+
+    def test_montant_valide_formate_avec_devise(self):
+        n = {"total-value": 9000000, "total-value-cur": ["EUR"]}
+        self.assertEqual(att._montant_api(n), "9000000 EUR")
+
+    def test_montant_str(self):
+        n = {"total-value": "662735", "total-value-cur": "EUR"}
+        self.assertEqual(att._montant_api(n), "662735 EUR")
+
+    def test_sentinelle_moins_un_rejetee(self):
+        """-1 = non publie : ne doit PAS produire de montant."""
+        self.assertEqual(att._montant_api({"total-value": -1, "total-value-cur": ["EUR"]}), "")
+
+    def test_zero_rejete(self):
+        self.assertEqual(att._montant_api({"total-value": 0, "total-value-cur": ["EUR"]}), "")
+
+    def test_absent_ou_non_numerique(self):
+        self.assertEqual(att._montant_api({}), "")
+        self.assertEqual(att._montant_api({"total-value": "n.c."}), "")
+
+    def test_format_compatible_parseur_dashboard(self):
+        """Le format doit etre relu par radar_dashboard._valeur_en_millions,
+        correctif de devise inclus (le contrat aval qui compte)."""
+        import radar_dashboard as dash
+        n = {"total-value": 9000000, "total-value-cur": ["EUR"]}
+        self.assertAlmostEqual(
+            dash._valeur_en_millions(att._montant_api(n)), 9.0, places=3)
+
+
+class TestFiletMontant(unittest.TestCase):
+    """normaliser : total-value comble un total absent, sans ecraser le PDF."""
+
+    def test_filet_comble_quand_total_pdf_absent(self):
+        notice = dict(NOTICE_10759, **{"total-value": 500000, "total-value-cur": ["EUR"]})
+        a = att.normaliser(notice, {"gagnants": [], "total": "", "sous_traitance": False})
+        self.assertEqual(a["valeur_attribuee"], "500000 EUR")
+
+    def test_total_pdf_prioritaire_sur_api(self):
+        """Un total deja extrait (PDF/SPARQL) prime : pas de regression."""
+        notice = dict(NOTICE_10759, **{"total-value": 500000, "total-value-cur": ["EUR"]})
+        a = att.normaliser(notice, {"gagnants": [], "total": "1 000 000 EUR",
+                                    "sous_traitance": False})
+        self.assertEqual(a["valeur_attribuee"], "1 000 000 EUR")
+
+    def test_sentinelle_ne_pollue_pas(self):
+        """total-value = -1 -> valeur_attribuee reste vide (pas '-1 EUR')."""
+        notice = dict(NOTICE_10759, **{"total-value": -1, "total-value-cur": ["EUR"]})
+        a = att.normaliser(notice, {"gagnants": [], "total": "", "sous_traitance": False})
+        self.assertEqual(a["valeur_attribuee"], "")
+
+
 class TestNoticeTypesValides(unittest.TestCase):
     """Garde-fou : `notice-type` ne doit contenir que des valeurs acceptees par
     l'expert search TED. `can-tport` (invalide, absent du SDK) faisait echouer
