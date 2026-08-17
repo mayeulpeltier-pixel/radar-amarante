@@ -63,10 +63,15 @@ except Exception:                 # module absent : parsing PDF seul
 ACTIVER = os.environ.get("RADAR_ATTRIBUTIONS", "1") != "0"
 NOM_ONGLET = "attributions_radar"
 
-# Types de notice = avis d'attribution (resultats). can-standard couvre
-# l'immense majorite ; can-social (regime allege) et can-tport (transport
-# public de voyageurs) sont ajoutes par securite.
-NOTICE_TYPES_ATTRIB = ["can-standard", "can-social", "can-tport"]
+# Types de notice = avis d'attribution (resultats). Valeurs VALIDES de
+# `notice-type` dans l'expert search TED, confirmees par eForms-SDK :
+#   can-standard (subtypes 29-32, E4 : marche/concession, regime ordinaire,
+#                 y compris directive SECTORIELLE 30 qui couvre le transport)
+#   can-social   (subtypes 33-35 : regime allege)
+# NB : `can-tport` n'existe PAS (rejete par l'API + absent du SDK) ; l'employer
+# faisait echouer la requete filtree en 400 et forcait la degradation a chaque
+# run. Retire le 17/08/2026 (sonde winner-status v2).
+NOTICE_TYPES_ATTRIB = ["can-standard", "can-social"]
 
 # On reutilise EXACTEMENT l'univers CPV et pays du radar (memes cibles).
 CODES_CPV = list(ted.CODES_CPV)
