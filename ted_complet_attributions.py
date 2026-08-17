@@ -161,6 +161,54 @@ def _all_str(v):
     return out
 
 
+def _noms_uniques(v):
+    """Noms de titulaires distincts d'un champ `winner-name` (souvent un dict
+    multilingue de listes redondantes, ex {"deu": ["X", "X", ...]}). Aplati et
+    dedup en preservant l'ordre. Sert de FILET quand le PDF/SPARQL ne donne
+    aucun gagnant."""
+    vus, out = set(), []
+    for nom in _all_str(v):
+        n = nom.strip()
+        cle = n.lower()
+        if n and cle not in vus:
+            vus.add(cle)
+            out.append(n)
+    return out
+
+
+def statut_selection(notice):
+    """Statut de selection du titulaire, AGREGE au niveau notice depuis
+    `winner-selection-status` (codelist eForms winner-selection-status) :
+        selec-w = un titulaire choisi | clos-nw = clos sans titulaire
+        open-nw = en cours, pas encore de titulaire
+
+    L'API search aplatit ces statuts en liste plate SANS cle de jointure vers
+    winner-name (cardinalites differentes observees : 6 statuts vs 25 noms sur
+    la notice 10759-2026). On ne peut donc PAS apparier statut <-> titulaire
+    par index, seulement agreger. Renvoie :
+        "attribuee"    au moins un lot attribue, aucun infructueux
+        "partielle"    au moins un lot attribue ET au moins un infructueux
+        "infructueuse" tous les lots renseignes sont clos sans titulaire
+        "en_cours"     aucun titulaire encore, au moins un lot ouvert
+        ""             statut absent (notice sans ce champ)
+    """
+    statuts = [s.lower() for s in _all_str(notice.get("winner-selection-status"))]
+    if not statuts:
+        return ""
+    a_gagnant = "selec-w" in statuts
+    a_clos = "clos-nw" in statuts
+    a_ouvert = "open-nw" in statuts
+    if a_gagnant and a_clos:
+        return "partielle"
+    if a_gagnant:
+        return "attribuee"
+    if a_clos:
+        return "infructueuse"
+    if a_ouvert:
+        return "en_cours"
+    return ""
+
+
 # ===========================================================================
 # PARTIE 3 -- COLLECTE DES AVIS D'ATTRIBUTION (API v3)
 # ===========================================================================
@@ -180,6 +228,11 @@ def _corps(page, include_type):
             "publication-number", "notice-title", "buyer-name",
             "buyer-country", "place-of-performance", "classification-cpv",
             "publication-date", "notice-type",
+            # Titulaire et statut de selection recuperes DES la collecte
+            # (sonde v2, 17/08/2026) : `winner-name` fiabilise le nom sans
+            # telecharger le PDF ; `winner-selection-status` distingue lot
+            # attribue (selec-w) / infructueux (clos-nw) / en cours (open-nw).
+            "winner-name", "winner-selection-status",
         ],
         "page": page,
         "limit": LIMITE,
@@ -442,6 +495,14 @@ def normaliser(notice, parse):
     codes_iso = _codes_iso3(notice.get("place-of-performance"))
     codes_cpv = _codes_cpv(notice.get("classification-cpv"))
     pub = _val(notice.get("publication-number"))
+    statut_sel = statut_selection(notice)
+    # FILET titulaire (sonde v2) : si ni SPARQL ni PDF n'ont donne de gagnant,
+    # on retombe sur `winner-name` recupere a la collecte. Gratuit (deja dans
+    # la notice), sans telechargement supplementaire, souvent suffisant. En cas
+    # d'attribution 100% infructueuse, winner-name est vide -> rien a ajouter.
+    if not parse["gagnants"]:
+        for nom in _noms_uniques(notice.get("winner-name")):
+            parse["gagnants"].append({"nom": nom, "valeur": ""})
     noms_gagnants = "; ".join(g["nom"] for g in parse["gagnants"]) or "(gagnant non publie)"
     valeurs = "; ".join(g["valeur"] for g in parse["gagnants"] if g["valeur"])
     tier = max([ted.MULTIPLICATEUR_ZONE.get(c, 0.2) for c in codes_iso] or [0.2])
@@ -464,6 +525,10 @@ def normaliser(notice, parse):
         "statut_renouv": renouv.get("statut", ""),
         "_tier": tier,
         "_nb_gagnants": len(parse["gagnants"]),
+        # Statut de selection agrege (clef prefixee _ : HORS schema Sheet,
+        # supprimee par la lecture positionnelle de COLONNES). Sert a `ligne()`
+        # pour le signal re-tender et au bilan console.
+        "_statut_selection": statut_sel,
     }
 
 
@@ -514,6 +579,16 @@ def ouvrir_feuille(sheet_id, fichier):
 
 
 def ligne(a):
+    # Signal de prospection porte par la colonne EXISTANTE `a_demarcher`
+    # (aucune colonne ajoutee au schema partage) : une attribution infructueuse
+    # (tous lots clos-nw) n'a pas de titulaire mais annonce une RE-PUBLICATION
+    # -> opportunite directe, marquee "re-tender".
+    if a.get("_statut_selection") == "infructueuse":
+        demarche = "re-tender"
+    elif a["_nb_gagnants"]:
+        demarche = "oui"
+    else:
+        demarche = "verifier"
     valeurs = {
         "date_maj": date.today().isoformat(),
         "gagnant": a["gagnant"],
@@ -527,7 +602,7 @@ def ligne(a):
         "date_publication": a["date_publication"],
         "publication_number": a["publication_number"],
         "lien": a["lien"],
-        "a_demarcher": "oui" if a["_nb_gagnants"] else "verifier",
+        "a_demarcher": demarche,
     }
     return [str(valeurs.get(c, "")) for c in COLONNES]
 
@@ -661,9 +736,12 @@ def main():
 
     # Bilan console
     avec = sum(1 for a in attributions if a["_nb_gagnants"])
+    infructueuses = sum(1 for a in attributions
+                        if a.get("_statut_selection") == "infructueuse")
     print("\n" + "=" * 68)
     print("REGISTRE DES ATTRIBUTIONS (qui a gagne quoi en zone a risque)")
-    print("{} avis traites | {} avec titulaire identifie".format(len(attributions), avec))
+    print("{} avis traites | {} avec titulaire identifie | {} infructueuse(s) "
+          "-> re-tender".format(len(attributions), avec, infructueuses))
     print("=" * 68)
     for a in sorted(attributions, key=lambda x: x["_tier"], reverse=True)[:25]:
         print("\n[{}] {}".format(a["secteur"], a["gagnant"]))
