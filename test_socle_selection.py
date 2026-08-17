@@ -172,5 +172,24 @@ class TestChampsRequete(unittest.TestCase):
         self.assertIn("winner-selection-status", fields)
 
 
+class TestNoticeTypesValides(unittest.TestCase):
+    """Garde-fou : `notice-type` ne doit contenir que des valeurs acceptees par
+    l'expert search TED. `can-tport` (invalide, absent du SDK) faisait echouer
+    la requete filtree en 400 et forcait la degradation a chaque run."""
+
+    def test_pas_de_can_tport(self):
+        self.assertNotIn("can-tport", att.NOTICE_TYPES_ATTRIB)
+
+    def test_valeurs_dans_le_referentiel_sdk(self):
+        # Seules familles d'attribution existantes dans eForms-SDK.
+        valides = {"can-standard", "can-social"}
+        self.assertTrue(set(att.NOTICE_TYPES_ATTRIB).issubset(valides))
+
+    def test_query_filtree_inclut_le_type(self):
+        q = att._query(include_type=True)
+        self.assertIn("can-standard", q)
+        self.assertNotIn("can-tport", q)
+
+
 if __name__ == "__main__":
     unittest.main()
