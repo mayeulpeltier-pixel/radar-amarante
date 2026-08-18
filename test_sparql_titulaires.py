@@ -52,7 +52,8 @@ class TestParsing(unittest.TestCase):
         b = [_binding("INTELLISOFT SYSTEMS", "960000", CUR + "RON")]
         r = st.titulaires_par_pn("302871-2026", fetch=lambda q: _reponse(b))
         self.assertEqual(r, [{"nom": "INTELLISOFT SYSTEMS",
-                              "montant": "960000", "devise": "RON"}])
+                              "montant": "960000", "devise": "RON",
+                              "pays": "", "nuts": ""}])
 
     def test_parse_format_valeur_et_dedup(self):
         b = [_binding("ACME", "100", CUR + "EUR"),
