@@ -37,7 +37,10 @@ ACCEPT_JSON = "application/sparql-results+json"
 TIMEOUT = 45
 ACTIF = os.environ.get("RADAR_SPARQL_TITULAIRES", "0") == "1"
 
-PREFIXES = "PREFIX epo: <http://data.europa.eu/a4g/ontology#>\n"
+PREFIXES = (
+    "PREFIX epo: <http://data.europa.eu/a4g/ontology#>\n"
+    "PREFIX cccev: <http://data.europa.eu/m8g/>\n"
+)
 
 # Disjoncteur : au-dela de MAX_ECHECS erreurs reseau d'affilee, on cesse
 # d'interroger SPARQL pour ce run (retombee sur le PDF).
@@ -58,29 +61,40 @@ def _variantes_pn(pn):
     return sorted(v for v in variantes if v)
 
 
+def _dernier_segment(uri):
+    """'.../authority/country/DEU' -> 'DEU'. Renvoie tel quel si non-URI.
+    Generique : extrait un code (devise, pays, NUTS) du dernier segment d'un
+    IRI de codelist ePO."""
+    s = str(uri or "").strip()
+    return s.rsplit("/", 1)[-1] if "/" in s else s
+
+
 def _code_devise(uri):
     """'.../authority/currency/RON' -> 'RON'. Renvoie tel quel si non-URI."""
-    s = str(uri or "").strip()
-    if "/" in s:
-        return s.rsplit("/", 1)[-1]
-    return s
+    return _dernier_segment(uri)
 
 
 def requete(pn):
     vs = ", ".join('"%s"' % v for v in _variantes_pn(pn))
     return PREFIXES + (
-        "SELECT ?nom ?montant ?devise WHERE {\n"
+        "SELECT ?nom ?montant ?devise ?pays ?nuts WHERE {\n"
         "  GRAPH ?g {\n"
         "    ?notice a epo:Notice ;\n"
         "            epo:hasNoticePublicationNumber ?pn .\n"
         "    FILTER(STR(?pn) IN (%s))\n"
         "    ?tender a epo:Tender ;\n"
         "            epo:isSubmitedBy ?tenderer .\n"
-        "    ?tenderer epo:playedBy / epo:hasLegalName ?nom .\n"
+        "    ?tenderer epo:playedBy ?org .\n"
+        "    ?org epo:hasLegalName ?nom .\n"
         "    OPTIONAL {\n"
         "      ?tender epo:hasFinancialOfferValue ?ov .\n"
         "      ?ov epo:hasAmountValue ?montant ;\n"
         "          epo:hasCurrency ?devise .\n"
+        "    }\n"
+        "    OPTIONAL {\n"
+        "      ?org cccev:registeredAddress ?adr .\n"
+        "      ?adr epo:hasCountryCode ?pays .\n"
+        "      OPTIONAL { ?adr epo:hasNutsCode ?nuts . }\n"
         "    }\n"
         "  }\n"
         "} LIMIT 50" % vs
@@ -126,8 +140,11 @@ def titulaires_par_pn(pn, fetch=None, session=None):
         nom = (b.get("nom") or {}).get("value", "").strip()
         montant = (b.get("montant") or {}).get("value", "").strip()
         devise = _code_devise((b.get("devise") or {}).get("value", ""))
+        pays = _dernier_segment((b.get("pays") or {}).get("value", ""))
+        nuts = _dernier_segment((b.get("nuts") or {}).get("value", ""))
         if nom:
-            out.append({"nom": nom, "montant": montant, "devise": devise})
+            out.append({"nom": nom, "montant": montant, "devise": devise,
+                        "pays": pays, "nuts": nuts})
     return out
 
 
@@ -157,7 +174,16 @@ def parse_depuis_sparql(pn, fetch=None, session=None):
         if cle not in vus:
             vus.add(cle)
             uniques.append(g)
-    return {"gagnants": uniques, "total": "", "sous_traitance": False}
+    # Pays des titulaires (adresse enregistree, ISO3), dedup en preservant
+    # l'ordre : alimente le socle DETERMINISTE `pays_titulaire` de l'onglet brut
+    # (fait factuel, complementaire de l'inference d'origine du LLM).
+    pays = []
+    for t in titulaires:
+        p = (t.get("pays") or "").strip()
+        if p and p not in pays:
+            pays.append(p)
+    return {"gagnants": uniques, "total": "", "sous_traitance": False,
+            "pays_titulaire": "; ".join(pays)}
 
 
 # ===========================================================================
