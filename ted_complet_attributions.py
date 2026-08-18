@@ -193,6 +193,15 @@ def _titulaire_etranger(pays_titulaire, codes_execution):
     return "oui" if any(p not in execution for p in pays) else "non"
 
 
+def _pays_titulaire_api(notice):
+    """Pays du/des titulaire(s) depuis winner-country (API search), ISO3 dedup
+    au niveau notice (ex 'BEL', ou 'NOR; DEU' si co-titulaires de pays
+    differents). Source PRIMAIRE de pays_titulaire : renseigne 15/15 sur
+    l'echantillon, sans dependre du flag SPARQL. Le SPARQL comble seulement
+    quand ce champ est vide."""
+    return "; ".join(_noms_uniques(notice.get("winner-country")))
+
+
 def statut_selection(notice):
     """Statut de selection du titulaire, AGREGE au niveau notice depuis
     `winner-selection-status` (codelist eForms winner-selection-status) :
@@ -250,6 +259,11 @@ def _corps(page, include_type):
             # telecharger le PDF ; `winner-selection-status` distingue lot
             # attribue (selec-w) / infructueux (clos-nw) / en cours (open-nw).
             "winner-name", "winner-selection-status",
+            # Pays du titulaire cote API (winner-country, ISO3, 15/15 sur
+            # echantillon) : source PRIMAIRE deterministe de pays_titulaire,
+            # toujours dispo (sans dependre du flag SPARQL). SPARQL comble si
+            # l'API est muette (18/08/2026).
+            "winner-country",
             # Montant total de l'attribution (sonde v3, 17/08/2026) : rempli
             # ~13/15 sur echantillon reel. FILET quand le PDF/SPARQL n'a pas de
             # total. Sentinelle -1 = non publie (filtree dans _montant_api).
@@ -549,9 +563,10 @@ def normaliser(notice, parse):
     valeurs = "; ".join(g["valeur"] for g in parse["gagnants"] if g["valeur"])
     tier = max([ted.MULTIPLICATEUR_ZONE.get(c, 0.2) for c in codes_iso] or [0.2])
     renouv = parse.get("renouvellement", {})
-    # Socle DETERMINISTE du titulaire (SPARQL) : pays d'adresse enregistree et
-    # deduction "etranger vs pays d'execution". Vide si SPARQL inactif/muet.
-    pays_tit = parse.get("pays_titulaire", "")
+    # Socle DETERMINISTE du titulaire : pays d'adresse. Source PRIMAIRE =
+    # winner-country (API, toujours dispo) ; le SPARQL (parse) comble si l'API
+    # est muette. 'etranger' se deduit vs le(s) pays d'execution.
+    pays_tit = _pays_titulaire_api(notice) or parse.get("pays_titulaire", "")
     etranger = _titulaire_etranger(pays_tit, codes_iso)
     return {
         "publication_number": pub,
