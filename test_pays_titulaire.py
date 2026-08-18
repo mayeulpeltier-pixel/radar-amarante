@@ -141,5 +141,30 @@ class TestChaineSparqlVersTed(unittest.TestCase):
         self.assertEqual(a["titulaire_etranger"], "oui")  # DEU hors UKR
 
 
+class TestInjectionPrompt(unittest.TestCase):
+    """Le pays d'adresse (socle deterministe) est injecte comme INDICE dans le
+    prompt LLM d'attributions_analyse, sans remplacer l'inference d'origine."""
+
+    def setUp(self):
+        import attributions_analyse as aa
+        self.aa = aa
+
+    def test_pays_present_apparait_dans_le_prompt(self):
+        p = self.aa.construire_prompt(
+            {"gagnant": "Yandalux Solar GmbH", "pays_titulaire": "DEU",
+             "pays_execution": "UKR"})
+        self.assertIn("DEU", p)
+        self.assertIn("adresse enregistree", p.lower())
+
+    def test_pays_absent_donne_non_renseigne(self):
+        p = self.aa.construire_prompt({"gagnant": "X", "pays_execution": "MLI"})
+        self.assertIn("non renseigne", p)
+
+    def test_prompt_conserve_l_inference_origine(self):
+        """L'indice ne remplace pas la tache d'inference (point ORIGINE garde)."""
+        p = self.aa.construire_prompt({"gagnant": "X", "pays_titulaire": "DEU"})
+        self.assertIn("ORIGINE DU TITULAIRE", p)
+
+
 if __name__ == "__main__":
     unittest.main()
