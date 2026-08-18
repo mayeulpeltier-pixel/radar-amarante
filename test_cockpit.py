@@ -64,5 +64,41 @@ class TestGenerer(unittest.TestCase):
         self.assertIn("const RAW=[]", h)
 
 
+class TestLot2(unittest.TestCase):
+    """Geo (alertes), config suivi (bouton statut), entreprises 360."""
+
+    def test_geo_injecte(self):
+        geo = [{"pays": "Mali", "zone": "Sahel", "sens": "aggravation",
+                "motif": "Dégradation", "severite": 8, "date": "2026-08-17"}]
+        h = rc.generer_cockpit([lead()], geo=geo)
+        self.assertNotIn("__GEO_JSON__", h)
+        self.assertIn("Dégradation", h)
+
+    def test_geo_defaut_vide(self):
+        h = rc.generer_cockpit([lead()])
+        self.assertIn("GEO=[]", h)
+
+    def test_suivi_injecte(self):
+        h = rc.generer_cockpit([lead()], suivi={"url": "https://x/exec",
+                                                "token": "TK", "api": False})
+        self.assertNotIn("__SUIVI_URL__", h)
+        self.assertIn("https://x/exec", h)
+        self.assertIn("SUIVI_TOKEN=\"TK\"", h)
+        self.assertIn("API_STATUT=false", h)
+
+    def test_suivi_absent_desactive(self):
+        h = rc.generer_cockpit([lead()])
+        self.assertIn('SUIVI_URL=""', h)
+        self.assertIn("API_STATUT=false", h)
+
+    def test_api_statut_vrai(self):
+        h = rc.generer_cockpit([lead()], suivi={"api": True})
+        self.assertIn("API_STATUT=true", h)
+
+    def test_titulaire_present_pour_360(self):
+        h = rc.generer_cockpit([lead(src="ATTRIB", entreprise="Onur Group")])
+        self.assertIn("Onur Group", h)
+
+
 if __name__ == "__main__":
     unittest.main()
