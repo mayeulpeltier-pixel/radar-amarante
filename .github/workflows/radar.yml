@@ -390,6 +390,21 @@ jobs:
           # n'est simplement pas enregistree.
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python radar_dashboard.py
+      # 5b) Generer le COCKPIT (nouvelle interface) depuis le MEME moteur de
+      #     donnees : radar_cockpit importe radar_dashboard et reutilise
+      #     charger_leads, donc AUCUNE collecte ni lecture de Sheet en plus.
+      #     Ecrit public/cockpit.html A COTE de index.html, publie par la meme
+      #     etape Cloudflare (dossier public). N'altere jamais le dashboard : les
+      #     deux pages coexistent le temps de la migration. Retirer cette etape
+      #     supprime le cockpit sans toucher au tableau de bord existant.
+      - name: Generer le cockpit (nouvelle interface)
+        if: always() && steps.cle.outcome == 'success'
+        env:
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          COCKPIT_OUTPUT: public/cockpit.html
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python radar_cockpit.py
       # 6) Digest hebdo push : envoie par e-mail les NOUVELLES opportunites "a
       #     contacter" (via le meme webapp Apps Script que le bouton "Je
       #     contacte"). Best-effort et isole : sans SUIVI_* il ne fait rien, et
