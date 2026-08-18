@@ -1496,6 +1496,31 @@ def main():
         f.write(html)
     print("Tableau de bord ecrit dans : {} ({} octets)".format(sortie, len(html)))
 
+    # Cockpit (nouvelle interface) : genere dans le MEME process, a partir des
+    # leads DEJA charges. Aucune relecture du Sheet -> pas de 2e appel API donc
+    # pas de quota 429. Ne s'active que si COCKPIT_OUTPUT est defini ; sinon
+    # comportement inchange (dashboard seul). Best-effort : un echec cockpit
+    # n'invalide jamais le dashboard, deja ecrit ci-dessus.
+    cockpit_sortie = os.environ.get("COCKPIT_OUTPUT")
+    if cockpit_sortie:
+        try:
+            import radar_cockpit
+            geo = preparer_geo(lignes_alertes)
+            suivi = {"url": os.environ.get("SUIVI_WEBAPP_URL", "") or "",
+                     "token": os.environ.get("SUIVI_TOKEN", "") or "",
+                     "api": False}
+            html_ck = radar_cockpit.generer_cockpit(leads, geo=geo, suivi=suivi)
+            d2 = os.path.dirname(cockpit_sortie)
+            if d2:
+                os.makedirs(d2, exist_ok=True)
+            with open(cockpit_sortie, "w", encoding="utf-8") as f:
+                f.write(html_ck)
+            print("Cockpit ecrit dans : {} ({} octets)".format(
+                cockpit_sortie, len(html_ck)))
+        except Exception as e:
+            print("(cockpit) generation ignoree ({}) -- dashboard non affecte.".format(
+                str(e)[:120]))
+
 
 # ===========================================================================
 # GABARIT HTML (situation board). __LEADS_JSON__ et __META_JSON__ injectes.
