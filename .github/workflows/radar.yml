@@ -380,7 +380,13 @@ jobs:
         env:
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
-          DASHBOARD_OUTPUT: public/legacy.html   # BASCULE (Etape A) : ancien dashboard sur /legacy.html. Rollback : remettre public/index.html
+          DASHBOARD_OUTPUT: public/index.html
+          # Le cockpit (nouvelle interface) est genere DANS le meme process,
+          # a partir des memes leads : aucune 2e lecture du Sheet (pas de 429).
+          # BASCULE le jour voulu : inverser ces deux sorties ->
+          #   DASHBOARD_OUTPUT: public/legacy.html  (ancien sur /legacy.html)
+          #   COCKPIT_OUTPUT:   public/index.html   (cockpit en page d'accueil)
+          COCKPIT_OUTPUT: public/cockpit.html
           # SUIVI_* : active le bouton "Je contacte" (POST vers le webapp Apps
           # Script). Sans eux, le bouton ne s'affiche pas (dashboard intact).
           SUIVI_WEBAPP_URL: ${{ secrets.SUIVI_WEBAPP_URL }}
@@ -390,21 +396,6 @@ jobs:
           # n'est simplement pas enregistree.
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python radar_dashboard.py
-      # 5b) Generer le COCKPIT (nouvelle interface) depuis le MEME moteur de
-      #     donnees : radar_cockpit importe radar_dashboard et reutilise
-      #     charger_leads, donc AUCUNE collecte ni lecture de Sheet en plus.
-      #     Ecrit public/cockpit.html A COTE de index.html, publie par la meme
-      #     etape Cloudflare (dossier public). N'altere jamais le dashboard : les
-      #     deux pages coexistent le temps de la migration. Retirer cette etape
-      #     supprime le cockpit sans toucher au tableau de bord existant.
-      - name: Generer le cockpit (nouvelle interface)
-        if: always() && steps.cle.outcome == 'success'
-        env:
-          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
-          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
-          COCKPIT_OUTPUT: public/index.html    # BASCULE (Etape A) : le cockpit devient la page d'accueil. Rollback : remettre public/cockpit.html
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: python radar_cockpit.py
       # 6) Digest hebdo push : envoie par e-mail les NOUVELLES opportunites "a
       #     contacter" (via le meme webapp Apps Script que le bouton "Je
       #     contacte"). Best-effort et isole : sans SUIVI_* il ne fait rien, et
