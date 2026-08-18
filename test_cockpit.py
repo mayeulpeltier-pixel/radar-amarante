@@ -99,6 +99,18 @@ class TestLot2(unittest.TestCase):
         h = rc.generer_cockpit([lead(src="ATTRIB", entreprise="Onur Group")])
         self.assertIn("Onur Group", h)
 
+    def test_bouton_surveiller_present(self):
+        h = rc.generer_cockpit([lead()])
+        self.assertIn("Surveiller", h)
+        self.assertIn("toggleSurv", h)
+        self.assertIn("estSurveille", h)
+
+    def test_gagnant_detecte_mappe(self):
+        """Une attribution parue expose le gagnant detecte (motif_ecart)."""
+        h = rc.generer_cockpit([lead(statut="attribution_publiee",
+                                     motif_ecart="Constructora Meco")])
+        self.assertIn("Constructora Meco", h)
+
 
 if __name__ == "__main__":
     unittest.main()
