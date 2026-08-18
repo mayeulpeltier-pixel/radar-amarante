@@ -380,7 +380,7 @@ jobs:
         env:
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
-          DASHBOARD_OUTPUT: public/index.html
+          DASHBOARD_OUTPUT: public/legacy.html   # BASCULE (Etape A) : ancien dashboard sur /legacy.html. Rollback : remettre public/index.html
           # SUIVI_* : active le bouton "Je contacte" (POST vers le webapp Apps
           # Script). Sans eux, le bouton ne s'affiche pas (dashboard intact).
           SUIVI_WEBAPP_URL: ${{ secrets.SUIVI_WEBAPP_URL }}
@@ -402,7 +402,7 @@ jobs:
         env:
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
-          COCKPIT_OUTPUT: public/cockpit.html
+          COCKPIT_OUTPUT: public/index.html    # BASCULE (Etape A) : le cockpit devient la page d'accueil. Rollback : remettre public/cockpit.html
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python radar_cockpit.py
       # 6) Digest hebdo push : envoie par e-mail les NOUVELLES opportunites "a
