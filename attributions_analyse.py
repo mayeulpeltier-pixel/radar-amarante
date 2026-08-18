@@ -125,6 +125,7 @@ CONTEXTE DECISIF : ce marche est DEJA ATTRIBUE. L'entreprise ci-dessous a gagne.
 
 DONNEES DE L'ATTRIBUTION
 Titulaire : {gagnant}
+Pays d'adresse enregistree du titulaire (donnee officielle TED, peut differer de l'origine reelle du groupe) : {pays_adresse}
 Pays d'execution : {pays_execution}
 Acheteur / bailleur : {acheteur}
 Objet du marche : {titre}
@@ -137,6 +138,7 @@ CE QUE TU DOIS DETERMINER
 
 1. ORIGINE DU TITULAIRE. D'apres sa raison sociale et ta connaissance du tissu economique, de quel pays vient cette entreprise ? Reponds par le nom du pays, ou "inconnu" si tu n'as pas d'element. Puis dis si elle est ETRANGERE au pays d'execution.
    C'est le signal le plus important : une entreprise turque qui gagne un marche de travaux au Mali expatrie des ingenieurs et des chefs de chantier. Une entreprise malienne, non.
+   Le "pays d'adresse enregistree" ci-dessus est un INDICE factuel fiable, mais l'adresse officielle peut masquer l'origine reelle : une filiale locale d'un groupe etranger a une adresse locale. Recoupe-le avec la raison sociale plutot que de le recopier aveuglement.
 
 2. NATURE DU DEPLOIEMENT, une valeur parmi :
    - "expatrie_significatif" : personnel international deploye durablement (encadrement, ingenierie, supervision)
@@ -184,6 +186,7 @@ def construire_prompt(a):
         return str(a.get(cle) or "").strip() or defaut
     return PROMPT_ATTRIBUTION.format(
         gagnant=champ("gagnant", "titulaire non nomme"),
+        pays_adresse=champ("pays_titulaire", "non renseigne"),
         pays_execution=champ("pays_execution"),
         acheteur=champ("acheteur"),
         titre=champ("titre"),
