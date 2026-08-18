@@ -181,6 +181,18 @@ def _noms_uniques(v):
     return out
 
 
+def _titulaire_etranger(pays_titulaire, codes_execution):
+    """'oui' si un pays de titulaire (ISO3, adresse enregistree) est HORS des
+    pays d'execution, 'non' si tous y sont, '' si le pays du titulaire est
+    inconnu. DETERMINISTE (sans LLM), complementaire de l'inference d'origine
+    faite par attributions_analyse (adresse enregistree != origine du groupe)."""
+    pays = [p.strip() for p in str(pays_titulaire or "").split(";") if p.strip()]
+    if not pays:
+        return ""
+    execution = set(codes_execution or [])
+    return "oui" if any(p not in execution for p in pays) else "non"
+
+
 def statut_selection(notice):
     """Statut de selection du titulaire, AGREGE au niveau notice depuis
     `winner-selection-status` (codelist eForms winner-selection-status) :
@@ -537,6 +549,10 @@ def normaliser(notice, parse):
     valeurs = "; ".join(g["valeur"] for g in parse["gagnants"] if g["valeur"])
     tier = max([ted.MULTIPLICATEUR_ZONE.get(c, 0.2) for c in codes_iso] or [0.2])
     renouv = parse.get("renouvellement", {})
+    # Socle DETERMINISTE du titulaire (SPARQL) : pays d'adresse enregistree et
+    # deduction "etranger vs pays d'execution". Vide si SPARQL inactif/muet.
+    pays_tit = parse.get("pays_titulaire", "")
+    etranger = _titulaire_etranger(pays_tit, codes_iso)
     return {
         "publication_number": pub,
         "gagnant": noms_gagnants,
@@ -553,6 +569,9 @@ def normaliser(notice, parse):
         "fin_contrat": renouv.get("fin", ""),
         "mois_avant_fin": renouv.get("mois_avant", ""),
         "statut_renouv": renouv.get("statut", ""),
+        # Socle deterministe titulaire (colonnes partagees deja au schema).
+        "pays_titulaire": pays_tit,
+        "titulaire_etranger": etranger,
         "_tier": tier,
         "_nb_gagnants": len(parse["gagnants"]),
         # Statut de selection agrege (clef prefixee _ : HORS schema Sheet,
@@ -633,6 +652,8 @@ def ligne(a):
         "publication_number": a["publication_number"],
         "lien": a["lien"],
         "a_demarcher": demarche,
+        "pays_titulaire": a.get("pays_titulaire", ""),
+        "titulaire_etranger": a.get("titulaire_etranger", ""),
     }
     return [str(valeurs.get(c, "")) for c in COLONNES]
 
