@@ -97,15 +97,23 @@ def enrichir(leads):
     return out
 
 
-def generer_cockpit(leads, risque=None):
+def generer_cockpit(leads, geo=None, suivi=None, risque=None):
     """leads (schema dashboard) -> HTML autonome. Fonction PURE (testable
-    offline). `risque` : table posture par zone (defaut = dash.RISQUE_ZONE)."""
+    offline).
+    geo    : flux geopolitique (dash.preparer_geo), liste de dicts. Defaut [].
+    suivi  : {url, token, api} pour le bouton de statut. Defaut : desactive.
+    risque : table posture par zone (defaut = dash.RISQUE_ZONE)."""
     risque = risque if risque is not None else getattr(dash, "RISQUE_ZONE", {})
+    suivi = suivi or {}
     payload = enrichir(leads)
     return (GABARIT
             .replace("__LEADS_JSON__", json.dumps(payload, ensure_ascii=False))
             .replace("__COORDS_JSON__", json.dumps(COORDS, ensure_ascii=False))
-            .replace("__RISQUE_JSON__", json.dumps(risque, ensure_ascii=False)))
+            .replace("__RISQUE_JSON__", json.dumps(risque, ensure_ascii=False))
+            .replace("__GEO_JSON__", json.dumps(geo or [], ensure_ascii=False))
+            .replace("__SUIVI_URL__", json.dumps(suivi.get("url", "")))
+            .replace("__SUIVI_TOKEN__", json.dumps(suivi.get("token", "")))
+            .replace("__API_STATUT__", "true" if suivi.get("api") else "false"))
 
 
 def main():
@@ -116,8 +124,27 @@ def main():
         print("ERREUR : TED_SHEET_ID et GOOGLE_SERVICE_ACCOUNT_FILE sont requis.")
         sys.exit(1)
     print("Cockpit : lecture du moteur de donnees (charger_leads)...")
-    leads, _ = dash.charger_leads(sheet_id, fichier)
-    html = generer_cockpit(leads)
+    leads, onglets = dash.charger_leads(sheet_id, fichier)
+    # Flux geopolitique : les alertes sont a la 13e position du tuple onglets
+    # (meme ordre que radar_dashboard : ... analyses_attrib, lignes_alertes ...).
+    # preparer_geo ne garde que la semaine en cours. Best-effort : une structure
+    # inattendue n'empeche pas la generation.
+    geo = []
+    try:
+        lignes_alertes = onglets[12]
+        geo = dash.preparer_geo(lignes_alertes)
+    except Exception as e:
+        print("(cockpit) flux geo indisponible ({}) -- vue Geo vide.".format(
+            str(e)[:80]))
+    # Bouton de statut : meme mecanisme que le dashboard (POST Apps Script).
+    # api=False car cette page est servie en STATIQUE (Cloudflare) ; l'app
+    # Render passera api=True quand elle servira le cockpit (Lot 2b).
+    suivi = {
+        "url": os.environ.get("SUIVI_WEBAPP_URL", "") or "",
+        "token": os.environ.get("SUIVI_TOKEN", "") or "",
+        "api": False,
+    }
+    html = generer_cockpit(leads, geo=geo, suivi=suivi)
     dossier = os.path.dirname(sortie)
     if dossier:
         os.makedirs(dossier, exist_ok=True)
@@ -261,6 +288,30 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .dr-analyse{background:var(--surface-2);border:1px solid var(--line-2);border-radius:10px;padding:14px 16px;font-size:13px;line-height:1.6;color:var(--ink-2)}
 .dr-actions{display:flex;gap:10px;margin-top:8px}.dr-actions .btn{flex:1;justify-content:center}
 .empty{padding:60px;text-align:center;color:var(--ink-3);font-family:var(--mono);font-size:13px}
+.firmo-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px}
+.fcard{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px;box-shadow:var(--sh);transition:.15s;cursor:pointer}
+.fcard:hover{box-shadow:var(--sh-2);transform:translateY(-2px)}
+.fcard-top{display:flex;align-items:flex-start;gap:12px;margin-bottom:14px}
+.fmono{width:42px;height:42px;border-radius:10px;background:var(--amarante-soft);color:var(--amarante);display:grid;place-items:center;font-family:var(--display);font-weight:700;font-size:16px;flex:none}
+.fname{font-family:var(--display);font-weight:600;font-size:15px;line-height:1.25}
+.fmeta{font-size:11.5px;color:var(--ink-3);font-family:var(--mono);margin-top:3px}
+.fstats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0;padding:12px 0;border-top:1px solid var(--line-2);border-bottom:1px solid var(--line-2)}
+.fstat{text-align:center}.fstat .n{font-family:var(--display);font-weight:600;font-size:19px}.fstat .l{font-size:10px;color:var(--ink-3);font-family:var(--mono);text-transform:uppercase;margin-top:2px}
+.fchips{display:flex;flex-wrap:wrap;gap:6px}
+.fchip{font-size:10.5px;font-family:var(--mono);font-weight:600;padding:2px 8px;border-radius:5px;background:var(--surface-2);color:var(--ink-2);border:1px solid var(--line)}
+.geo-head{display:flex;gap:14px;margin-bottom:20px;flex-wrap:wrap}
+.geo-kpi{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 20px;box-shadow:var(--sh);flex:1;min-width:150px}
+.geo-kpi .n{font-family:var(--display);font-weight:600;font-size:26px}.geo-kpi .l{font-size:11.5px;color:var(--ink-2);font-weight:600;margin-top:2px}
+.geo-zone{margin-bottom:22px}
+.geo-zone h3{font-family:var(--display);font-size:15px;font-weight:600;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.geo-zone h3 .zdot{width:9px;height:9px;border-radius:50%}
+.geo-row{display:flex;align-items:center;gap:14px;background:var(--surface);border:1px solid var(--line);border-left-width:3px;border-radius:9px;padding:13px 16px;margin-bottom:8px;box-shadow:var(--sh)}
+.geo-sev{width:36px;height:36px;border-radius:8px;display:grid;place-items:center;font-family:var(--display);font-weight:700;color:#fff;flex:none;font-size:14px}
+.geo-mid{flex:1;min-width:0}.geo-pays{font-weight:600;font-size:14px}
+.geo-motif{font-size:12px;color:var(--ink-2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.geo-sens{font-family:var(--mono);font-size:11px;font-weight:600;padding:3px 9px;border-radius:20px;white-space:nowrap;flex:none}
+.geo-sens.up{background:var(--red-soft);color:var(--red)}.geo-sens.down{background:var(--green-soft);color:var(--green)}
+.geo-date{font-family:var(--mono);font-size:11px;color:var(--ink-3);flex:none}
 @media(max-width:1100px){.kpis{grid-template-columns:repeat(2,1fr)}.grid-2{grid-template-columns:1fr}.map-view{grid-template-columns:1fr;height:auto}#map{height:60vh}}
 @media(max-width:720px){.app{grid-template-columns:1fr}.side{display:none}}
 </style>
@@ -334,14 +385,35 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
       <div class="kpis" id="kpis-attrib"></div>
       <div class="tbl-wrap"><table><thead><tr><th>Titulaire</th><th>Marché gagné</th><th>Théâtre</th><th>Origine</th><th>Valeur</th><th>Statut</th></tr></thead><tbody id="tbody-attrib"></tbody></table></div>
     </section>
-    <section class="view" id="v-firmo"><div class="soon"><div><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg></div><h3>Fiche entreprise 360°</h3><p>Vue unifiée par titulaire : marchés gagnés, présence par théâtre, dirigeants et contacts enrichis. Lot 2 de la migration.</p></div></div></section>
-    <section class="view" id="v-geo"><div class="soon"><div><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 2l9 5v6c0 5-4 8-9 9-5-1-9-4-9-9V7z"/></svg></div><h3>Alertes géopolitiques</h3><p>Alertes voyageurs et événements superposés aux opportunités. Lot 2 de la migration.</p></div></div></section>
+    <section class="view" id="v-firmo">
+      <div class="filters"><div class="facet"><select id="ff-tri"><option value="marches">Trier par marchés</option><option value="valeur">Trier par valeur</option><option value="theatres">Trier par présence</option></select></div><div class="seg" id="ff-etr"><button data-e="" class="on">Toutes</button><button data-e="1">Étrangères</button></div><span class="chip-clear" id="ff-count"></span></div>
+      <div id="firmo-grid" class="firmo-grid"></div>
+    </section>
+    <section class="view" id="v-geo">
+      <div id="geo-head" class="geo-head"></div>
+      <div id="geo-body"></div>
+    </section>
   </div>
 </div>
 <div class="drawer-ov" id="drawer-ov" onclick="closeDrawer()"></div>
 <div class="drawer" id="drawer"><div id="drawer-content"></div></div>
 <script>
-const RAW=__LEADS_JSON__, COORDS=__COORDS_JSON__, RISQUE=__RISQUE_JSON__;
+const RAW=__LEADS_JSON__, COORDS=__COORDS_JSON__, RISQUE=__RISQUE_JSON__, GEO=__GEO_JSON__;
+const SUIVI_URL=__SUIVI_URL__, SUIVI_TOKEN=__SUIVI_TOKEN__, API_STATUT=__API_STATUT__;
+const SUIVI_ON=!!SUIVI_URL||API_STATUT;
+const SRC_SUIVI={TED:"TED",BM:"Banque Mondiale","PRIVÉ":"Privé BITD",RW:"ReliefWeb",PROPARCO:"Proparco",DFC:"DFC"};
+const ONGLET_SRC={TED:"ted_radar",BM:"bm_radar","PRIVÉ":"prive_radar",ATTRIB:"attributions_radar"};
+function leadId(l){return l.pub||l.lien||(l.src+"|"+l.pays+"|"+l.acheteur+"|"+l.titre);}
+// Statut local (optimiste) : le lead reflete l'action tout de suite, la
+// persistance part en arriere-plan (Apps Script + /api/statut si servie par Render).
+function envoyerStatut(l,statut,motif){
+  l.statut=statut;
+  if(SUIVI_URL){const p={token:SUIVI_TOKEN,id:leadId(l),source:SRC_SUIVI[l.src]||l.src,statut:statut,motif:motif||"",pays:l.pays||"",zone:l.zone||"",agence:l.acheteur||""};
+    fetch(SUIVI_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify(p)}).catch(function(){});}
+  if(API_STATUT){fetch("/api/statut",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify({onglet:ONGLET_SRC[l.src]||"",publication_number:l.pub||"",statut:statut,motif:motif||""})}).catch(function(){});}
+  closeDrawer();go(state.view);toast(statut==="non_pertinent"?"Marché écarté":"Marqué à contacter");
+}
+function toast(msg){let t=document.getElementById("toast");if(!t){t=document.createElement("div");t.id="toast";t.style.cssText="position:fixed;bottom:26px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:11px 20px;border-radius:9px;font-size:13px;font-weight:600;box-shadow:var(--sh-2);z-index:90;opacity:0;transition:.25s";document.body.appendChild(t);}t.textContent=msg;t.style.opacity="1";setTimeout(()=>t.style.opacity="0",2200);}
 function posture(z){const r=RISQUE[z]||1.5;return r>=4.5?["p-rouge","Posture rouge"]:r>=3?["p-orange","Posture orange"]:["p-jaune","Posture jaune"];}
 const LEADS=RAW.map((l,i)=>({
   id:i,titre:l.titre||"(sans titre)",src:l.src||"?",zone:l.zone||"Non classé",pays:l.pays||"",
@@ -484,12 +556,58 @@ function openDrawer(id){
     <div class="dr-sec"><h5>Cible commerciale</h5><div class="dr-analyse">${esc(l.cible)||"—"}${l.interlocuteur?"<br><strong>Interlocuteur :</strong> "+esc(l.interlocuteur):""}${l.besoin?"<br><strong>Besoin de sûreté :</strong> "+l.besoin:""}${l.nature?"<br><strong>Déploiement :</strong> "+natL:""}</div></div>
     ${l.justif?`<div class="dr-sec"><h5>Analyse</h5><div class="dr-analyse">${esc(l.justif)}</div></div>`:""}
     ${contact}
-    <div class="dr-sec"><h5>Action</h5><div class="dr-actions"><button class="btn pri">Marquer à contacter</button><button class="btn">Écarter</button></div>${l.lien?`<div style="margin-top:10px"><a class="btn" style="width:100%;justify-content:center" href="${l.lien}" target="_blank">Ouvrir l'avis source</a></div>`:""}</div>
+    <div class="dr-sec"><h5>Action</h5>${SUIVI_ON?`<div class="dr-actions"><button class="btn pri" onclick="envoyerStatut(LEADS[${l.id}],'contacte')">Marquer à contacter</button><button class="btn" onclick="ecarter(${l.id})">Écarter</button></div>`:'<div style="font-size:12px;color:var(--ink-3);font-family:var(--mono)">Suivi non configuré sur cette page (lecture seule).</div>'}${l.lien?`<div style="margin-top:10px"><a class="btn" style="width:100%;justify-content:center" href="${l.lien}" target="_blank">Ouvrir l'avis source</a></div>`:""}</div>
   </div>`;
   document.getElementById("drawer").classList.add("on");document.getElementById("drawer-ov").classList.add("on");
 }
 function closeDrawer(){document.getElementById("drawer").classList.remove("on");document.getElementById("drawer-ov").classList.remove("on");}
-const TITLES={overview:["Vue d'ensemble","Théâtre global"],opps:["Opportunités","Avis de marché et signaux privés"],map:["Carte des théâtres","Répartition géographique"],attrib:["Attributions","Qui a gagné quoi en zone à risque"],firmo:["Entreprises","Fiches titulaires 360°"],geo:["Géopolitique","Alertes et posture"]};
+function ecarter(id){const l=LEADS.find(x=>x.id===id);if(!l)return;const motif=prompt("Motif pour écarter ce marché (facultatif) :","")||"";envoyerStatut(l,"non_pertinent",motif);}
+// --- ENTREPRISES 360° : dedup transverse par titulaire ---
+let firmoState={tri:"marches",etr:""};
+function entreprises(){
+  const by={};
+  LEADS.forEach(l=>{const n=(l.titulaire||"").trim();if(!n)return;const k=n.toLowerCase();
+    if(!by[k])by[k]={nom:n,marches:[],zones:new Set(),secteurs:new Set(),valeur:0,origine:l.pays_tit||"",etranger:l.etranger,contact:{nom:l.nom,email:l.email}};
+    const e=by[k];e.marches.push(l);if(l.zone)e.zones.add(l.zone);if(l.secteur)e.secteurs.add(l.secteur);e.valeur+=l.valeur;
+    if(l.pays_tit&&!e.origine)e.origine=l.pays_tit;if(l.etranger)e.etranger=true;
+    if(l.email&&l.email!=="n.c."){e.contact={nom:l.nom,email:l.email};}});
+  return Object.values(by);
+}
+function renderFirmo(){
+  let ent=entreprises();
+  if(firmoState.etr)ent=ent.filter(e=>e.etranger);
+  ent.sort((a,b)=>firmoState.tri==="valeur"?b.valeur-a.valeur:firmoState.tri==="theatres"?b.zones.size-a.zones.size:b.marches.length-a.marches.length);
+  document.getElementById("ff-count").textContent=ent.length+" entreprise"+(ent.length>1?"s":"");
+  document.getElementById("firmo-grid").innerHTML=ent.map(e=>{
+    const ini=e.nom.replace(/[^A-Za-zÀ-ÿ ]/g,"").split(/\s+/).slice(0,2).map(w=>w[0]||"").join("").toUpperCase()||"?";
+    const z=[...e.zones];const s=[...e.secteurs];
+    return `<div class="fcard" onclick="openDrawer(${e.marches[0].id})">
+      <div class="fcard-top"><div class="fmono">${ini}</div><div><div class="fname">${esc(e.nom)}</div><div class="fmeta">${e.origine||"origine n.c."}${e.etranger?' · <span style="color:var(--blue)">étranger</span>':""}</div></div></div>
+      <div class="fstats"><div class="fstat"><div class="n">${e.marches.length}</div><div class="l">marchés</div></div><div class="fstat"><div class="n">${z.length}</div><div class="l">théâtres</div></div><div class="fstat"><div class="n">${e.valeur?fmtEur(e.valeur):"—"}</div><div class="l">valeur</div></div></div>
+      <div class="fchips">${z.slice(0,3).map(x=>`<span class="fchip">${x}</span>`).join("")}${s.slice(0,2).map(x=>`<span class="fchip">${x}</span>`).join("")}${e.contact.email&&e.contact.email!=="n.c."?'<span class="fchip" style="color:var(--green)">contact ✓</span>':""}</div>
+    </div>`;
+  }).join("")||'<div class="empty">Aucune entreprise titulaire identifiée pour l\'instant.</div>';
+}
+// --- GEOPOLITIQUE : alertes de la semaine, par theatre ---
+function posColor(z){const p=posture(z)[0];return p==="p-rouge"?"#C0392B":p==="p-orange"?"#B07419":"#33628F";}
+function renderGeo(){
+  const head=document.getElementById("geo-head");
+  if(!GEO.length){head.innerHTML="";document.getElementById("geo-body").innerHTML='<div class="empty">Aucune alerte cette semaine. Le contexte des théâtres est stable.</div>';return;}
+  const agg=GEO.filter(g=>g.sens==="aggravation"||g.sens==="up"||(+g.severite>=7)).length;
+  const zonesTouchees=new Set(GEO.map(g=>g.zone)).size;
+  head.innerHTML=`<div class="geo-kpi"><div class="n">${GEO.length}</div><div class="l">signaux cette semaine</div></div><div class="geo-kpi"><div class="n" style="color:var(--red)">${agg}</div><div class="l">aggravations</div></div><div class="geo-kpi"><div class="n">${zonesTouchees}</div><div class="l">théâtres concernés</div></div>`;
+  const byZone={};GEO.forEach(g=>{(byZone[g.zone||"Non classé"]=byZone[g.zone||"Non classé"]||[]).push(g);});
+  const zones=Object.keys(byZone).sort((a,b)=>byZone[b].length-byZone[a].length);
+  document.getElementById("geo-body").innerHTML=zones.map(z=>{
+    const col=posColor(z);
+    return `<div class="geo-zone"><h3><span class="zdot" style="background:${col}"></span>${z} · ${byZone[z].length}</h3>${byZone[z].map(g=>{
+      const sev=+g.severite||0;const sc=sev>=8?"#C0392B":sev>=5?"#B07419":"#33628F";
+      const up=g.sens==="aggravation"||g.sens==="up";
+      return `<div class="geo-row" style="border-left-color:${col}"><div class="geo-sev" style="background:${sc}">${sev||"·"}</div><div class="geo-mid"><div class="geo-pays">${esc(g.pays||g.iso3||"?")}</div><div class="geo-motif">${esc(g.motif||(g.avant&&g.apres?g.avant+" → "+g.apres:""))||"—"}</div></div><span class="geo-sens ${up?"up":"down"}">${up?"▲ aggravation":"▼ amélioration"}</span><span class="geo-date">${g.date||""}</span></div>`;
+    }).join("")}</div>`;
+  }).join("");
+}
+const TITLES={overview:["Vue d'ensemble","Théâtre global"],opps:["Opportunités","Avis de marché et signaux privés"],map:["Carte des théâtres","Répartition géographique"],attrib:["Attributions","Qui a gagné quoi en zone à risque"],firmo:["Entreprises","Fiches titulaires 360°"],geo:["Géopolitique","Alertes de la semaine"]};
 function go(v){
   state.view=v;
   document.querySelectorAll(".nav a").forEach(a=>a.classList.toggle("on",a.dataset.view===v));
@@ -498,6 +616,7 @@ function go(v){
   document.getElementById("top-title").textContent=TITLES[v][0];document.getElementById("top-crumb").textContent=TITLES[v][1];
   if(v==="overview"){renderTheatres();renderKPIs();renderCharts();renderFunnel();renderHot();}
   if(v==="opps")renderTable();if(v==="attrib")renderAttrib();
+  if(v==="firmo")renderFirmo();if(v==="geo")renderGeo();
   if(v==="map")setTimeout(()=>{initMap();map.invalidateSize();},60);
 }
 function goZone(z){state.zone=z;document.getElementById("f-zone").value=z;go("opps");renderTable();}
@@ -524,6 +643,8 @@ document.getElementById("nav").addEventListener("click",e=>{const a=e.target.clo
 document.getElementById("cnt-opps").textContent=LEADS.filter(l=>l.src!=="ATTRIB").length;
 document.getElementById("cnt-attrib").textContent=LEADS.filter(l=>l.src==="ATTRIB").length;
 document.getElementById("run-meta").textContent=LEADS.length+" leads";
+document.getElementById("ff-tri").onchange=e=>{firmoState.tri=e.target.value;renderFirmo();};
+document.querySelectorAll("#ff-etr button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#ff-etr button").forEach(x=>x.classList.remove("on"));b.classList.add("on");firmoState.etr=b.dataset.e;renderFirmo();});
 initFilters();go("overview");
 </script>
 </body>
