@@ -1,0 +1,30 @@
+name: Sonde enrichissement titulaire
+# Diagnostic ponctuel, DECLENCHEMENT MANUEL UNIQUEMENT (workflow_dispatch).
+# Ne touche a rien. Mesure le remplissage reel des champs winner-* (taille,
+# nationalite proprietaire, ville, pays) pour qualifier un lead. Jetable.
+on:
+  workflow_dispatch:
+    inputs:
+      pn:
+        description: "publication-number a cibler (vide = attributions recentes)"
+        required: false
+        default: ""
+      dryrun:
+        description: "1 = afficher la requete sans l'envoyer"
+        required: false
+        default: ""
+jobs:
+  sonde-enrich:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Sonder l'enrichissement titulaire
+        env:
+          SONDE_PN: ${{ github.event.inputs.pn }}
+          SONDE_ENRICH_DRYRUN: ${{ github.event.inputs.dryrun }}
+        run: python sonde_enrich_titulaire.py
