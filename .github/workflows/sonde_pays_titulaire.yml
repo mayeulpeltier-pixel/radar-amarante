@@ -1,0 +1,37 @@
+name: Sonde pays titulaire
+# Diagnostic ponctuel, DECLENCHEMENT MANUEL UNIQUEMENT (workflow_dispatch).
+# Ne touche a rien : ni Google Sheet, ni Postgres, ni etat, ni dashboard.
+# Verifie si le pays (et l'UBO) du titulaire d'attribution sont recuperables
+# en SPARQL, et par quel chemin. Sonde jetable : supprimer apres le verdict.
+#
+# UTILISATION : onglet Actions > "Sonde pays titulaire" > Run workflow.
+# Option pn : cibler une attribution (defaut 10759-2026).
+on:
+  workflow_dispatch:
+    inputs:
+      pn:
+        description: "publication-number d'une attribution (ex 10759-2026)"
+        required: false
+        default: "10759-2026"
+      dryrun:
+        description: "1 = afficher les requetes sans les envoyer"
+        required: false
+        default: ""
+jobs:
+  sonde-pays:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer requests
+        run: pip install requests
+      - name: Sonder le pays du titulaire
+        env:
+          SONDE_PN: ${{ github.event.inputs.pn }}
+          SONDE_PAYS_DRYRUN: ${{ github.event.inputs.dryrun }}
+        run: python sonde_pays_titulaire.py
