@@ -141,6 +141,37 @@ class TestChaineSparqlVersTed(unittest.TestCase):
         self.assertEqual(a["titulaire_etranger"], "oui")  # DEU hors UKR
 
 
+class TestSourcePaysApi(unittest.TestCase):
+    """winner-country (API) est la source PRIMAIRE de pays_titulaire ;
+    le SPARQL (parse) ne comble que si l'API est muette."""
+
+    def test_api_dedup_iso3(self):
+        self.assertEqual(att._pays_titulaire_api({"winner-country": ["NOR", "NOR"]}), "NOR")
+
+    def test_api_multi_pays(self):
+        self.assertEqual(
+            att._pays_titulaire_api({"winner-country": ["NOR", "DEU", "NOR"]}), "NOR; DEU")
+
+    def test_api_prime_sur_sparql(self):
+        notice = {"publication-number": "1-2026", "place-of-performance": "MLI",
+                  "winner-country": ["DEU"]}
+        parse = {"gagnants": [{"nom": "X", "valeur": ""}], "total": "",
+                 "sous_traitance": False, "pays_titulaire": "FRA"}  # SPARQL
+        a = att.normaliser(notice, parse)
+        self.assertEqual(a["pays_titulaire"], "DEU")        # l'API gagne
+        self.assertEqual(a["titulaire_etranger"], "oui")
+
+    def test_sparql_comble_si_api_muette(self):
+        notice = {"publication-number": "1-2026", "place-of-performance": "MLI"}
+        parse = {"gagnants": [], "total": "", "sous_traitance": False,
+                 "pays_titulaire": "FRA"}
+        a = att.normaliser(notice, parse)
+        self.assertEqual(a["pays_titulaire"], "FRA")        # SPARQL comble
+
+    def test_fields_demande_winner_country(self):
+        self.assertIn("winner-country", att._corps(1, True)["fields"])
+
+
 class TestInjectionPrompt(unittest.TestCase):
     """Le pays d'adresse (socle deterministe) est injecte comme INDICE dans le
     prompt LLM d'attributions_analyse, sans remplacer l'inference d'origine."""
