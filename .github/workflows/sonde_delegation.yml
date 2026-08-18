@@ -1,0 +1,30 @@
+name: Sonde diplomatie economique
+# Diagnostic ponctuel, DECLENCHEMENT MANUEL (workflow_dispatch). Ne touche a rien.
+# Verifie si Google News renvoie des signaux delegation / mission eco / MEDEF
+# exploitables, avant de cabler un collecteur. Jetable.
+on:
+  workflow_dispatch:
+    inputs:
+      jours:
+        description: "Fenetre de fraicheur en jours (defaut 60)"
+        required: false
+        default: "60"
+      dryrun:
+        description: "1 = afficher les URL sans les envoyer"
+        required: false
+        default: ""
+jobs:
+  sonde-deleg:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Sonder l'angle diplomatie economique
+        env:
+          SONDE_DELEG_JOURS: ${{ github.event.inputs.jours }}
+          SONDE_DELEG_DRYRUN: ${{ github.event.inputs.dryrun }}
+        run: python sonde_delegation.py
