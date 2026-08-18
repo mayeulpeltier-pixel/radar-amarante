@@ -201,6 +201,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .search input{border:none;outline:none;background:none;font-family:var(--body);font-size:13px;width:100%;color:var(--ink)}
 .btn{display:inline-flex;align-items:center;gap:7px;padding:8px 14px;border-radius:8px;font-size:13px;font-weight:600;border:1px solid var(--line);background:var(--surface);color:var(--ink-2);transition:.12s}
 .btn:hover{border-color:var(--ink-3);color:var(--ink)}.btn.pri{background:var(--amarante);border-color:var(--amarante);color:#fff}.btn.pri:hover{background:var(--amarante-2)}
+.btn.on-watch{background:var(--blue-soft);border-color:var(--blue);color:var(--blue)}
 .view{padding:26px;display:none}.view.on{display:block;animation:fade .3s ease}
 @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 .theatres{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:22px}
@@ -264,6 +265,9 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .mini-badges{display:flex;gap:5px;margin-top:4px;flex-wrap:wrap}
 .mb{font-size:9.5px;font-family:var(--mono);font-weight:600;padding:1px 6px;border-radius:4px;text-transform:uppercase}
 .mb.renouv{background:var(--amber-soft);color:var(--amber)}.mb.etr{background:var(--blue-soft);color:var(--blue)}.mb.secu{background:var(--red-soft);color:var(--red)}
+.mb.surv{background:var(--blue-soft);color:var(--blue)}.mb.attribp{background:var(--green-soft);color:var(--green)}
+.chip-toggle{padding:8px 13px;border-radius:8px;font-size:12.5px;font-weight:600;border:1px solid var(--line);background:var(--surface);color:var(--ink-2)}
+.chip-toggle.on{background:var(--blue-soft);color:var(--blue);border-color:var(--blue)}
 .map-view{display:grid;grid-template-columns:250px 1fr;gap:16px;height:calc(100vh - 60px - 52px)}
 #map{border-radius:12px;border:1px solid var(--line);box-shadow:var(--sh);height:100%}
 .map-side{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px;box-shadow:var(--sh);overflow:auto}
@@ -359,6 +363,7 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
         <div class="facet"><select id="f-sect"><option value="">Tous les secteurs</option></select></div>
         <div class="facet"><select id="f-src"><option value="">Toutes les sources</option></select></div>
         <div class="seg" id="f-prio"><button data-p="" class="on">Toutes</button><button data-p="contacter">À contacter</button><button data-p="surveiller">À surveiller</button></div>
+        <button class="chip-toggle" id="f-surv" onclick="toggleSurv()">👁 Surveillés</button>
         <button class="chip-clear" onclick="resetFilters()">Réinitialiser</button>
       </div>
       <div class="tbl-wrap"><table><thead><tr>
@@ -411,14 +416,21 @@ function envoyerStatut(l,statut,motif){
   if(SUIVI_URL){const p={token:SUIVI_TOKEN,id:leadId(l),source:SRC_SUIVI[l.src]||l.src,statut:statut,motif:motif||"",pays:l.pays||"",zone:l.zone||"",agence:l.acheteur||""};
     fetch(SUIVI_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify(p)}).catch(function(){});}
   if(API_STATUT){fetch("/api/statut",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify({onglet:ONGLET_SRC[l.src]||"",publication_number:l.pub||"",statut:statut,motif:motif||""})}).catch(function(){});}
-  closeDrawer();go(state.view);toast(statut==="non_pertinent"?"Marché écarté":"Marqué à contacter");
+  closeDrawer();go(state.view);toast(statut==="non_pertinent"?"Marché écarté":statut==="surveille"?"Ajouté à la surveillance":"Marqué à contacter");
 }
 function toast(msg){let t=document.getElementById("toast");if(!t){t=document.createElement("div");t.id="toast";t.style.cssText="position:fixed;bottom:26px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:11px 20px;border-radius:9px;font-size:13px;font-weight:600;box-shadow:var(--sh-2);z-index:90;opacity:0;transition:.25s";document.body.appendChild(t);}t.textContent=msg;t.style.opacity="1";setTimeout(()=>t.style.opacity="0",2200);}
+// --- SURVEILLANCE : marquer un marche amont pour que le run signale toute
+// attribution (surveillance_attributions.py, matching Jaccard). Statut
+// 'surveille' -> bascule en 'attribution_publiee' + gagnant au prochain run. ---
+let SURV=new Set();try{SURV=new Set(JSON.parse(localStorage.getItem("ck_surveilles")||"[]"));}catch(e){}
+function estSurveille(l){return l.statut==="surveille"||l.statut==="attribution_publiee"||SURV.has(leadId(l));}
+function attribParue(l){return l.statut==="attribution_publiee";}
+function surveiller(id){const l=LEADS.find(x=>x.id===id);if(!l)return;SURV.add(leadId(l));try{localStorage.setItem("ck_surveilles",JSON.stringify([...SURV]));}catch(e){}envoyerStatut(l,"surveille","");}
 function posture(z){const r=RISQUE[z]||1.5;return r>=4.5?["p-rouge","Posture rouge"]:r>=3?["p-orange","Posture orange"]:["p-jaune","Posture jaune"];}
 const LEADS=RAW.map((l,i)=>({
   id:i,titre:l.titre||"(sans titre)",src:l.src||"?",zone:l.zone||"Non classé",pays:l.pays||"",
   secteur:l.sect||l.grp||"Autre",score:+l.final||0,prio:l.action||"surveiller",valeur:+l.valeur_meur||0,
-  acheteur:l.agence||"n.c.",statut:l.statut||"nouveau",titulaire:l.entreprise||"",pays_tit:l.origine||"",
+  acheteur:l.agence||"n.c.",statut:l.statut||"nouveau",motif:l.motif_ecart||l.motif||"",titulaire:l.entreprise||"",pays_tit:l.origine||"",
   etranger:!!l.etranger_titulaire,renouv:l.statut_renouv||"",nature:l.nature_deploiement||"",besoin:l.besoin_surete||"",
   interlocuteur:l.interlocuteur||"",cible:l.cible||"",justif:l.justif||"",lien:l.lien||"",secu:!!l.secu,
   mois:l.mois_label||l.mois||"",nom:l.nom||"n.c.",email:l.email||"n.c.",tel:l.tel||"n.c.",win:l.win||"",pub:l.pub||""
@@ -429,7 +441,7 @@ const PRIO_LBL={contacter:"À contacter",surveiller:"À surveiller",ignorer:"À 
 const fmtEur=v=>!v?"n.c.":v>=1?v.toFixed(v<10?1:0)+" M€":(v*1000).toFixed(0)+" k€";
 const scoreColor=s=>s>=8?"#237A57":s>=6?"#B07419":s>=4?"#33628F":"#8B93A2";
 const actifs=()=>LEADS.filter(l=>l.statut!=="écarté"&&l.statut!=="perdu");
-let state={view:"overview",zone:"",sect:"",src:"",prio:"",q:"",sort:"score",dir:-1};
+let state={view:"overview",zone:"",sect:"",src:"",prio:"",q:"",surv:false,sort:"score",dir:-1};
 
 function renderTheatres(){
   const byZone={};actifs().forEach(l=>{(byZone[l.zone]=byZone[l.zone]||[]).push(l);});
@@ -490,6 +502,7 @@ function renderHot(){
 }
 function filtered(){
   return LEADS.filter(l=>{
+    if(state.surv&&!estSurveille(l))return false;
     if(state.zone&&l.zone!==state.zone)return false;
     if(state.sect&&l.secteur!==state.sect)return false;
     if(state.src&&l.src!==state.src)return false;
@@ -502,7 +515,8 @@ function esc(s){return(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace
 function renderTable(){
   const rows=filtered();
   document.getElementById("tbody").innerHTML=rows.map(l=>{
-    const b=[];if(l.renouv==="imminent")b.push('<span class="mb renouv">renouv. imminent</span>');else if(l.renouv==="a_venir")b.push('<span class="mb renouv">renouv. à venir</span>');
+    const b=[];if(attribParue(l))b.push('<span class="mb attribp">🎯 attribution parue</span>');else if(estSurveille(l))b.push('<span class="mb surv">👁 surveillé</span>');
+    if(l.renouv==="imminent")b.push('<span class="mb renouv">renouv. imminent</span>');else if(l.renouv==="a_venir")b.push('<span class="mb renouv">renouv. à venir</span>');
     if(l.etranger)b.push('<span class="mb etr">titulaire étranger</span>');if(l.secu)b.push('<span class="mb secu">sûreté en place</span>');
     return `<tr onclick="openDrawer(${l.id})"><td><div class="t-title">${esc(l.titre)}</div><div class="t-sub">${esc(l.acheteur)}</div>${b.length?`<div class="mini-badges">${b.join("")}</div>`:""}</td><td>${l.zone}<div class="t-sub">${l.pays}</div></td><td>${l.secteur}</td><td class="t-val">${fmtEur(l.valeur)}</td><td><span class="t-score" style="color:${scoreColor(l.score)}">${l.score.toFixed(1)}</span></td><td><span class="tag-src ${l.src}">${l.src}</span></td><td><span class="pill ${l.prio}">${PRIO_LBL[l.prio]||l.prio}</span></td></tr>`;
   }).join("")||'<tr><td colspan="7" class="empty">Aucun marché ne correspond à ces filtres.</td></tr>';
@@ -556,7 +570,8 @@ function openDrawer(id){
     <div class="dr-sec"><h5>Cible commerciale</h5><div class="dr-analyse">${esc(l.cible)||"—"}${l.interlocuteur?"<br><strong>Interlocuteur :</strong> "+esc(l.interlocuteur):""}${l.besoin?"<br><strong>Besoin de sûreté :</strong> "+l.besoin:""}${l.nature?"<br><strong>Déploiement :</strong> "+natL:""}</div></div>
     ${l.justif?`<div class="dr-sec"><h5>Analyse</h5><div class="dr-analyse">${esc(l.justif)}</div></div>`:""}
     ${contact}
-    <div class="dr-sec"><h5>Action</h5>${SUIVI_ON?`<div class="dr-actions"><button class="btn pri" onclick="envoyerStatut(LEADS[${l.id}],'contacte')">Marquer à contacter</button><button class="btn" onclick="ecarter(${l.id})">Écarter</button></div>`:'<div style="font-size:12px;color:var(--ink-3);font-family:var(--mono)">Suivi non configuré sur cette page (lecture seule).</div>'}${l.lien?`<div style="margin-top:10px"><a class="btn" style="width:100%;justify-content:center" href="${l.lien}" target="_blank">Ouvrir l'avis source</a></div>`:""}</div>
+    ${estSurveille(l)?`<div class="dr-sec"><h5>Surveillance</h5><div class="dr-analyse">${attribParue(l)?'<strong style="color:var(--green)">🎯 Attribution parue au dernier run.</strong>'+(l.motif?"<br>Titulaire détecté : <strong>"+esc(l.motif)+"</strong>":""):"👁 Ce marché est surveillé. Chaque run vérifie s\'il a été attribué (et par qui) ou s\'il évolue."}</div></div>`:""}
+    <div class="dr-sec"><h5>Action</h5>${SUIVI_ON?`<div class="dr-actions"><button class="btn pri" onclick="envoyerStatut(LEADS[${l.id}],'contacte')">À contacter</button><button class="btn${estSurveille(l)?' on-watch':''}" onclick="surveiller(${l.id})">${estSurveille(l)?"Surveillé ✓":"Surveiller"}</button><button class="btn" onclick="ecarter(${l.id})">Écarter</button></div>`:'<div style="font-size:12px;color:var(--ink-3);font-family:var(--mono)">Suivi non configuré sur cette page (lecture seule).</div>'}${l.lien?`<div style="margin-top:10px"><a class="btn" style="width:100%;justify-content:center" href="${l.lien}" target="_blank">Ouvrir l'avis source</a></div>`:""}</div>
   </div>`;
   document.getElementById("drawer").classList.add("on");document.getElementById("drawer-ov").classList.add("on");
 }
@@ -632,7 +647,8 @@ function initFilters(){
   document.querySelectorAll("thead th[data-sort]").forEach(th=>th.onclick=()=>{const k=th.dataset.sort;state.dir=(state.sort===k)?-state.dir:-1;state.sort=k;renderTable();});
   document.getElementById("search").oninput=e=>{state.q=e.target.value;if(state.view==="opps")renderTable();};
 }
-function resetFilters(){state.zone=state.sect=state.src=state.prio="";["f-zone","f-sect","f-src"].forEach(i=>document.getElementById(i).value="");document.querySelectorAll("#f-prio button").forEach((x,i)=>x.classList.toggle("on",i===0));renderTable();}
+function toggleSurv(){state.surv=!state.surv;document.getElementById("f-surv").classList.toggle("on",state.surv);renderTable();}
+function resetFilters(){state.zone=state.sect=state.src=state.prio="";state.surv=false;document.getElementById("f-surv").classList.remove("on");["f-zone","f-sect","f-src"].forEach(i=>document.getElementById(i).value="");document.querySelectorAll("#f-prio button").forEach((x,i)=>x.classList.toggle("on",i===0));renderTable();}
 function exportCSV(){
   const rows=state.view==="opps"?filtered():LEADS;
   const head=["titre","zone","pays","secteur","valeur_meur","score","source","priorite","titulaire","origine"];
