@@ -111,6 +111,21 @@ class TestLot2(unittest.TestCase):
                                      motif_ecart="Constructora Meco")])
         self.assertIn("Constructora Meco", h)
 
+    def test_watchlist_injectee(self):
+        wl = [{"entreprise": "Bouygues", "secteur": "BTP", "wl": "prives"}]
+        h = rc.generer_cockpit([lead()], watchlist=wl)
+        self.assertNotIn("__WATCHLIST_JSON__", h)
+        self.assertIn("Bouygues", h)
+
+    def test_watchlist_defaut_vide(self):
+        h = rc.generer_cockpit([lead()])
+        self.assertIn("WATCHLIST=[]", h)
+
+    def test_type_activite_mappe(self):
+        h = rc.generer_cockpit([lead(src="PRIVÉ", entreprise="Vinci",
+                                     type_activite="delegation_mission")])
+        self.assertIn("delegation_mission", h)
+
 
 if __name__ == "__main__":
     unittest.main()
