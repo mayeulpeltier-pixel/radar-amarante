@@ -71,6 +71,13 @@ NOM_ONGLET_PRIVE = "prive_radar"
 GNEWS_BASE = "https://news.google.com/rss/search"
 DECLENCHEURS = ("contrat OR export OR implantation OR usine OR filiale OR livraison "
                 "OR chantier OR essais OR démonstration OR formation OR déploiement")
+# Angle DIPLOMATIE ECONOMIQUE (signal precoce : le deploiement se prepare).
+# Delegation officielle, mission economique, voyage MEDEF/patronal, forum
+# economique, visite d'Etat accompagnee d'entreprises. Valide par sonde (volume
+# frais correct, bruit faible) le 19/08/2026. FR + EN pour la presse etrangere.
+DECLENCHEURS_DIPLO = ('délégation OR "mission économique" OR MEDEF OR '
+                      '"mission patronale" OR "forum économique" OR "visite d\'État" '
+                      'OR "trade delegation" OR "economic mission" OR "business forum"')
 MAX_ARTICLES_PAR_ENTREPRISE = 6
 PAUSE_ENTRE_REQUETES = 1.0
 JOURS_FRAICHEUR = 120                 # on ignore les articles plus vieux
@@ -102,6 +109,7 @@ POIDS_ACTIVITE = {
     "livraison_mise_en_service": 0.6,
     "recrutement_local": 0.6,
     "contrat_export": 0.4,           # signal amont, presence a venir (revu a la baisse)
+    "delegation_mission": 0.35,      # signal PRECOCE : mission eco / MEDEF, deploiement en preparation
     "autre": 0.25,
 }
 POIDS_IMMINENCE = {"immediate": 1.0, "court_terme": 0.85, "indetermine": 0.7}
@@ -232,12 +240,13 @@ Titre : {titre}
 Extrait : {resume}
 
 Signal PERTINENT : contrat d'export signé, implantation (usine/filiale/bureau) à l'étranger, essais ou démonstration terrain, mission de formation ou de MCO sur site client, recrutement de personnel en pays étranger, incident sécuritaire touchant l'entreprise ou ses équipes.
+Signal PRECOCE (type_activite "delegation_mission") : l'entreprise participe à une délégation économique, une mission patronale/MEDEF, un forum économique ou un déplacement officiel (visite d'État accompagnée d'entreprises) VERS un pays à risque. C'est une intention de déploiement, pas encore un déploiement : confiance modérée (<= 0.6). ATTENTION, à rejeter (signal=false) : les délégations religieuses, sportives, culturelles, universitaires ou purement diplomatiques SANS dimension entreprise/business.
 PAS un signal : résultats financiers, nominations, produits sans déploiement, actualité franco-française, rumeur vague.
 
 Sois STRICT : dans le doute, signal=false. La confiance reflète ta certitude que c'est un vrai déploiement à l'étranger.
 
 Réponds UNIQUEMENT par un objet JSON strict, sans texte autour :
-{{"signal": true/false, "iso3": "code ISO3 du pays de déploiement ou vide", "pays": "nom du pays ou vide", "type_activite": "formation_mco|implantation|essais_demonstration|livraison_mise_en_service|recrutement_local|incident|contrat_export|autre", "imminence": "immediate|court_terme|indetermine", "confiance": 0.0, "resume": "une phrase factuelle"}}"""
+{{"signal": true/false, "iso3": "code ISO3 du pays de déploiement ou vide", "pays": "nom du pays ou vide", "type_activite": "formation_mco|implantation|essais_demonstration|livraison_mise_en_service|recrutement_local|incident|contrat_export|delegation_mission|autre", "imminence": "immediate|court_terme|indetermine", "confiance": 0.0, "resume": "une phrase factuelle"}}"""
 
 PROMPT_VERIFICATION = """Vérification rigoureuse d'un signal commercial pour une société de protection de personnes en zones à risque. Un premier tri a jugé cet article comme un possible signal de déploiement de personnels français à l'étranger. Confirme ou infirme.
 
@@ -248,7 +257,7 @@ Extrait : {resume}
 Confirme (confirme=true) UNIQUEMENT si l'article établit de façon crédible un déploiement réel ou imminent de personnels de cette entreprise dans un pays étranger identifiable. Sinon confirme=false. Corrige le pays et le type d'activité si le premier tri s'est trompé.
 
 Réponds UNIQUEMENT par un objet JSON strict :
-{{"confirme": true/false, "iso3": "ISO3 ou vide", "pays": "nom ou vide", "type_activite": "formation_mco|implantation|essais_demonstration|livraison_mise_en_service|recrutement_local|incident|contrat_export|autre", "imminence": "immediate|court_terme|indetermine", "confiance": 0.0, "resume": "une phrase factuelle"}}"""
+{{"confirme": true/false, "iso3": "ISO3 ou vide", "pays": "nom ou vide", "type_activite": "formation_mco|implantation|essais_demonstration|livraison_mise_en_service|recrutement_local|incident|contrat_export|delegation_mission|autre", "imminence": "immediate|court_terme|indetermine", "confiance": 0.0, "resume": "une phrase factuelle"}}"""
 
 
 def _appel_llm(prompt, modele=None, temperature=0.0):
