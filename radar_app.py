@@ -288,9 +288,27 @@ def generer_page(conn):
         analyses_attrib, lignes_miga=lignes_miga, lignes_ifc=lignes_ifc,
         lignes_idb=lignes_idb, lignes_bmp=lignes_bmp,
         lignes_proparco=lignes_proparco, lignes_dfc=lignes_dfc)
-    # api_statut=True : sur l'application, le bouton ecrit aussi en base.
-    return dash.generer_html(leads, lignes_watchlist, api_statut=True,
-                             alertes=lignes_alertes)
+    # Rendu : le COCKPIT (nouvelle interface) est desormais servi par defaut,
+    # avec api=True -> le bouton ecrit en base via /api/statut. Repli possible
+    # sur l'ancien dashboard sans redeploiement : poser RADAR_LEGACY=1 dans
+    # l'environnement Render. Best-effort : si le cockpit echoue, on retombe
+    # sur le dashboard plutot que de renvoyer une erreur.
+    geo = dash.preparer_geo(lignes_alertes)
+    if os.environ.get("RADAR_LEGACY") == "1":
+        return dash.generer_html(leads, lignes_watchlist, api_statut=True,
+                                 alertes=lignes_alertes)
+    try:
+        import radar_cockpit
+        suivi = {"url": os.environ.get("SUIVI_WEBAPP_URL", "") or "",
+                 "token": os.environ.get("SUIVI_TOKEN", "") or "",
+                 "api": True}
+        watch = radar_cockpit.charger_watchlist(None, None, lignes_watchlist)
+        return radar_cockpit.generer_cockpit(leads, geo=geo, suivi=suivi,
+                                             watchlist=watch)
+    except Exception as e:
+        print("(app) cockpit indisponible ({}), repli dashboard.".format(str(e)[:100]))
+        return dash.generer_html(leads, lignes_watchlist, api_statut=True,
+                                 alertes=lignes_alertes)
 
 
 # ===========================================================================
