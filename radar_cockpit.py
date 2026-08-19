@@ -111,20 +111,24 @@ def charger_watchlist(sheet_id, fichier, lignes_bitd=None):
                 "entreprise": nom,
                 "secteur": (d.get("secteur") or "Défense / BITD").strip(),
                 "wl": "bitd"})
-    try:
-        import signaux_prives as sp
-        classeur = sp._ouvrir_classeur(sheet_id, fichier)
-        vals = classeur.worksheet("watchlist_prives").get_all_values()
-        for c in sp.lire_watchlist_multisecteurs(vals):
-            nom = (c.get("entreprise") or "").strip()
-            if nom:
-                ents.setdefault(nom.lower(), {
-                    "entreprise": nom,
-                    "secteur": (c.get("secteur") or "Autre").strip(),
-                    "wl": "prives"})
-    except Exception as e:
-        print("(cockpit) watchlist_prives non lue ({}) : BITD + signaux seuls.".format(
-            str(e)[:70]))
+    # Lecture de watchlist_prives seulement si un classeur est fourni (chemin
+    # dashboard). Sur Render (lecture Postgres), sheet_id/fichier sont absents :
+    # on se limite au BITD deja passe, sans tentative Sheet.
+    if sheet_id and fichier:
+        try:
+            import signaux_prives as sp
+            classeur = sp._ouvrir_classeur(sheet_id, fichier)
+            vals = classeur.worksheet("watchlist_prives").get_all_values()
+            for c in sp.lire_watchlist_multisecteurs(vals):
+                nom = (c.get("entreprise") or "").strip()
+                if nom:
+                    ents.setdefault(nom.lower(), {
+                        "entreprise": nom,
+                        "secteur": (c.get("secteur") or "Autre").strip(),
+                        "wl": "prives"})
+        except Exception as e:
+            print("(cockpit) watchlist_prives non lue ({}) : BITD + signaux seuls.".format(
+                str(e)[:70]))
     return list(ents.values())
 
 
