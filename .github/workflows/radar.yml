@@ -117,6 +117,12 @@ jobs:
           # ou si l'endpoint rame (disjoncteur). "1" active, "0" (ou ligne
           # retiree) revient au PDF seul. Reversible sans autre changement.
           RADAR_SPARQL_TITULAIRES: "1"
+          # Angle DIPLOMATIE ECONOMIQUE (signal precoce) : passe Google News
+          # dediee par entreprise de la watchlist (delegation / mission eco /
+          # MEDEF), fenetre 30j, type_activite "delegation_mission". "1"
+          # active, "0" (ou ligne retiree) desactive. Additif, reversible.
+          RADAR_DIPLO: "1"
+          RADAR_DIPLO_JOURS: "30"
           ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
           ADZUNA_APP_KEY: ${{ secrets.ADZUNA_APP_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -381,11 +387,10 @@ jobs:
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
           DASHBOARD_OUTPUT: public/index.html
-          # Le cockpit (nouvelle interface) est genere DANS le meme process,
-          # a partir des memes leads : aucune 2e lecture du Sheet (pas de 429).
-          # BASCULE le jour voulu : inverser ces deux sorties ->
-          #   DASHBOARD_OUTPUT: public/legacy.html  (ancien sur /legacy.html)
-          #   COCKPIT_OUTPUT:   public/index.html   (cockpit en page d'accueil)
+          # Cockpit (nouvelle interface) genere DANS le meme process, memes
+          # leads : aucune 2e lecture du Sheet (pas de 429). BASCULE le jour
+          # voulu : DASHBOARD_OUTPUT -> public/legacy.html et COCKPIT_OUTPUT
+          # -> public/index.html.
           COCKPIT_OUTPUT: public/cockpit.html
           # SUIVI_* : active le bouton "Je contacte" (POST vers le webapp Apps
           # Script). Sans eux, le bouton ne s'affiche pas (dashboard intact).
