@@ -130,6 +130,15 @@ class TestLot2(unittest.TestCase):
         self.assertIn("delegation_mission", h)
         self.assertIn("mission éco MEDEF Mali", h)
 
+    def test_charger_watchlist_mode_render(self):
+        """Sans sheet_id/fichier (chemin Render/Postgres), aucune lecture Sheet :
+        la watchlist se limite au BITD passe en argument."""
+        wl = rc.charger_watchlist(None, None,
+                                  [{"entreprise": "Thales", "secteur": "Défense"},
+                                   {"nom": "Nexter", "secteur": "Défense"}])
+        self.assertEqual(sorted(e["entreprise"] for e in wl), ["Nexter", "Thales"])
+        self.assertTrue(all(e["wl"] == "bitd" for e in wl))
+
 
 if __name__ == "__main__":
     unittest.main()
