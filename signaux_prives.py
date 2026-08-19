@@ -87,6 +87,13 @@ GNEWS_LOCALES = _locales_gnews()
 # du plafond BITD, qui reste a 6 pour le chemin defense mono-locale). Un peu
 # plus haut ici pour ne pas ecraser la diversite FR+EN.
 MAX_ARTICLES_PRIVE = int(os.environ.get("RADAR_PRIVES_MAX_ARTICLES", "10"))
+# Angle DIPLOMATIE ECONOMIQUE (signal precoce), par entreprise de la watchlist.
+# Additif, OFF par defaut. Une passe Google News dediee (declencheurs delegation
+# / mission eco / MEDEF), fenetre serree (defaut 30j) car ces annonces sont
+# volatiles. Le LLM type ces signaux 'delegation_mission' et rejette le bruit
+# (delegations religieuses/sportives/culturelles).
+DIPLO_ON = os.environ.get("RADAR_DIPLO", "0") == "1"
+DIPLO_JOURS = int(os.environ.get("RADAR_DIPLO_JOURS", "30"))
 
 # Nombre d'entreprises traitees par run (levier de couverture principal).
 # Releve de 20 -> 35 : a ~865 entites surveillees, 20/run = un tour complet en
@@ -751,6 +758,7 @@ def collecter_news(entreprise, requete="", session=None):
     personnalisee. Chaque locale est resiliente et isolee : une locale en echec
     n'empeche pas les autres."""
     session = session or ted.session_robuste()
+    a_requete_perso = bool(requete and requete.strip())
     requete = requete or '"{}" ({})'.format(entreprise, TRIGGERS_NEWS)
     vus, articles = set(), []
     for i, (hl, gl, ceid) in enumerate(GNEWS_LOCALES):
@@ -762,6 +770,21 @@ def collecter_news(entreprise, requete="", session=None):
             if k and k not in vus:
                 vus.add(k)
                 articles.append(a)
+    # Passe DIPLOMATIE ECONOMIQUE (signal precoce), ciblee par entreprise,
+    # fenetre serree DIPLO_JOURS. Seulement si RADAR_DIPLO=1 et pas de requete
+    # personnalisee (sinon on respecte le ciblage explicite de la watchlist).
+    if DIPLO_ON and not a_requete_perso:
+        rq_diplo = '"{}" ({})'.format(entreprise, bitd.DECLENCHEURS_DIPLO)
+        for i, (hl, gl, ceid) in enumerate(GNEWS_LOCALES):
+            if i > 0:
+                time.sleep(PAUSE_LOCALE)
+            url = bitd.url_google_news(entreprise, rq_diplo, hl=hl, gl=gl, ceid=ceid)
+            for a in _collecter_news_locale(url, entreprise, session):
+                k = bitd.id_article(a.get("lien", ""))
+                if k and k not in vus and bitd.article_frais(a, jours=DIPLO_JOURS):
+                    vus.add(k)
+                    a["_angle"] = "diplomatie"
+                    articles.append(a)
     return articles[:MAX_ARTICLES_PRIVE]
 
 
