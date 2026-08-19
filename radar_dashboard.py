@@ -1509,7 +1509,14 @@ def main():
             suivi = {"url": os.environ.get("SUIVI_WEBAPP_URL", "") or "",
                      "token": os.environ.get("SUIVI_TOKEN", "") or "",
                      "api": False}
-            html_ck = radar_cockpit.generer_cockpit(leads, geo=geo, suivi=suivi)
+            # Watchlist unifiee (BITD deja en memoire + watchlist_prives lue
+            # legerement, best-effort) pour la vue "Watchlist entreprises".
+            watch = radar_cockpit.charger_watchlist(
+                os.environ.get("TED_SHEET_ID"),
+                os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE"),
+                lignes_watchlist)
+            html_ck = radar_cockpit.generer_cockpit(
+                leads, geo=geo, suivi=suivi, watchlist=watch)
             d2 = os.path.dirname(cockpit_sortie)
             if d2:
                 os.makedirs(d2, exist_ok=True)
