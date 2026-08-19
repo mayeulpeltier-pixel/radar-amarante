@@ -290,6 +290,29 @@ def _est_pme_locale(nom):
     return bool(_FORMES_LOCALES.search(nom or ""))
 
 
+_RESIDU_AVIS = re.compile(r"\s*\b\d{4,}-\d{4}\b")             # numero d'avis TED colle
+_RESIDU_PAGE = re.compile(r"\s*\bPage\s+\d+\s*/\s*\d+", re.I)  # pagination PDF
+_RESIDU_LOT = re.compile(r"\s*\bLot\s+\d+\b", re.I)          # numero de lot colle
+
+
+def nettoyer_nom_titulaire(nom):
+    """Retire les residus de parsing colles au nom du gagnant : numero d'avis
+    TED ('228638-2026'), pagination PDF ('Page 14/17'), numero de lot ('Lot 3').
+    Normalise espaces et ponctuation de bord. Retour : nom propre, ou '' si rien
+    d'exploitable ne reste (compte a rejeter). Corrige le bug ou le parsing PDF
+    collait ces residus (ex 'AQUASEARCH 228638-2026 Page 14/17' -> 'AQUASEARCH')."""
+    if not nom:
+        return ""
+    n = _RESIDU_PAGE.sub("", nom)
+    n = _RESIDU_AVIS.sub("", n)
+    n = _RESIDU_LOT.sub("", n)
+    n = re.sub(r"\s+", " ", n).strip(" -\u2013\u2014;,.")
+    # Invalide si trop court ou sans aucune lettre (residu purement numerique).
+    if len(n) < 3 or not re.search(r"[A-Za-zÀ-ÿ]", n):
+        return ""
+    return n
+
+
 # ===========================================================================
 # PARTIE 1 -- WATCHLIST MULTI-SOURCES (le neuf)
 # ===========================================================================
@@ -360,7 +383,7 @@ def seed_depuis_attributions(valeurs, max_comptes=150):
         date_attr = (row[idate].strip() if 0 <= idate < len(row) else "")
         # un marche peut lister plusieurs gagnants separes par ';'
         for nom in brut.split(";"):
-            nom = nom.strip()
+            nom = nettoyer_nom_titulaire(nom.strip())
             cle = nom.lower()
             if len(nom) < 3:
                 continue
