@@ -121,10 +121,14 @@ class TestLot2(unittest.TestCase):
         h = rc.generer_cockpit([lead()])
         self.assertIn("WATCHLIST=[]", h)
 
-    def test_type_activite_mappe(self):
+    def test_type_depuis_grp_et_resume_depuis_justif(self):
+        """Signal privé : le type vient de grp, le résumé de justif (schéma réel).
+        comm est un score, jamais un résumé."""
         h = rc.generer_cockpit([lead(src="PRIVÉ", entreprise="Vinci",
-                                     type_activite="delegation_mission")])
+                                     grp="delegation_mission",
+                                     justif="mission éco MEDEF Mali", comm=7.5)])
         self.assertIn("delegation_mission", h)
+        self.assertIn("mission éco MEDEF Mali", h)
 
 
 if __name__ == "__main__":
