@@ -97,12 +97,46 @@ def enrichir(leads):
     return out
 
 
-def generer_cockpit(leads, geo=None, suivi=None, risque=None):
+def charger_watchlist(sheet_id, fichier, lignes_bitd=None):
+    """Liste unifiee des entreprises SUIVIES pour la vue Watchlist :
+    comptes_cibles_bitd (defense, deja en memoire) + watchlist_prives
+    (multi-secteurs, lecture legere). Best-effort : si watchlist_prives est
+    illisible (quota, onglet absent), on se rabat sur le BITD seul. Dedup par
+    nom (insensible a la casse). Retour : [{entreprise, secteur, wl}]."""
+    ents = {}
+    for d in (lignes_bitd or []):
+        nom = (d.get("entreprise") or d.get("nom") or "").strip()
+        if nom:
+            ents.setdefault(nom.lower(), {
+                "entreprise": nom,
+                "secteur": (d.get("secteur") or "Défense / BITD").strip(),
+                "wl": "bitd"})
+    try:
+        import signaux_prives as sp
+        classeur = sp._ouvrir_classeur(sheet_id, fichier)
+        vals = classeur.worksheet("watchlist_prives").get_all_values()
+        for c in sp.lire_watchlist_multisecteurs(vals):
+            nom = (c.get("entreprise") or "").strip()
+            if nom:
+                ents.setdefault(nom.lower(), {
+                    "entreprise": nom,
+                    "secteur": (c.get("secteur") or "Autre").strip(),
+                    "wl": "prives"})
+    except Exception as e:
+        print("(cockpit) watchlist_prives non lue ({}) : BITD + signaux seuls.".format(
+            str(e)[:70]))
+    return list(ents.values())
+
+
+def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None):
     """leads (schema dashboard) -> HTML autonome. Fonction PURE (testable
     offline).
-    geo    : flux geopolitique (dash.preparer_geo), liste de dicts. Defaut [].
-    suivi  : {url, token, api} pour le bouton de statut. Defaut : desactive.
-    risque : table posture par zone (defaut = dash.RISQUE_ZONE)."""
+    geo       : flux geopolitique (dash.preparer_geo). Defaut [].
+    suivi     : {url, token, api} pour le bouton de statut. Defaut : desactive.
+    risque    : table posture par zone (defaut = dash.RISQUE_ZONE).
+    watchlist : entreprises suivies [{entreprise, secteur, wl}] pour la vue
+                Watchlist. Defaut [] (la vue se limite alors aux entreprises
+                presentes dans les signaux)."""
     risque = risque if risque is not None else getattr(dash, "RISQUE_ZONE", {})
     suivi = suivi or {}
     payload = enrichir(leads)
@@ -111,6 +145,7 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None):
             .replace("__COORDS_JSON__", json.dumps(COORDS, ensure_ascii=False))
             .replace("__RISQUE_JSON__", json.dumps(risque, ensure_ascii=False))
             .replace("__GEO_JSON__", json.dumps(geo or [], ensure_ascii=False))
+            .replace("__WATCHLIST_JSON__", json.dumps(watchlist or [], ensure_ascii=False))
             .replace("__SUIVI_URL__", json.dumps(suivi.get("url", "")))
             .replace("__SUIVI_TOKEN__", json.dumps(suivi.get("token", "")))
             .replace("__API_STATUT__", "true" if suivi.get("api") else "false"))
@@ -316,6 +351,27 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .geo-sens{font-family:var(--mono);font-size:11px;font-weight:600;padding:3px 9px;border-radius:20px;white-space:nowrap;flex:none}
 .geo-sens.up{background:var(--red-soft);color:var(--red)}.geo-sens.down{background:var(--green-soft);color:var(--green)}
 .geo-date{font-family:var(--mono);font-size:11px;color:var(--ink-3);flex:none}
+.w-dom{margin-bottom:26px}
+.w-dom-h{font-family:var(--display);font-size:15px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:9px;padding-bottom:8px;border-bottom:2px solid var(--amarante-soft)}
+.w-dom-h .c{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--ink-3);font-weight:500}
+.w-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+.went{background:var(--surface);border:1px solid var(--line);border-radius:11px;padding:14px 16px;box-shadow:var(--sh);transition:.15s}
+.went.hot{border-left:3px solid var(--amarante)}
+.went-top{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.went-nom{font-weight:600;font-size:13.5px;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.went-n{font-family:var(--mono);font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;background:var(--amarante-soft);color:var(--amarante);flex:none}
+.went-n.zero{background:var(--line-2);color:var(--ink-3)}
+.wsig{display:flex;gap:9px;align-items:flex-start;padding:8px 0;border-top:1px solid var(--line-2);cursor:pointer}
+.wsig:hover{opacity:.75}
+.wsig-ico{width:22px;height:22px;border-radius:6px;display:grid;place-items:center;font-size:11px;flex:none;margin-top:1px}
+.wsig-txt{flex:1;min-width:0}
+.wsig-t{font-size:12.5px;line-height:1.35;color:var(--ink)}
+.wsig-m{font-size:10.5px;color:var(--ink-3);font-family:var(--mono);margin-top:2px}
+.wsig-none{font-size:12px;color:var(--ink-3);font-family:var(--mono);padding:4px 0}
+.tact{font-size:9.5px;font-family:var(--mono);font-weight:600;padding:1px 6px;border-radius:4px;text-transform:uppercase;background:var(--blue-soft);color:var(--blue)}
+.tact.delegation_mission{background:var(--amarante-soft);color:var(--amarante)}
+.tact.recrutement_local,.tact.contrat_export{background:var(--green-soft);color:var(--green)}
+.tact.incident{background:var(--red-soft);color:var(--red)}
 @media(max-width:1100px){.kpis{grid-template-columns:repeat(2,1fr)}.grid-2{grid-template-columns:1fr}.map-view{grid-template-columns:1fr;height:auto}#map{height:60vh}}
 @media(max-width:720px){.app{grid-template-columns:1fr}.side{display:none}}
 </style>
@@ -332,6 +388,7 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
       <div class="nav-lbl">Renseignement</div>
       <a data-view="attrib"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 21V7a2 2 0 012-2h8a2 2 0 012 2v14"/><path d="M6 21h12M10 9h4M10 13h4M10 17h4"/></svg>Attributions<span class="cnt" id="cnt-attrib"></span></a>
       <a data-view="firmo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>Entreprises</a>
+      <a data-view="watch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>Watchlist<span class="cnt" id="cnt-watch"></span></a>
       <a data-view="geo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 2l9 5v6c0 5-4 8-9 9-5-1-9-4-9-9V7z"/></svg>Géopolitique</a>
     </nav>
     <div class="side-foot"><span class="dot-live"></span> <span id="run-meta">Cockpit</span></div>
@@ -390,6 +447,10 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
       <div class="kpis" id="kpis-attrib"></div>
       <div class="tbl-wrap"><table><thead><tr><th>Titulaire</th><th>Marché gagné</th><th>Théâtre</th><th>Origine</th><th>Valeur</th><th>Statut</th></tr></thead><tbody id="tbody-attrib"></tbody></table></div>
     </section>
+    <section class="view" id="v-watch">
+      <div class="filters"><div class="facet"><select id="w-dom"><option value="">Tous les domaines</option></select></div><div class="seg" id="w-sig"><button data-s="" class="on">Toutes</button><button data-s="1">Avec signaux</button></div><span class="chip-clear" id="w-count"></span></div>
+      <div id="watch-body"></div>
+    </section>
     <section class="view" id="v-firmo">
       <div class="filters"><div class="facet"><select id="ff-tri"><option value="marches">Trier par marchés</option><option value="valeur">Trier par valeur</option><option value="theatres">Trier par présence</option></select></div><div class="seg" id="ff-etr"><button data-e="" class="on">Toutes</button><button data-e="1">Étrangères</button></div><span class="chip-clear" id="ff-count"></span></div>
       <div id="firmo-grid" class="firmo-grid"></div>
@@ -403,7 +464,7 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 <div class="drawer-ov" id="drawer-ov" onclick="closeDrawer()"></div>
 <div class="drawer" id="drawer"><div id="drawer-content"></div></div>
 <script>
-const RAW=__LEADS_JSON__, COORDS=__COORDS_JSON__, RISQUE=__RISQUE_JSON__, GEO=__GEO_JSON__;
+const RAW=__LEADS_JSON__, COORDS=__COORDS_JSON__, RISQUE=__RISQUE_JSON__, GEO=__GEO_JSON__, WATCHLIST=__WATCHLIST_JSON__;
 const SUIVI_URL=__SUIVI_URL__, SUIVI_TOKEN=__SUIVI_TOKEN__, API_STATUT=__API_STATUT__;
 const SUIVI_ON=!!SUIVI_URL||API_STATUT;
 const SRC_SUIVI={TED:"TED",BM:"Banque Mondiale","PRIVÉ":"Privé BITD",RW:"ReliefWeb",PROPARCO:"Proparco",DFC:"DFC"};
@@ -433,6 +494,7 @@ const LEADS=RAW.map((l,i)=>({
   acheteur:l.agence||"n.c.",statut:l.statut||"nouveau",motif:l.motif_ecart||l.motif||"",titulaire:l.entreprise||"",pays_tit:l.origine||"",
   etranger:!!l.etranger_titulaire,renouv:l.statut_renouv||"",nature:l.nature_deploiement||"",besoin:l.besoin_surete||"",
   interlocuteur:l.interlocuteur||"",cible:l.cible||"",justif:l.justif||"",lien:l.lien||"",secu:!!l.secu,
+  type_activite:l.type_activite||"",resume:l.comm||l.justif||"",
   mois:l.mois_label||l.mois||"",nom:l.nom||"n.c.",email:l.email||"n.c.",tel:l.tel||"n.c.",win:l.win||"",pub:l.pub||""
 }));
 const SECT_COLORS={"Génie civil / BTP":"#8E2649","Eau / assainissement":"#33628F","Énergie":"#B07419","Santé":"#237A57","Sécurité / défense":"#C0392B","Logistique / transport":"#6B5B95","Extractif / mines":"#7A5230","Télécom / IT":"#3A8FA8"};
@@ -622,7 +684,42 @@ function renderGeo(){
     }).join("")}</div>`;
   }).join("");
 }
-const TITLES={overview:["Vue d'ensemble","Théâtre global"],opps:["Opportunités","Avis de marché et signaux privés"],map:["Carte des théâtres","Répartition géographique"],attrib:["Attributions","Qui a gagné quoi en zone à risque"],firmo:["Entreprises","Fiches titulaires 360°"],geo:["Géopolitique","Alertes de la semaine"]};
+// --- WATCHLIST ENTREPRISES : toutes les entreprises suivies, par domaine,
+// celles a signaux en tete. Signaux = leads prives rattaches par nom. ---
+let watchState={dom:"",sig:""};
+const TACT_LBL={delegation_mission:"délégation / mission",recrutement_local:"recrutement",contrat_export:"contrat export",implantation:"implantation",livraison_mise_en_service:"mise en service",formation_mco:"formation / MCO",essais_demonstration:"essais",incident:"incident",autre:"signal"};
+function watchEntreprises(){
+  const sig={};
+  LEADS.filter(l=>l.src==="PRIVÉ"&&l.titulaire).forEach(l=>{(sig[l.titulaire.toLowerCase()]=sig[l.titulaire.toLowerCase()]||[]).push(l);});
+  const ents={};
+  WATCHLIST.forEach(w=>{const k=(w.entreprise||"").toLowerCase();if(k)ents[k]={nom:w.entreprise,secteur:w.secteur||"Autre",signaux:[]};});
+  Object.keys(sig).forEach(k=>{if(!ents[k]){const l=sig[k][0];ents[k]={nom:l.titulaire,secteur:l.secteur||"Autre",signaux:[]};}ents[k].signaux=sig[k].sort((a,b)=>b.score-a.score);});
+  return Object.values(ents);
+}
+function renderWatch(){
+  let ents=watchEntreprises();
+  if(watchState.dom)ents=ents.filter(e=>e.secteur===watchState.dom);
+  if(watchState.sig)ents=ents.filter(e=>e.signaux.length);
+  const avecSig=ents.filter(e=>e.signaux.length).length;
+  document.getElementById("w-count").textContent=ents.length+" entreprise"+(ents.length>1?"s":"")+" · "+avecSig+" avec signaux";
+  const byDom={};ents.forEach(e=>{(byDom[e.secteur]=byDom[e.secteur]||[]).push(e);});
+  // domaines tries par nb de signaux, entreprises a signaux en tete
+  const doms=Object.keys(byDom).sort((a,b)=>byDom[b].reduce((s,e)=>s+e.signaux.length,0)-byDom[a].reduce((s,e)=>s+e.signaux.length,0));
+  document.getElementById("watch-body").innerHTML=doms.map(d=>{
+    const list=byDom[d].sort((a,b)=>b.signaux.length-a.signaux.length||a.nom.localeCompare(b.nom));
+    const nSig=list.reduce((s,e)=>s+e.signaux.length,0);
+    return `<div class="w-dom"><div class="w-dom-h">${esc(d)}<span class="c">${list.length} entreprise${list.length>1?"s":""} · ${nSig} signal${nSig>1?"aux":""}</span></div><div class="w-grid">${list.map(e=>carteEnt(e)).join("")}</div></div>`;
+  }).join("")||'<div class="empty">Aucune entreprise dans la watchlist.</div>';
+}
+function carteEnt(e){
+  const ini=e.nom.replace(/[^A-Za-zÀ-ÿ ]/g,"").split(/\s+/).slice(0,2).map(w=>w[0]||"").join("").toUpperCase()||"?";
+  const sigs=e.signaux.slice(0,4).map(l=>{
+    const ta=l.type_activite||"autre";const lbl=TACT_LBL[ta]||"signal";
+    return `<div class="wsig" onclick="openDrawer(${l.id})"><div class="wsig-ico" style="background:${scoreColor(l.score)}22;color:${scoreColor(l.score)}">${l.score.toFixed(0)}</div><div class="wsig-txt"><div class="wsig-t">${esc(l.resume||l.titre).slice(0,90)}</div><div class="wsig-m"><span class="tact ${ta}">${lbl}</span> · ${l.pays||l.zone||""} · ${l.mois||""}</div></div></div>`;
+  }).join("");
+  return `<div class="went ${e.signaux.length?"hot":""}"><div class="went-top"><div class="went-nom" title="${esc(e.nom)}">${esc(e.nom)}</div><span class="went-n ${e.signaux.length?"":"zero"}">${e.signaux.length}</span></div>${sigs||'<div class="wsig-none">Aucun signal récent</div>'}</div>`;
+}
+const TITLES={overview:["Vue d'ensemble","Théâtre global"],opps:["Opportunités","Avis de marché et signaux privés"],map:["Carte des théâtres","Répartition géographique"],attrib:["Attributions","Qui a gagné quoi en zone à risque"],watch:["Watchlist entreprises","Comptes suivis et signaux de déploiement"],firmo:["Entreprises","Fiches titulaires 360°"],geo:["Géopolitique","Alertes de la semaine"]};
 function go(v){
   state.view=v;
   document.querySelectorAll(".nav a").forEach(a=>a.classList.toggle("on",a.dataset.view===v));
@@ -631,7 +728,7 @@ function go(v){
   document.getElementById("top-title").textContent=TITLES[v][0];document.getElementById("top-crumb").textContent=TITLES[v][1];
   if(v==="overview"){renderTheatres();renderKPIs();renderCharts();renderFunnel();renderHot();}
   if(v==="opps")renderTable();if(v==="attrib")renderAttrib();
-  if(v==="firmo")renderFirmo();if(v==="geo")renderGeo();
+  if(v==="firmo")renderFirmo();if(v==="geo")renderGeo();if(v==="watch")renderWatch();
   if(v==="map")setTimeout(()=>{initMap();map.invalidateSize();},60);
 }
 function goZone(z){state.zone=z;document.getElementById("f-zone").value=z;go("opps");renderTable();}
@@ -661,6 +758,7 @@ document.getElementById("cnt-attrib").textContent=LEADS.filter(l=>l.src==="ATTRI
 document.getElementById("run-meta").textContent=LEADS.length+" leads";
 document.getElementById("ff-tri").onchange=e=>{firmoState.tri=e.target.value;renderFirmo();};
 document.querySelectorAll("#ff-etr button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#ff-etr button").forEach(x=>x.classList.remove("on"));b.classList.add("on");firmoState.etr=b.dataset.e;renderFirmo();});
+(function(){const doms=[...new Set(watchEntreprises().map(e=>e.secteur))].sort();const sel=document.getElementById("w-dom");doms.forEach(d=>sel.innerHTML+=`<option>${d}</option>`);sel.onchange=e=>{watchState.dom=e.target.value;renderWatch();};document.querySelectorAll("#w-sig button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#w-sig button").forEach(x=>x.classList.remove("on"));b.classList.add("on");watchState.sig=b.dataset.s;renderWatch();});document.getElementById("cnt-watch").textContent=watchEntreprises().length;})();
 initFilters();go("overview");
 </script>
 </body>
