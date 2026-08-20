@@ -383,6 +383,7 @@ def normaliser_bm(record):
 
     return {
         "publication_number": record.get("id", ""),
+        "projet_id": (record.get("project_id") or "").strip(),  # ancre dossier BM (ex P172945)
         "titre": titre,
         "acheteur": (record.get("contact_organization") or "").strip(),
         "pays_acheteur": "",            # financeur supranational (Banque Mondiale)
@@ -463,6 +464,7 @@ COLONNES_BM = [
     "procurement_group", "procurement_method",
     "contact_organization", "contact_name", "contact_email", "contact_phone",
     "publication_number", "lien_avis", "deadline", "date_publication",
+    "projet_id",
 ]
 # Colonnes preservees (jamais ecrasees par un re-run), apres les donnees :
 COLONNE_STATUT_SUIVI = "statut_suivi"
@@ -523,6 +525,7 @@ def ligne_depuis_resultat_bm(r):
         "contact_email": avis.get("contact_email", ""),
         "contact_phone": avis.get("contact_phone", ""),
         "publication_number": avis.get("publication_number", ""),
+        "projet_id": avis.get("projet_id", ""),
         "lien_avis": avis.get("lien_avis", ""),
         "deadline": avis.get("deadline", ""),
         "date_publication": avis.get("date_publication", ""),
