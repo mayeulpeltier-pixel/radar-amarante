@@ -577,7 +577,7 @@ function filtered(){
     return true;
   }).sort((a,b)=>{let va=a[state.sort],vb=b[state.sort];if(typeof va==="string"){va=va.toLowerCase();vb=(vb||"").toLowerCase();return va<vb?-state.dir:va>vb?state.dir:0;}return((va||0)-(vb||0))*state.dir;});
 }
-function esc(s){return(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
+function esc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
 function renderTable(){
   const rows=filtered();
   document.getElementById("tbody").innerHTML=rows.map(l=>{
@@ -692,31 +692,35 @@ function renderGeo(){
 // celles a signaux en tete. Signaux = leads prives rattaches par nom. ---
 let watchState={dom:"",sig:""};
 const TACT_LBL={delegation_mission:"délégation / mission",recrutement_local:"recrutement",contrat_export:"contrat export",implantation:"implantation",livraison_mise_en_service:"mise en service",formation_mco:"formation / MCO",essais_demonstration:"essais",incident:"incident",autre:"signal"};
+function entreprises_norm(v){return String(v==null?"":v);}
 function watchEntreprises(){
   const sig={};
-  LEADS.filter(l=>l.src==="PRIVÉ"&&l.titulaire).forEach(l=>{(sig[l.titulaire.toLowerCase()]=sig[l.titulaire.toLowerCase()]||[]).push(l);});
+  LEADS.filter(l=>l.src==="PRIVÉ"&&l.titulaire).forEach(l=>{const k=entreprises_norm(l.titulaire).toLowerCase();if(k)(sig[k]=sig[k]||[]).push(l);});
   const ents={};
-  WATCHLIST.forEach(w=>{const k=(w.entreprise||"").toLowerCase();if(k)ents[k]={nom:w.entreprise,secteur:w.secteur||"Autre",signaux:[]};});
-  Object.keys(sig).forEach(k=>{if(!ents[k]){const l=sig[k][0];ents[k]={nom:l.titulaire,secteur:l.secteur||"Autre",signaux:[]};}ents[k].signaux=sig[k].sort((a,b)=>b.score-a.score);});
+  WATCHLIST.forEach(w=>{const nom=entreprises_norm(w.entreprise);const k=nom.toLowerCase();if(k)ents[k]={nom:nom,secteur:entreprises_norm(w.secteur)||"Autre",signaux:[]};});
+  Object.keys(sig).forEach(k=>{if(!ents[k]){const l=sig[k][0];ents[k]={nom:entreprises_norm(l.titulaire),secteur:entreprises_norm(l.secteur)||"Autre",signaux:[]};}ents[k].signaux=sig[k].sort((a,b)=>b.score-a.score);});
   return Object.values(ents);
 }
 function renderWatch(){
-  let ents=watchEntreprises();
-  if(watchState.dom)ents=ents.filter(e=>e.secteur===watchState.dom);
-  if(watchState.sig)ents=ents.filter(e=>e.signaux.length);
-  const avecSig=ents.filter(e=>e.signaux.length).length;
-  document.getElementById("w-count").textContent=ents.length+" entreprise"+(ents.length>1?"s":"")+" · "+avecSig+" avec signaux";
-  const byDom={};ents.forEach(e=>{(byDom[e.secteur]=byDom[e.secteur]||[]).push(e);});
-  // domaines tries par nb de signaux, entreprises a signaux en tete
-  const doms=Object.keys(byDom).sort((a,b)=>byDom[b].reduce((s,e)=>s+e.signaux.length,0)-byDom[a].reduce((s,e)=>s+e.signaux.length,0));
-  document.getElementById("watch-body").innerHTML=doms.map(d=>{
-    const list=byDom[d].sort((a,b)=>b.signaux.length-a.signaux.length||a.nom.localeCompare(b.nom));
-    const nSig=list.reduce((s,e)=>s+e.signaux.length,0);
-    return `<div class="w-dom"><div class="w-dom-h">${esc(d)}<span class="c">${list.length} entreprise${list.length>1?"s":""} · ${nSig} signal${nSig>1?"aux":""}</span></div><div class="w-grid">${list.map(e=>carteEnt(e)).join("")}</div></div>`;
-  }).join("")||'<div class="empty">Aucune entreprise dans la watchlist.</div>';
+  try{
+    let ents=watchEntreprises();
+    if(watchState.dom)ents=ents.filter(e=>e.secteur===watchState.dom);
+    if(watchState.sig)ents=ents.filter(e=>e.signaux.length);
+    const avecSig=ents.filter(e=>e.signaux.length).length;
+    document.getElementById("w-count").textContent=ents.length+" entreprise"+(ents.length>1?"s":"")+" · "+avecSig+" avec signaux";
+    const byDom={};ents.forEach(e=>{(byDom[e.secteur]=byDom[e.secteur]||[]).push(e);});
+    const doms=Object.keys(byDom).sort((a,b)=>byDom[b].reduce((s,e)=>s+e.signaux.length,0)-byDom[a].reduce((s,e)=>s+e.signaux.length,0));
+    document.getElementById("watch-body").innerHTML=doms.map(d=>{
+      const list=byDom[d].sort((a,b)=>b.signaux.length-a.signaux.length||String(a.nom).localeCompare(String(b.nom)));
+      const nSig=list.reduce((s,e)=>s+e.signaux.length,0);
+      return `<div class="w-dom"><div class="w-dom-h">${esc(d)}<span class="c">${list.length} entreprise${list.length>1?"s":""} · ${nSig} signal${nSig>1?"aux":""}</span></div><div class="w-grid">${list.map(e=>carteEnt(e)).join("")}</div></div>`;
+    }).join("")||'<div class="empty">Aucune entreprise dans la watchlist.</div>';
+  }catch(err){
+    document.getElementById("watch-body").innerHTML='<div class="empty">Affichage de la watchlist indisponible ('+esc(err&&err.message)+').</div>';
+  }
 }
 function carteEnt(e){
-  const ini=e.nom.replace(/[^A-Za-zÀ-ÿ ]/g,"").split(/\s+/).slice(0,2).map(w=>w[0]||"").join("").toUpperCase()||"?";
+  const ini=String(e.nom||"").replace(/[^A-Za-zÀ-ÿ ]/g,"").split(/\s+/).slice(0,2).map(w=>w[0]||"").join("").toUpperCase()||"?";
   const sigs=e.signaux.slice(0,4).map(l=>{
     const ta=l.type_activite||"autre";const lbl=TACT_LBL[ta]||"signal";
     return `<div class="wsig" onclick="openDrawer(${l.id})"><div class="wsig-ico" style="background:${scoreColor(l.score)}22;color:${scoreColor(l.score)}">${l.score.toFixed(0)}</div><div class="wsig-txt"><div class="wsig-t">${esc(l.resume||l.titre).slice(0,90)}</div><div class="wsig-m"><span class="tact ${ta}">${lbl}</span> · ${l.pays||l.zone||""} · ${l.mois||""}</div></div></div>`;
