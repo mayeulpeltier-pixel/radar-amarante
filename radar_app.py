@@ -303,8 +303,13 @@ def generer_page(conn):
                  "token": os.environ.get("SUIVI_TOKEN", "") or "",
                  "api": True}
         watch = radar_cockpit.charger_watchlist(None, None, lignes_watchlist)
+        try:
+            import candidats_probables
+            idx_cand = candidats_probables.construire_index(leads)
+        except Exception:
+            idx_cand = {}
         return radar_cockpit.generer_cockpit(leads, geo=geo, suivi=suivi,
-                                             watchlist=watch)
+                                             watchlist=watch, candidats=idx_cand)
     except Exception as e:
         print("(app) cockpit indisponible ({}), repli dashboard.".format(str(e)[:100]))
         return dash.generer_html(leads, lignes_watchlist, api_statut=True,
