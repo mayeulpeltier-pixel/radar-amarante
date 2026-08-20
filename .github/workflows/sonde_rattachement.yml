@@ -1,0 +1,31 @@
+name: Sonde rattachement projets
+# Diagnostic ponctuel, DECLENCHEMENT MANUEL (workflow_dispatch). Ne touche a rien.
+# Mesure si les phases d'un meme projet (amont -> avis -> attribution) sont
+# rattachables par similarite, avant de batir le "dossier vivant". Jetable.
+on:
+  workflow_dispatch:
+    inputs:
+      seuil:
+        description: "Seuil Jaccard de rattachement (defaut 0.30)"
+        required: false
+        default: "0.30"
+jobs:
+  sonde-ratt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt || pip install gspread google-auth requests
+      - name: Reconstituer la cle de service Google
+        run: echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > service_account.json
+      - name: Sonder le rattachement
+        env:
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          RADAR_MEMOIRE: pg
+          SONDE_RATT_SEUIL: ${{ github.event.inputs.seuil }}
+        run: python sonde_rattachement.py
