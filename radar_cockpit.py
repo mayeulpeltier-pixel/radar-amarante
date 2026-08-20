@@ -132,15 +132,17 @@ def charger_watchlist(sheet_id, fichier, lignes_bitd=None):
     return list(ents.values())
 
 
-def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None):
+def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
+                    candidats=None):
     """leads (schema dashboard) -> HTML autonome. Fonction PURE (testable
     offline).
     geo       : flux geopolitique (dash.preparer_geo). Defaut [].
     suivi     : {url, token, api} pour le bouton de statut. Defaut : desactive.
     risque    : table posture par zone (defaut = dash.RISQUE_ZONE).
-    watchlist : entreprises suivies [{entreprise, secteur, wl}] pour la vue
-                Watchlist. Defaut [] (la vue se limite alors aux entreprises
-                presentes dans les signaux)."""
+    watchlist : entreprises suivies [{entreprise, secteur, wl}].
+    candidats : index des incumbents (candidats_probables.construire_index) pour
+                afficher, sur chaque avis, qui gagne habituellement ce type de
+                marche. Defaut {} (section masquee)."""
     risque = risque if risque is not None else getattr(dash, "RISQUE_ZONE", {})
     suivi = suivi or {}
     payload = enrichir(leads)
@@ -150,6 +152,7 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None):
             .replace("__RISQUE_JSON__", json.dumps(risque, ensure_ascii=False))
             .replace("__GEO_JSON__", json.dumps(geo or [], ensure_ascii=False))
             .replace("__WATCHLIST_JSON__", json.dumps(watchlist or [], ensure_ascii=False))
+            .replace("__CANDIDATS_JSON__", json.dumps(candidats or {}, ensure_ascii=False))
             .replace("__SUIVI_URL__", json.dumps(suivi.get("url", "")))
             .replace("__SUIVI_TOKEN__", json.dumps(suivi.get("token", "")))
             .replace("__API_STATUT__", "true" if suivi.get("api") else "false"))
@@ -330,6 +333,13 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .dr-field .l{font-size:11px;color:var(--ink-3);font-family:var(--mono)}.dr-field .v{font-size:14px;font-weight:600;margin-top:2px}
 .dr-analyse{background:var(--surface-2);border:1px solid var(--line-2);border-radius:10px;padding:14px 16px;font-size:13px;line-height:1.6;color:var(--ink-2)}
 .dr-actions{display:flex;gap:10px;margin-top:8px}.dr-actions .btn{flex:1;justify-content:center}
+.cand-list{display:flex;flex-direction:column;gap:7px}
+.cand{background:var(--surface-2);border:1px solid var(--line-2);border-radius:9px;padding:10px 13px;cursor:pointer;transition:.12s}
+.cand:hover{border-color:var(--amarante);background:var(--amarante-soft)}
+.cand-n{font-weight:600;font-size:13px}
+.cand-m{font-size:11px;color:var(--ink-3);font-family:var(--mono);margin-top:2px}
+.cand-etr{color:var(--blue);font-weight:600}
+.cand-note{font-size:10.5px;color:var(--ink-3);font-family:var(--mono);margin-top:8px;font-style:italic}
 .empty{padding:60px;text-align:center;color:var(--ink-3);font-family:var(--mono);font-size:13px}
 .firmo-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px}
 .fcard{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px;box-shadow:var(--sh);transition:.15s;cursor:pointer}
@@ -468,7 +478,14 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 <div class="drawer-ov" id="drawer-ov" onclick="closeDrawer()"></div>
 <div class="drawer" id="drawer"><div id="drawer-content"></div></div>
 <script>
-const RAW=__LEADS_JSON__, COORDS=__COORDS_JSON__, RISQUE=__RISQUE_JSON__, GEO=__GEO_JSON__, WATCHLIST=__WATCHLIST_JSON__;
+const RAW=__LEADS_JSON__, COORDS=__COORDS_JSON__, RISQUE=__RISQUE_JSON__, GEO=__GEO_JSON__, WATCHLIST=__WATCHLIST_JSON__, CANDIDATS=__CANDIDATS_JSON__;
+function candidatsPour(l){
+  if(!CANDIDATS||!CANDIDATS.secteur_zone)return [];
+  const sect=(l.secteur||"Autre"), zone=(l.zone||"Non classe");
+  const c=(CANDIDATS.secteur_zone[sect+"|"+zone]||CANDIDATS.secteur[sect]||CANDIDATS.zone[zone]||[]);
+  // ne pas proposer le titulaire lui-meme si le lead EST une attribution
+  return c.filter(x=>x.entreprise&&x.entreprise!==l.titulaire).slice(0,6);
+}
 const SUIVI_URL=__SUIVI_URL__, SUIVI_TOKEN=__SUIVI_TOKEN__, API_STATUT=__API_STATUT__;
 const SUIVI_ON=!!SUIVI_URL||API_STATUT;
 const SRC_SUIVI={TED:"TED",BM:"Banque Mondiale","PRIVÉ":"Privé BITD",RW:"ReliefWeb",PROPARCO:"Proparco",DFC:"DFC"};
@@ -633,6 +650,7 @@ function openDrawer(id){
   <div class="dr-body">
     <div class="dr-sec"><h5>Marché</h5><div class="dr-grid"><div class="dr-field"><div class="l">Pays</div><div class="v">${l.pays||"—"}</div></div><div class="dr-field"><div class="l">Secteur</div><div class="v">${l.secteur}</div></div><div class="dr-field"><div class="l">Acheteur / bailleur</div><div class="v" style="font-size:13px">${esc(l.acheteur)}</div></div><div class="dr-field"><div class="l">Fenêtre</div><div class="v">${l.win||"—"}</div></div></div></div>
     ${l.titulaire||l.pays_tit?`<div class="dr-sec"><h5>Titulaire</h5><div class="dr-grid"><div class="dr-field"><div class="l">Entreprise</div><div class="v">${esc(l.titulaire||"—")}</div></div><div class="dr-field"><div class="l">Origine</div><div class="v">${l.pays_tit||"—"} ${l.etranger?'<span class="flag">étranger</span>':""}</div></div></div></div>`:""}
+    ${(function(){const c=candidatsPour(l);return c.length?`<div class="dr-sec"><h5>Candidats probables${l.src==="ATTRIB"?" (autres du secteur)":""}</h5><div class="cand-list">${c.map(x=>`<div class="cand" onclick="rechercherEnt('${(x.entreprise||"").replace(/'/g,"\\'")}')"><div class="cand-n">${esc(x.entreprise)}</div><div class="cand-m">${x.nb} marché${x.nb>1?"s":""} similaire${x.nb>1?"s":""}${x.origine?" · "+esc(x.origine):""}${x.etranger?' <span class="cand-etr">étranger</span>':""}</div></div>`).join("")}</div><div class="cand-note">Inféré depuis l'historique des attributions du même secteur / théâtre.</div></div>`:"";})()}
     <div class="dr-sec"><h5>Cible commerciale</h5><div class="dr-analyse">${esc(l.cible)||"—"}${l.interlocuteur?"<br><strong>Interlocuteur :</strong> "+esc(l.interlocuteur):""}${l.besoin?"<br><strong>Besoin de sûreté :</strong> "+l.besoin:""}${l.nature?"<br><strong>Déploiement :</strong> "+natL:""}</div></div>
     ${l.justif?`<div class="dr-sec"><h5>Analyse</h5><div class="dr-analyse">${esc(l.justif)}</div></div>`:""}
     ${contact}
@@ -643,6 +661,7 @@ function openDrawer(id){
 }
 function closeDrawer(){document.getElementById("drawer").classList.remove("on");document.getElementById("drawer-ov").classList.remove("on");}
 function ecarter(id){const l=LEADS.find(x=>x.id===id);if(!l)return;const motif=prompt("Motif pour écarter ce marché (facultatif) :","")||"";envoyerStatut(l,"non_pertinent",motif);}
+function rechercherEnt(nom){closeDrawer();state.q=nom;document.getElementById("search").value=nom;go("opps");renderTable();}
 // --- ENTREPRISES 360° : dedup transverse par titulaire ---
 let firmoState={tri:"marches",etr:""};
 function entreprises(){
