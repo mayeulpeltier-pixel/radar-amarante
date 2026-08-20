@@ -1515,8 +1515,14 @@ def main():
                 os.environ.get("TED_SHEET_ID"),
                 os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE"),
                 lignes_watchlist)
+            try:
+                import candidats_probables
+                idx_cand = candidats_probables.construire_index(leads)
+            except Exception as e:
+                print("(cockpit) index candidats indisponible ({}).".format(str(e)[:80]))
+                idx_cand = {}
             html_ck = radar_cockpit.generer_cockpit(
-                leads, geo=geo, suivi=suivi, watchlist=watch)
+                leads, geo=geo, suivi=suivi, watchlist=watch, candidats=idx_cand)
             d2 = os.path.dirname(cockpit_sortie)
             if d2:
                 os.makedirs(d2, exist_ok=True)
