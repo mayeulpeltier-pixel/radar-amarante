@@ -366,6 +366,84 @@ def _deadline_iso(record):
     return (record.get("submission_deadline_date") or "")[:10]
 
 
+# ===========================================================================
+# EXTRACTION DE MONTANT (avis BM) -- montant en TEXTE LIBRE, pas de champ dedie
+# ===========================================================================
+# La sonde montant a montre que le montant d'un avis BM (quand il existe) est
+# dans la description / le titre, jamais dans un champ structure. On l'extrait
+# ici avec des GARDE-FOUS stricts pour eviter les faux positifs reperes par la
+# sonde ("USD 400", "$ 100" = numeros de section ou seuils, pas des montants) :
+#   - un nombre a l'echelle "million/milliard" est accepte (>= 1 M) ;
+#   - un nombre accole a une devise n'est accepte que s'il vaut >= 100 000 ;
+#   - tout le reste est ignore (retour "inconnu", comportement d'avant).
+# On retient le PLUS GROS montant plausible (le montant du marche domine les
+# petits chiffres parasites) et on le formate "<montant> <DEVISE>" pour que le
+# convertisseur EUR du dashboard (_valeur_en_millions) le normalise ensuite.
+_MONTANT_CUR = r"(?:US\$|USD|EUR|GBP|XOF|XAF|CFA|\$|€|£)"
+_MONTANT_NUM = r"\d{1,3}(?:[ ,.\u00a0]\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?"
+_MONTANT_RE = re.compile(
+    r"(?P<cur1>{cur})?\s*(?P<num>{num})\s*"
+    r"(?P<mag>milliards?|billions?|bn|millions?|mn)?\s*(?P<cur2>{cur})?".format(
+        cur=_MONTANT_CUR, num=_MONTANT_NUM), re.I)
+_MONTANT_MAG = {"milliard": 1e9, "milliards": 1e9, "billion": 1e9,
+                "billions": 1e9, "bn": 1e9, "million": 1e6, "millions": 1e6,
+                "mn": 1e6}
+_MONTANT_MIN = 100000.0        # sous ce seuil sans magnitude -> parasite
+_MONTANT_MAX = 5e11            # au-dessus -> bruit de parsing, on ignore
+_DEVISE_NORM = [("US$", "USD"), ("USD", "USD"), ("$", "USD"), ("EUR", "EUR"),
+                ("€", "EUR"), ("GBP", "GBP"), ("£", "GBP"), ("XOF", "XOF"),
+                ("XAF", "XAF"), ("CFA", "XOF")]
+
+
+def _devise_normalisee(*jetons):
+    for jeton in jetons:
+        if not jeton:
+            continue
+        haut = jeton.upper()
+        for motif, code in _DEVISE_NORM:
+            if motif.upper() in haut or motif in jeton:
+                return code
+    return ""
+
+
+def extraire_montant(*textes):
+    """Montant d'un avis BM depuis du texte libre, ou 'inconnu'. Fonction PURE.
+    Applique les garde-fous ci-dessus et retourne le plus gros montant credible
+    au format '<entier> <DEVISE>' (DEVISE par defaut USD, contexte Banque
+    Mondiale, quand seule une magnitude est presente)."""
+    texte = " ".join(t for t in textes if t)
+    meilleur = 0.0
+    devise_ret = ""
+    for m in _MONTANT_RE.finditer(texte):
+        brut = m.group("num")
+        if not brut:
+            continue
+        try:
+            valeur = float(re.sub(r"[ ,\u00a0]", "", brut).replace(" ", ""))
+        except ValueError:
+            continue
+        mag = (m.group("mag") or "").lower()
+        facteur = _MONTANT_MAG.get(mag, 1.0)
+        valeur *= facteur
+        cur = _devise_normalisee(m.group("cur1"), m.group("cur2"))
+        # Garde-fous : magnitude -> montant a l'echelle du million minimum ;
+        # sinon une devise ET un montant >= 100 000 sont exiges.
+        if facteur >= 1e6:
+            if valeur < 1e6:
+                continue
+        else:
+            if not cur or valeur < _MONTANT_MIN:
+                continue
+        if valeur > _MONTANT_MAX:
+            continue
+        if valeur > meilleur:
+            meilleur = valeur
+            devise_ret = cur or "USD"
+    if meilleur <= 0:
+        return "inconnu"
+    return "{:.0f} {}".format(meilleur, devise_ret)
+
+
 def normaliser_bm(record):
     """Construit l'avis normalise attendu par le coeur TED (appeler_llm,
     calculer_scores, calculer_fenetre_action) + champs propres a la BM
@@ -394,7 +472,7 @@ def normaliser_bm(record):
         "description": description,
         "deadline": _deadline_iso(record),
         "date_publication": notice_iso.isoformat() if notice_iso else "",
-        "valeur_estimee": "inconnu",
+        "valeur_estimee": extraire_montant(description, bid, projet),
         "source_mode_b": False,
         "lien_avis": LIEN_BM.format(record.get("id", "")),
         # Champs propres BM (Sheet)
@@ -465,6 +543,7 @@ COLONNES_BM = [
     "contact_organization", "contact_name", "contact_email", "contact_phone",
     "publication_number", "lien_avis", "deadline", "date_publication",
     "projet_id",
+    "valeur_estimee",
 ]
 # Colonnes preservees (jamais ecrasees par un re-run), apres les donnees :
 COLONNE_STATUT_SUIVI = "statut_suivi"
@@ -526,6 +605,7 @@ def ligne_depuis_resultat_bm(r):
         "contact_phone": avis.get("contact_phone", ""),
         "publication_number": avis.get("publication_number", ""),
         "projet_id": avis.get("projet_id", ""),
+        "valeur_estimee": avis.get("valeur_estimee", ""),
         "lien_avis": avis.get("lien_avis", ""),
         "deadline": avis.get("deadline", ""),
         "date_publication": avis.get("date_publication", ""),
