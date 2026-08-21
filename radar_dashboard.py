@@ -1524,8 +1524,15 @@ def main():
             except Exception as e:
                 print("(cockpit) index candidats indisponible ({}).".format(str(e)[:80]))
                 idx_cand = {}
+            try:
+                import dossiers as _dossiers
+                doss = _dossiers.serialiser(_dossiers.construire_dossiers(leads))
+            except Exception as e:
+                print("(cockpit) dossiers indisponibles ({}).".format(str(e)[:80]))
+                doss = []
             html_ck = radar_cockpit.generer_cockpit(
-                leads, geo=geo, suivi=suivi, watchlist=watch, candidats=idx_cand)
+                leads, geo=geo, suivi=suivi, watchlist=watch, candidats=idx_cand,
+                dossiers=doss)
             d2 = os.path.dirname(cockpit_sortie)
             if d2:
                 os.makedirs(d2, exist_ok=True)
