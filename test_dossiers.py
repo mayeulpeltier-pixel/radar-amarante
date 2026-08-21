@@ -89,5 +89,30 @@ class TestDossiers(unittest.TestCase):
         self.assertEqual(idx["P000001"]["proj_id"], "P000001")
 
 
+class TestSerialisation(unittest.TestCase):
+
+    def test_compact_metadata_et_timeline(self):
+        doss = d.construire_dossiers([amont("P000001"), avis("P000001"),
+                                      attrib("P000001")])
+        out = d.serialiser(doss)
+        self.assertEqual(len(out), 1)
+        s = out[0]
+        self.assertEqual(s["proj_id"], "P000001")
+        self.assertEqual(s["n_phases"], 3)
+        self.assertEqual([t["phase"] for t in s["timeline"]],
+                         ["amont", "avis", "attribution"])
+
+    def test_json_serialisable(self):
+        import json
+        doss = d.construire_dossiers([amont("P000001"), avis("P000001")])
+        json.dumps(d.serialiser(doss))  # ne doit pas lever
+
+    def test_limite(self):
+        leads = []
+        for i in range(5):
+            leads.append(amont("P%06d" % i))
+        self.assertEqual(len(d.serialiser(d.construire_dossiers(leads), limite=2)), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
