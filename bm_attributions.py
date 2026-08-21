@@ -84,6 +84,7 @@ COLONNES = [
     # attributions_analyse.py affinera l'origine ; ces deux champs donnent une
     # reponse immediate meme quand l'analyse LLM n'a pas encore tourne.
     "pays_titulaire", "titulaire_etranger",
+    "projet_id",
 ]
 COL_STATUT = "statut_prospection"
 COL_DETECTION = "date_detection"
@@ -509,6 +510,7 @@ def normaliser(record):
         # Persistes (sans prefixe _) : alimentent les colonnes du meme nom.
         "pays_titulaire": origine or "",
         "titulaire_etranger": "oui" if etranger else "non",
+        "projet_id": _norm(record.get("project_id")),  # ancre dossier BM (ex P172945)
     }
 
 
