@@ -613,6 +613,13 @@ def ligne_vers_lead(row, source):
         "modele": _txt(row.get("modele")),
         "pub": _txt(row.get("publication_number")),
         "projet_id": _txt(row.get("projet_id")),
+        # Montant estime du marche (avis). TED remplit valeur_estimee ; les
+        # sources sans montant renvoient "inconnu"/"" -> traite comme n.c.
+        # Le cockpit convertit en M€ EUR (best-effort). Additif : ne touche
+        # pas aux attributions (qui portent deja valeur_attribuee).
+        "valeur": ("" if _txt(row.get("valeur_estimee")).strip().lower()
+                   in ("", "inconnu", "n.c.", "nc", "non communique",
+                       "non communiqué") else _txt(row.get("valeur_estimee"))),
         # Nom de l'entreprise cible (pour la lentille Entreprises). Cote PRIVÉ,
         # c'est l'entreprise surveillee ; ailleurs le gagnant est inconnu.
         "entreprise": (_txt(row.get("acheteur")) or "n.c.") if source in ("PRIVÉ", "IFC", "MIGA", "PROPARCO", "DFC") else "",
