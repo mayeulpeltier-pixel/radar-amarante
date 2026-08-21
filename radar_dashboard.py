@@ -612,6 +612,7 @@ def ligne_vers_lead(row, source):
         "conf": _txt(row.get("confiance")),
         "modele": _txt(row.get("modele")),
         "pub": _txt(row.get("publication_number")),
+        "projet_id": _txt(row.get("projet_id")),
         # Nom de l'entreprise cible (pour la lentille Entreprises). Cote PRIVÉ,
         # c'est l'entreprise surveillee ; ailleurs le gagnant est inconnu.
         "entreprise": (_txt(row.get("acheteur")) or "n.c.") if source in ("PRIVÉ", "IFC", "MIGA", "PROPARCO", "DFC") else "",
@@ -760,6 +761,7 @@ def attribution_vers_lead(row):
         "motif_ecart": _txt(row.get("motif_ecart")),
         "deadline": "", "conf": "", "modele": "",
         "pub": _txt(row.get("publication_number")),
+        "projet_id": _txt(row.get("projet_id")),
         "entreprise": gagnant or "Titulaire",
         "sect": secteur_canonique(secteur, marche),
     }
