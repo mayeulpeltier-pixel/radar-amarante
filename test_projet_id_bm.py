@@ -31,7 +31,10 @@ class TestExpositionProjId(unittest.TestCase):
         self.assertEqual(bm.normaliser_bm(rec)["projet_id"], "")
 
     def test_colonne_ajoutee_en_fin(self):
-        self.assertEqual(bm.COLONNES_BM[-1], "projet_id")
+        # Les colonnes de donnees sont empilees en fin, dans l'ordre d'ajout :
+        # projet_id (Voie A dossiers) puis valeur_estimee (montant BM avis).
+        self.assertEqual(bm.COLONNES_BM[-1], "valeur_estimee")
+        self.assertEqual(bm.COLONNES_BM[-2], "projet_id")
 
     def test_publication_number_non_decale(self):
         # publication_number reste avant projet_id : son index est preserve.
