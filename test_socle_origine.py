@@ -60,9 +60,12 @@ MIGRE_ENTETE = (ANCIEN_ENTETE[:13]
 class TestSchemaEtendu(unittest.TestCase):
 
     def test_les_deux_colonnes_sont_en_fin_de_schema(self):
-        """En FIN, pas au milieu : c'est ce qui garde publication_number a sa
-        place et evite le desalignement des lignes deja ecrites."""
-        self.assertEqual(bma.COLONNES[-2:], ["pays_titulaire", "titulaire_etranger"])
+        """pays_titulaire/titulaire_etranger juste avant projet_id (ancre du
+        dossier vivant, ajoutee en Voie A). L'ordre existant ne bouge pas :
+        publication_number garde sa place, aucune ligne deja ecrite n'est
+        desalignee."""
+        self.assertEqual(bma.COLONNES[-3:],
+                         ["pays_titulaire", "titulaire_etranger", "projet_id"])
 
     def test_publication_number_n_a_pas_bouge(self):
         """Position 10, AVANT les ajouts. C'est l'invariant qui protege les
