@@ -83,8 +83,9 @@ COORDS = {
 
 
 def enrichir(leads):
-    """Ajoute `valeur_meur` (float, EUR) a chaque lead, via le convertisseur du
-    dashboard. Les avis sans montant recoivent 0.0. Ne modifie pas l'entree."""
+    """Ajoute `valeur_meur` (montant marche) et `enveloppe_meur` (enveloppe
+    projet BM, champ distinct) a chaque lead, via le convertisseur du dashboard.
+    Les avis sans montant recoivent 0.0. Ne modifie pas l'entree."""
     out = []
     for l in leads:
         d = dict(l)
@@ -93,6 +94,11 @@ def enrichir(leads):
             d["valeur_meur"] = round(dash._valeur_en_millions(brut), 2) if brut else 0.0
         except Exception:
             d["valeur_meur"] = 0.0
+        env = l.get("enveloppe", "")
+        try:
+            d["enveloppe_meur"] = round(dash._valeur_en_millions(env), 2) if env else 0.0
+        except Exception:
+            d["enveloppe_meur"] = 0.0
         out.append(d)
     return out
 
@@ -404,6 +410,8 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .opps-intro{flex:1;min-width:220px;font-size:12.5px;color:var(--ink-2);background:var(--surface-2);border:1px solid var(--line-2);border-left:3px solid var(--amarante);border-radius:9px;padding:10px 14px;line-height:1.5}
 .opps-intro b{color:var(--ink)}
 .t-date{font-family:var(--mono);font-size:12px;color:var(--ink-2);white-space:nowrap}
+.t-env{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--blue);white-space:nowrap}
+.t-nc{font-family:var(--mono);font-size:12px;color:var(--ink-3)}
 .mb.neuf{background:var(--amarante-soft);color:var(--amarante)}
 .mb.proj{background:var(--blue-soft);color:var(--blue);cursor:pointer}.mb.proj:hover{background:var(--blue);color:#fff}
 .mb.inc{background:var(--red-soft);color:var(--red)}
@@ -560,7 +568,7 @@ function surveiller(id){const l=LEADS.find(x=>x.id===id);if(!l)return;SURV.add(l
 function posture(z){const r=RISQUE[z]||1.5;return r>=4.5?["p-rouge","Posture rouge"]:r>=3?["p-orange","Posture orange"]:["p-jaune","Posture jaune"];}
 const LEADS=RAW.map((l,i)=>({
   id:i,titre:l.titre||"(sans titre)",src:l.src||"?",zone:l.zone||"Non classé",pays:l.pays||"",
-  secteur:l.sect||l.grp||"Autre",score:+l.final||0,prio:l.action||"surveiller",valeur:+l.valeur_meur||0,
+  secteur:l.sect||l.grp||"Autre",score:+l.final||0,prio:l.action||"surveiller",valeur:+l.valeur_meur||0,enveloppe:+l.enveloppe_meur||0,
   acheteur:l.agence||"n.c.",statut:l.statut||"nouveau",motif:l.motif_ecart||l.motif||"",titulaire:l.entreprise||"",pays_tit:l.origine||"",
   etranger:!!l.etranger_titulaire,renouv:l.statut_renouv||"",nature:l.nature_deploiement||"",besoin:l.besoin_surete||"",
   interlocuteur:l.interlocuteur||"",cible:l.cible||"",justif:l.justif||"",lien:l.lien||"",secu:!!l.secu,
@@ -593,6 +601,11 @@ const SECT_COLORS={"Génie civil / BTP":"#8E2649","Eau / assainissement":"#33628
 const PRIO_COLOR={contacter:"#C0392B",surveiller:"#B07419",ignorer:"#8B93A2"};
 const PRIO_LBL={contacter:"À contacter",surveiller:"À surveiller",ignorer:"À écarter"};
 const fmtEur=v=>!v?"n.c.":v>=1?v.toFixed(v<10?1:0)+" M€":(v*1000).toFixed(0)+" k€";
+function cellMontant(l){
+  if(l.valeur>0)return `<span class="t-val">${fmtEur(l.valeur)}</span>`;
+  if(l.enveloppe>0)return `<span class="t-env" title="Enveloppe projet (coût total), pas un montant de marché">env. ${fmtEur(l.enveloppe)}</span>`;
+  return `<span class="t-nc">n.c.</span>`;
+}
 const scoreColor=s=>s>=8?"#237A57":s>=6?"#B07419":s>=4?"#33628F":"#8B93A2";
 const actifs=()=>LEADS.filter(l=>l.statut!=="écarté"&&l.statut!=="perdu");
 let state={view:"overview",zone:"",sect:"",src:"",type:"",prio:"traiter",q:"",surv:false,neuf:false,sort:"score",dir:-1};
@@ -689,7 +702,7 @@ function renderTable(){
       +`<td class="t-date">${relDate(l)}</td>`
       +`<td>${l.zone}<div class="t-sub">${l.pays}</div></td>`
       +`<td>${l.secteur}</td>`
-      +`<td class="t-val">${fmtEur(l.valeur)}</td>`
+      +`<td>${cellMontant(l)}</td>`
       +`<td><span class="t-score" style="color:${scoreColor(l.score)}">${l.score.toFixed(1)}</span></td>`
       +`<td><span class="pill ${l.prio}">${PRIO_LBL[l.prio]||l.prio}</span></td></tr>`;
   }).join("")||'<tr><td colspan="7" class="empty">Aucun marché ne correspond à ces filtres. Essaie « Tout » ou réinitialise.</td></tr>';
@@ -749,7 +762,7 @@ function openDrawer(id){
     <div class="dr-src">${l.src} · ${l.zone}</div><h3>${esc(l.titre)}</h3>
     <div style="display:flex;gap:8px;align-items:center"><span class="score-badge" style="width:34px;height:34px;font-size:14px;background:${scoreColor(l.score)}">${l.score.toFixed(1)}</span><span class="pill ${l.prio}">${PRIO_LBL[l.prio]||l.prio}</span><span class="t-val" style="margin-left:auto;font-size:15px">${fmtEur(l.valeur)}</span></div></div>
   <div class="dr-body">
-    <div class="dr-sec"><h5>Marché</h5><div class="dr-grid"><div class="dr-field"><div class="l">Pays</div><div class="v">${l.pays||"—"}</div></div><div class="dr-field"><div class="l">Secteur</div><div class="v">${l.secteur}</div></div><div class="dr-field"><div class="l">Acheteur / bailleur</div><div class="v" style="font-size:13px">${esc(l.acheteur)}</div></div><div class="dr-field"><div class="l">Fenêtre</div><div class="v">${l.win||"—"}</div></div></div></div>
+    <div class="dr-sec"><h5>Marché</h5><div class="dr-grid"><div class="dr-field"><div class="l">Pays</div><div class="v">${l.pays||"—"}</div></div><div class="dr-field"><div class="l">Secteur</div><div class="v">${l.secteur}</div></div><div class="dr-field"><div class="l">Acheteur / bailleur</div><div class="v" style="font-size:13px">${esc(l.acheteur)}</div></div><div class="dr-field"><div class="l">Fenêtre</div><div class="v">${l.win||"—"}</div></div>${l.enveloppe>0?`<div class="dr-field"><div class="l">Enveloppe projet</div><div class="v" style="color:var(--blue)">${fmtEur(l.enveloppe)} <span style="font-size:10px;color:var(--ink-3)">(coût total, pas le marché)</span></div></div>`:""}</div></div>
     ${l.titulaire||l.pays_tit?`<div class="dr-sec"><h5>Titulaire</h5><div class="dr-grid"><div class="dr-field"><div class="l">Entreprise</div><div class="v">${esc(l.titulaire||"—")}</div></div><div class="dr-field"><div class="l">Origine</div><div class="v">${l.pays_tit||"—"} ${l.etranger?'<span class="flag">étranger</span>':""}</div></div></div></div>`:""}
     ${(function(){const c=candidatsPour(l);return c.length?`<div class="dr-sec"><h5>Candidats probables${l.src==="ATTRIB"?" (autres du secteur)":""}</h5><div class="cand-list">${c.map(x=>`<div class="cand" onclick="rechercherEnt('${(x.entreprise||"").replace(/'/g,"\\'")}')"><div class="cand-n">${esc(x.entreprise)}</div><div class="cand-m">${x.nb} marché${x.nb>1?"s":""} similaire${x.nb>1?"s":""}${x.origine?" · "+esc(x.origine):""}${x.etranger?' <span class="cand-etr">étranger</span>':""}</div></div>`).join("")}</div><div class="cand-note">Inféré depuis l'historique des attributions du même secteur / théâtre.</div></div>`:"";})()}
     <div class="dr-sec"><h5>Cible commerciale</h5><div class="dr-analyse">${esc(l.cible)||"—"}${l.interlocuteur?"<br><strong>Interlocuteur :</strong> "+esc(l.interlocuteur):""}${l.besoin?"<br><strong>Besoin de sûreté :</strong> "+l.besoin:""}${l.nature?"<br><strong>Déploiement :</strong> "+natL:""}</div></div>
