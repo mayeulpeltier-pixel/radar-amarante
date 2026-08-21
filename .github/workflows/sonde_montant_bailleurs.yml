@@ -1,0 +1,41 @@
+name: Sonde montant bailleurs
+# Diagnostic ponctuel, DECLENCHEMENT MANUEL UNIQUEMENT (workflow_dispatch).
+# Ne touche a RIEN : ni Google Sheet, ni Postgres, ni etat, ni dashboard, ni LLM.
+# Pour chaque bailleur (BM avis, BM amont, AfDB, ADB, EBRD, IDB, UNGM), elle dit
+# si un montant est exploitable (champ structure) ou seulement present en texte
+# libre, avec taux de remplissage et exemples. Sonde jetable : a supprimer une
+# fois le verdict rendu et les collecteurs branches.
+#
+# UTILISATION : onglet Actions > "Sonde montant bailleurs" > Run workflow.
+#   source : vide = toutes ; sinon une seule (bm_amont, bm_avis, afdb, adb,
+#            ebrd, idb, ungm).
+#   ech    : taille d'echantillon par source (defaut 40).
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "Une seule source (bm_amont|bm_avis|afdb|adb|ebrd|idb|ungm), vide = toutes"
+        required: false
+        default: ""
+      ech:
+        description: "Taille d'echantillon par source (defaut 40)"
+        required: false
+        default: "40"
+jobs:
+  sonde-montant-bailleurs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer les dependances radar
+        run: pip install -r requirements-radar.txt
+      - name: Sonder le montant des bailleurs
+        env:
+          SONDE_SOURCE: ${{ github.event.inputs.source }}
+          SONDE_ECH: ${{ github.event.inputs.ech }}
+        run: python sonde_montant_bailleurs.py
