@@ -271,6 +271,9 @@ def normaliser(projet, aujourd=None):
         "deadline": (_date_iso(projet.get("closingdate")).isoformat()
                      if _date_iso(projet.get("closingdate")) else ""),
         "date_publication": d_appro.isoformat(),
+        # Enveloppe PROJET (cout total, USD) : proxy taille de deploiement, PAS
+        # un montant de marche. Suffixe USD pour la conversion EUR aval.
+        "enveloppe_usd": "{:.0f} USD".format(montant) if montant else "",
     }
 
 
@@ -299,6 +302,7 @@ COLONNES_BMP = [
     "action_recommandee", "fenetre_action", "titre", "acheteur",
     "pays_execution", "type_notice", "justification", "publication_number",
     "lien_avis", "deadline", "date_publication",
+    "enveloppe_usd",
 ]
 COLONNE_STATUT_SUIVI = "statut_suivi"
 COLONNE_DATE_DETECTION = "date_detection"
