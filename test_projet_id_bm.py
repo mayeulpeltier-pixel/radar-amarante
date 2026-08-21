@@ -10,6 +10,7 @@ COLONNES_BM, aucune position existante n'est decalee.
 import unittest
 
 import ted_complet_bm as bm
+import bm_attributions as bma
 
 
 def record(pid="P172945"):
@@ -43,6 +44,24 @@ class TestExpositionProjId(unittest.TestCase):
              "surete": 7.0, "commercial": 6.0, "divergence": ""}
         ligne = bm.ligne_depuis_resultat_bm(r)
         self.assertEqual(ligne[bm.COLONNES_BM.index("projet_id")], "P172945")
+
+
+class TestAttributionProjId(unittest.TestCase):
+
+    def test_colonne_ajoutee_en_fin(self):
+        self.assertEqual(bma.COLONNES[-1], "projet_id")
+
+    def test_publication_number_non_decale(self):
+        self.assertLess(bma.COLONNES.index("publication_number"),
+                        bma.COLONNES.index("projet_id"))
+
+    def test_ligne_ecrit_projet_id(self):
+        ligne = bma.ligne_pour_sheet({"projet_id": "P172945", "gagnant": "X"})
+        self.assertEqual(ligne[bma.COLONNES.index("projet_id")], "P172945")
+
+    def test_projet_id_vide_par_defaut(self):
+        ligne = bma.ligne_pour_sheet({"gagnant": "X"})
+        self.assertEqual(ligne[bma.COLONNES.index("projet_id")], "")
 
 
 if __name__ == "__main__":
