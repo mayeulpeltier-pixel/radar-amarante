@@ -90,6 +90,7 @@ COLONNES = [
     # attributions_analyse.py affinera l'origine ; ces deux champs donnent une
     # reponse immediate meme quand l'analyse LLM n'a pas encore tourne.
     "pays_titulaire", "titulaire_etranger",
+    "projet_id",
 ]
 COL_STATUT = "statut_prospection"
 COL_DETECTION = "date_detection"
