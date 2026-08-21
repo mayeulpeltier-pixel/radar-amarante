@@ -1037,6 +1037,7 @@ def lire_onglets(sheet_id, fichier_cs):
             "acheteur", "titre", "cpv", "sous_traitance", "date_publication",
             "publication_number", "lien", "a_demarcher",
             "pays_titulaire", "titulaire_etranger",       # socle B (23/07/2026)
+            "projet_id",                                   # ancre dossier BM (Voie A)
             "statut_prospection", "date_detection"]
     lignes_attrib = _lignes_vers_dicts(valeurs(onglet_attrib), colonnes_attrib)
 
