@@ -111,3 +111,39 @@ def construire_dossiers(leads, multi_phases_seulement=False):
 def index_par_proj_id(dossiers):
     """{proj_id: dossier} pour rattacher un lead a son dossier cote front."""
     return {d["proj_id"]: d for d in dossiers}
+
+
+def _lead_compact(l):
+    return {
+        "titre": l.get("titre", ""),
+        "pays": l.get("pays") or l.get("zone") or "",
+        "date": _date(l),
+        "score": l.get("final") if l.get("final") is not None else l.get("score", ""),
+        "action": l.get("action", ""),
+        "entreprise": l.get("entreprise", ""),
+        "origine": l.get("origine", ""),
+        "etranger": l.get("etranger_titulaire", ""),
+        "valeur": l.get("valeur", ""),
+        "pub": l.get("pub", ""),
+        "src": l.get("src", ""),
+        "phase": phase_du_lead(l),
+    }
+
+
+def serialiser(dossiers, limite=300):
+    """Version compacte et JSON-safe des dossiers pour l'injection cockpit :
+    metadonnees + timeline reduite aux champs d'affichage."""
+    out = []
+    for d in dossiers[:limite]:
+        out.append({
+            "proj_id": d["proj_id"],
+            "titre": d["titre"],
+            "pays": d["pays"],
+            "secteur": d["secteur"],
+            "phase_courante": d["phase_courante"],
+            "phases_presentes": d["phases_presentes"],
+            "n_phases": d["n_phases"],
+            "n_leads": d["n_leads"],
+            "timeline": [_lead_compact(l) for l in d["timeline"]],
+        })
+    return out
