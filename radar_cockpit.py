@@ -133,16 +133,10 @@ def charger_watchlist(sheet_id, fichier, lignes_bitd=None):
 
 
 def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
-                    candidats=None):
-    """leads (schema dashboard) -> HTML autonome. Fonction PURE (testable
-    offline).
-    geo       : flux geopolitique (dash.preparer_geo). Defaut [].
-    suivi     : {url, token, api} pour le bouton de statut. Defaut : desactive.
-    risque    : table posture par zone (defaut = dash.RISQUE_ZONE).
-    watchlist : entreprises suivies [{entreprise, secteur, wl}].
-    candidats : index des incumbents (candidats_probables.construire_index) pour
-                afficher, sur chaque avis, qui gagne habituellement ce type de
-                marche. Defaut {} (section masquee)."""
+                    candidats=None, dossiers=None):
+    """leads (schema dashboard) -> HTML autonome. Fonction PURE.
+    dossiers : liste compacte (dossiers.serialiser) pour la vue Ecosysteme
+               (projets BM suivis a travers leurs phases). Defaut []."""
     risque = risque if risque is not None else getattr(dash, "RISQUE_ZONE", {})
     suivi = suivi or {}
     payload = enrichir(leads)
@@ -153,6 +147,7 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
             .replace("__GEO_JSON__", json.dumps(geo or [], ensure_ascii=False))
             .replace("__WATCHLIST_JSON__", json.dumps(watchlist or [], ensure_ascii=False))
             .replace("__CANDIDATS_JSON__", json.dumps(candidats or {}, ensure_ascii=False))
+            .replace("__DOSSIERS_JSON__", json.dumps(dossiers or [], ensure_ascii=False))
             .replace("__SUIVI_URL__", json.dumps(suivi.get("url", "")))
             .replace("__SUIVI_TOKEN__", json.dumps(suivi.get("token", "")))
             .replace("__API_STATUT__", "true" if suivi.get("api") else "false"))
@@ -340,6 +335,25 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .cand-m{font-size:11px;color:var(--ink-3);font-family:var(--mono);margin-top:2px}
 .cand-etr{color:var(--blue);font-weight:600}
 .cand-note{font-size:10.5px;color:var(--ink-3);font-family:var(--mono);margin-top:8px;font-style:italic}
+.doss{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:var(--sh)}
+.doss-top{display:flex;align-items:flex-start;gap:12px;margin-bottom:14px}
+.doss-tit{flex:1;min-width:0}
+.doss-nom{font-weight:600;font-size:14px;line-height:1.3}
+.doss-meta{font-size:11px;color:var(--ink-3);font-family:var(--mono);margin-top:3px}
+.doss-pid{font-family:var(--mono);font-size:11px;font-weight:600;padding:3px 9px;border-radius:20px;background:var(--amarante-soft);color:var(--amarante);flex:none}
+.pipe{display:flex;align-items:center;margin:6px 0 14px}
+.ph{flex:1;text-align:center;font-family:var(--mono);font-size:10.5px;font-weight:600;text-transform:uppercase;padding:7px 4px;border-radius:7px;background:var(--line-2);color:var(--ink-3);position:relative}
+.ph.on{background:var(--amarante-soft);color:var(--amarante)}
+.ph.cur{background:var(--amarante);color:#fff}
+.ph-link{width:26px;height:2px;background:var(--line);flex:none}
+.ph-link.on{background:var(--amarante)}
+.tl{display:flex;flex-direction:column;gap:0}
+.tl-row{display:flex;gap:11px;padding:9px 0;border-top:1px solid var(--line-2)}
+.tl-dot{width:9px;height:9px;border-radius:50%;flex:none;margin-top:5px}
+.tl-body{flex:1;min-width:0}
+.tl-t{font-size:12.5px;line-height:1.35}
+.tl-m{font-size:10.5px;color:var(--ink-3);font-family:var(--mono);margin-top:2px}
+.tl-ph{font-size:9px;font-family:var(--mono);font-weight:700;text-transform:uppercase;padding:1px 6px;border-radius:4px;background:var(--surface-2);color:var(--ink-3);margin-right:6px}
 .empty{padding:60px;text-align:center;color:var(--ink-3);font-family:var(--mono);font-size:13px}
 .firmo-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px}
 .fcard{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px;box-shadow:var(--sh);transition:.15s;cursor:pointer}
@@ -403,6 +417,7 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
       <a data-view="attrib"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 21V7a2 2 0 012-2h8a2 2 0 012 2v14"/><path d="M6 21h12M10 9h4M10 13h4M10 17h4"/></svg>Attributions<span class="cnt" id="cnt-attrib"></span></a>
       <a data-view="firmo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>Entreprises</a>
       <a data-view="watch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>Watchlist<span class="cnt" id="cnt-watch"></span></a>
+      <a data-view="doss"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 7h16M4 12h16M4 17h10"/><circle cx="19" cy="17" r="2"/></svg>Dossiers<span class="cnt" id="cnt-doss"></span></a>
       <a data-view="geo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 2l9 5v6c0 5-4 8-9 9-5-1-9-4-9-9V7z"/></svg>Géopolitique</a>
     </nav>
     <div class="side-foot"><span class="dot-live"></span> <span id="run-meta">Cockpit</span></div>
@@ -465,6 +480,10 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
       <div class="filters"><div class="facet"><select id="w-dom"><option value="">Tous les domaines</option></select></div><div class="seg" id="w-sig"><button data-s="" class="on">Toutes</button><button data-s="1">Avec signaux</button></div><span class="chip-clear" id="w-count"></span></div>
       <div id="watch-body"></div>
     </section>
+    <section class="view" id="v-doss">
+      <div class="filters"><div class="seg" id="d-mp"><button data-m="" class="on">Tous les dossiers</button><button data-m="1">Suivi actif (2+ phases)</button></div><span class="chip-clear" id="d-count"></span></div>
+      <div id="doss-body"></div>
+    </section>
     <section class="view" id="v-firmo">
       <div class="filters"><div class="facet"><select id="ff-tri"><option value="marches">Trier par marchés</option><option value="valeur">Trier par valeur</option><option value="theatres">Trier par présence</option></select></div><div class="seg" id="ff-etr"><button data-e="" class="on">Toutes</button><button data-e="1">Étrangères</button></div><span class="chip-clear" id="ff-count"></span></div>
       <div id="firmo-grid" class="firmo-grid"></div>
@@ -478,7 +497,7 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 <div class="drawer-ov" id="drawer-ov" onclick="closeDrawer()"></div>
 <div class="drawer" id="drawer"><div id="drawer-content"></div></div>
 <script>
-const RAW=__LEADS_JSON__, COORDS=__COORDS_JSON__, RISQUE=__RISQUE_JSON__, GEO=__GEO_JSON__, WATCHLIST=__WATCHLIST_JSON__, CANDIDATS=__CANDIDATS_JSON__;
+const RAW=__LEADS_JSON__, COORDS=__COORDS_JSON__, RISQUE=__RISQUE_JSON__, GEO=__GEO_JSON__, WATCHLIST=__WATCHLIST_JSON__, CANDIDATS=__CANDIDATS_JSON__, DOSSIERS=__DOSSIERS_JSON__;
 function candidatsPour(l){
   if(!CANDIDATS||!CANDIDATS.secteur_zone)return [];
   const sect=(l.secteur||"Autre"), zone=(l.zone||"Non classe");
@@ -746,7 +765,40 @@ function carteEnt(e){
   }).join("");
   return `<div class="went ${e.signaux.length?"hot":""}"><div class="went-top"><div class="went-nom" title="${esc(e.nom)}">${esc(e.nom)}</div><span class="went-n ${e.signaux.length?"":"zero"}">${e.signaux.length}</span></div>${sigs||'<div class="wsig-none">Aucun signal récent</div>'}</div>`;
 }
-const TITLES={overview:["Vue d'ensemble","Théâtre global"],opps:["Opportunités","Avis de marché et signaux privés"],map:["Carte des théâtres","Répartition géographique"],attrib:["Attributions","Qui a gagné quoi en zone à risque"],watch:["Watchlist entreprises","Comptes suivis et signaux de déploiement"],firmo:["Entreprises","Fiches titulaires 360°"],geo:["Géopolitique","Alertes de la semaine"]};
+// --- DOSSIERS (ecosysteme) : projets BM suivis a travers leurs phases ---
+let dossState={mp:""};
+const PH_LBL={amont:"Amont",avis:"Appel d'offres",attribution:"Attribution"};
+const PH_ORD=["amont","avis","attribution"];
+function renderDoss(){
+  try{
+    let ds=DOSSIERS.slice();
+    if(dossState.mp)ds=ds.filter(d=>d.n_phases>=2);
+    const multi=DOSSIERS.filter(d=>d.n_phases>=2).length;
+    document.getElementById("d-count").textContent=ds.length+" dossier"+(ds.length>1?"s":"")+" · "+multi+" en suivi actif";
+    document.getElementById("doss-body").innerHTML=ds.map(carteDossier).join("")||'<div class="empty">Aucun dossier constitué pour l\'instant. Les dossiers se remplissent au fil des runs, à mesure que les phases (amont, avis, attribution) partagent le même identifiant projet.</div>';
+  }catch(err){
+    document.getElementById("doss-body").innerHTML='<div class="empty">Affichage des dossiers indisponible ('+esc(err&&err.message)+').</div>';
+  }
+}
+function carteDossier(d){
+  const pipe=PH_ORD.map((p,i)=>{
+    const on=(d.phases_presentes||[]).includes(p);
+    const cur=d.phase_courante===p;
+    const seg=i<PH_ORD.length-1?`<div class="ph-link ${on&&(d.phases_presentes||[]).includes(PH_ORD[i+1])?'on':''}"></div>`:"";
+    return `<div class="ph ${on?'on':''} ${cur?'cur':''}">${PH_LBL[p]}</div>`+seg;
+  }).join("");
+  const tl=(d.timeline||[]).map(l=>{
+    const col=scoreColor(typeof l.score==="number"?l.score:0);
+    const info=l.phase==="attribution"
+      ? `${esc(l.entreprise||"Titulaire")}${l.origine?" · "+esc(l.origine):""}${String(l.etranger).toLowerCase()==="oui"?' <span class="cand-etr">étranger</span>':""}${l.valeur?" · "+esc(l.valeur):""}`
+      : `${l.pays?esc(l.pays)+" · ":""}${l.date?esc(l.date):""}${typeof l.score==="number"?" · score "+l.score.toFixed(1):""}`;
+    return `<div class="tl-row"><div class="tl-dot" style="background:${col}"></div><div class="tl-body"><div class="tl-t"><span class="tl-ph">${PH_LBL[l.phase]||l.phase}</span>${esc(l.titre||"").slice(0,90)}</div><div class="tl-m">${info}</div></div></div>`;
+  }).join("");
+  const cand=(CANDIDATS&&CANDIDATS.secteur?candidatsPour({secteur:d.secteur,zone:d.pays,titulaire:""}):[]);
+  const candHtml=cand.length?`<div class="cand-note" style="margin-top:12px">Candidats probables : ${cand.slice(0,4).map(x=>esc(x.entreprise)+(x.etranger?" ⚑":"")).join(" · ")}</div>`:"";
+  return `<div class="doss"><div class="doss-top"><div class="doss-tit"><div class="doss-nom">${esc(d.titre||"Projet "+d.proj_id)}</div><div class="doss-meta">${esc(d.pays||"")}${d.secteur?" · "+esc(d.secteur):""} · ${d.n_leads} signal${d.n_leads>1?"aux":""}</div></div><span class="doss-pid">${esc(d.proj_id)}</span></div><div class="pipe">${pipe}</div><div class="tl">${tl}</div>${candHtml}</div>`;
+}
+const TITLES={overview:["Vue d'ensemble","Théâtre global"],opps:["Opportunités","Avis de marché et signaux privés"],map:["Carte des théâtres","Répartition géographique"],attrib:["Attributions","Qui a gagné quoi en zone à risque"],watch:["Watchlist entreprises","Comptes suivis et signaux de déploiement"],doss:["Dossiers","Projets suivis de l'amont à l'attribution"],firmo:["Entreprises","Fiches titulaires 360°"],geo:["Géopolitique","Alertes de la semaine"]};
 function go(v){
   state.view=v;
   document.querySelectorAll(".nav a").forEach(a=>a.classList.toggle("on",a.dataset.view===v));
@@ -755,7 +807,7 @@ function go(v){
   document.getElementById("top-title").textContent=TITLES[v][0];document.getElementById("top-crumb").textContent=TITLES[v][1];
   if(v==="overview"){renderTheatres();renderKPIs();renderCharts();renderFunnel();renderHot();}
   if(v==="opps")renderTable();if(v==="attrib")renderAttrib();
-  if(v==="firmo")renderFirmo();if(v==="geo")renderGeo();if(v==="watch")renderWatch();
+  if(v==="firmo")renderFirmo();if(v==="geo")renderGeo();if(v==="watch")renderWatch();if(v==="doss")renderDoss();
   if(v==="map")setTimeout(()=>{initMap();map.invalidateSize();},60);
 }
 function goZone(z){state.zone=z;document.getElementById("f-zone").value=z;go("opps");renderTable();}
@@ -786,6 +838,7 @@ document.getElementById("run-meta").textContent=LEADS.length+" leads";
 document.getElementById("ff-tri").onchange=e=>{firmoState.tri=e.target.value;renderFirmo();};
 document.querySelectorAll("#ff-etr button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#ff-etr button").forEach(x=>x.classList.remove("on"));b.classList.add("on");firmoState.etr=b.dataset.e;renderFirmo();});
 (function(){const doms=[...new Set(watchEntreprises().map(e=>e.secteur))].sort();const sel=document.getElementById("w-dom");doms.forEach(d=>sel.innerHTML+=`<option>${d}</option>`);sel.onchange=e=>{watchState.dom=e.target.value;renderWatch();};document.querySelectorAll("#w-sig button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#w-sig button").forEach(x=>x.classList.remove("on"));b.classList.add("on");watchState.sig=b.dataset.s;renderWatch();});document.getElementById("cnt-watch").textContent=watchEntreprises().length;})();
+(function(){document.getElementById("cnt-doss").textContent=DOSSIERS.length;document.querySelectorAll("#d-mp button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#d-mp button").forEach(x=>x.classList.remove("on"));b.classList.add("on");dossState.mp=b.dataset.m;renderDoss();});})();
 initFilters();go("overview");
 </script>
 </body>
