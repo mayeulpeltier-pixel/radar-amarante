@@ -169,9 +169,35 @@ def prober_afdb(fetch=None):
 
 def prober_adb(fetch=None):
     import adb_radar as m
-    txt = m.collecter_pages(fetch=fetch, pages=1)
-    notices = m.parser_notices(txt)
-    return ("ADB -- page tenders", notices[:ECH], txt[:300000])
+    if fetch is not None:
+        txt = m.collecter_pages(fetch=fetch, pages=1)
+        return ("ADB -- page tenders", m.parser_notices(txt)[:ECH], txt[:300000])
+    # Live : la sonde v1 bouclait (TooManyRedirects) car l'URL par defaut porte
+    # des crochets non-encodes ([]) que le serveur 30x en boucle. On encode les
+    # crochets, on suit les redirections avec cookies, et si ca boucle encore,
+    # on capture la 1re reponse sans suivre. Override possible : SONDE_ADB_URL
+    # = URL exacte copiee depuis le navigateur (avec {page} ou une page fixe).
+    import requests
+    from urllib.parse import urlsplit, urlunsplit
+    brut = os.environ.get("SONDE_ADB_URL", "").strip()
+    url = (brut.format(page=1) if "{page}" in brut else brut) or m.ADB_URL.format(page=1)
+    p = urlsplit(url)
+    url = urlunsplit((p.scheme, p.netloc, p.path,
+                      p.query.replace("[", "%5B").replace("]", "%5D"), p.fragment))
+    entetes = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko) "
+                              "Chrome/125.0 Safari/537.36"),
+               "Accept": "text/html,application/xhtml+xml"}
+    sess = requests.Session()
+    try:
+        rep = sess.get(url, headers=entetes, timeout=45, allow_redirects=True)
+    except requests.exceptions.TooManyRedirects:
+        rep = sess.get(url, headers=entetes, timeout=45, allow_redirects=False)
+    if rep.status_code >= 400:
+        rep.raise_for_status()
+    txt = rep.text or ""
+    return ("ADB -- page tenders (probe durci)",
+            m.parser_notices(txt)[:ECH], txt[:300000])
 
 
 def prober_ebrd(fetch=None):
