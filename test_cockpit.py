@@ -139,6 +139,19 @@ class TestLot2(unittest.TestCase):
         self.assertEqual(sorted(e["entreprise"] for e in wl), ["Nexter", "Thales"])
         self.assertTrue(all(e["wl"] == "bitd" for e in wl))
 
+    def test_dossiers_injectes(self):
+        doss = [{"proj_id": "P172945", "titre": "Punjab Urban", "pays": "Pakistan",
+                 "secteur": "Cadastre", "phase_courante": "attribution",
+                 "phases_presentes": ["amont", "avis", "attribution"],
+                 "n_phases": 3, "n_leads": 3, "timeline": []}]
+        h = rc.generer_cockpit([lead()], dossiers=doss)
+        self.assertNotIn("__DOSSIERS_JSON__", h)
+        self.assertIn("P172945", h)
+
+    def test_dossiers_defaut_vide(self):
+        h = rc.generer_cockpit([lead()])
+        self.assertIn("DOSSIERS=[]", h)
+
 
 if __name__ == "__main__":
     unittest.main()
