@@ -436,6 +436,7 @@ def normaliser_attribution(rec, aujourd_hui=None):
         # Persistes (sans prefixe _) : alimentent les colonnes du meme nom.
         "pays_titulaire": pays_titulaire or "",
         "titulaire_etranger": "oui" if etranger else "non",
+        "projet_id": "",  # IDB n'a pas de proj_id BM ; colonne presente pour l'onglet partage
     }
 
 
