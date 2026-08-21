@@ -308,8 +308,14 @@ def generer_page(conn):
             idx_cand = candidats_probables.construire_index(leads)
         except Exception:
             idx_cand = {}
+        try:
+            import dossiers as _dossiers
+            doss = _dossiers.serialiser(_dossiers.construire_dossiers(leads))
+        except Exception:
+            doss = []
         return radar_cockpit.generer_cockpit(leads, geo=geo, suivi=suivi,
-                                             watchlist=watch, candidats=idx_cand)
+                                             watchlist=watch, candidats=idx_cand,
+                                             dossiers=doss)
     except Exception as e:
         print("(app) cockpit indisponible ({}), repli dashboard.".format(str(e)[:100]))
         return dash.generer_html(leads, lignes_watchlist, api_statut=True,
