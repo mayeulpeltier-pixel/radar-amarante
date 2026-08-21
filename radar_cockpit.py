@@ -400,6 +400,22 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .tact.delegation_mission{background:var(--amarante-soft);color:var(--amarante)}
 .tact.recrutement_local,.tact.contrat_export{background:var(--green-soft);color:var(--green)}
 .tact.incident{background:var(--red-soft);color:var(--red)}
+.opps-bar{display:flex;align-items:center;gap:14px;margin-bottom:14px;flex-wrap:wrap}
+.opps-intro{flex:1;min-width:220px;font-size:12.5px;color:var(--ink-2);background:var(--surface-2);border:1px solid var(--line-2);border-left:3px solid var(--amarante);border-radius:9px;padding:10px 14px;line-height:1.5}
+.opps-intro b{color:var(--ink)}
+.t-date{font-family:var(--mono);font-size:12px;color:var(--ink-2);white-space:nowrap}
+.mb.neuf{background:var(--amarante-soft);color:var(--amarante)}
+.mb.proj{background:var(--blue-soft);color:var(--blue);cursor:pointer}.mb.proj:hover{background:var(--blue);color:#fff}
+.mb.inc{background:var(--red-soft);color:var(--red)}
+.tag-orig{font-family:var(--mono);font-size:11px;font-weight:600;padding:2px 8px;border-radius:5px;background:var(--surface-2);border:1px solid var(--line);color:var(--ink-2)}
+.doss-explain{display:flex;gap:14px;align-items:flex-start;background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--amarante);border-radius:12px;padding:15px 18px;margin-bottom:16px;box-shadow:var(--sh);font-size:13px;line-height:1.55;color:var(--ink-2)}
+.doss-explain b{color:var(--ink)}
+.doss-explain-ic{font-size:22px;line-height:1;flex:none}
+.mono-inline{font-family:var(--mono);font-size:12px;background:var(--line-2);padding:1px 6px;border-radius:4px;color:var(--ink-2)}
+.doss-hl{outline:3px solid var(--amarante);outline-offset:2px;transition:outline .3s}
+.tl-row[onclick]:hover{background:var(--surface-2);border-radius:7px}
+.tl-go{margin-left:7px;color:var(--amarante);font-weight:700;opacity:0;transition:.12s}
+.tl-row[onclick]:hover .tl-go{opacity:1}
 @media(max-width:1100px){.kpis{grid-template-columns:repeat(2,1fr)}.grid-2{grid-template-columns:1fr}.map-view{grid-template-columns:1fr;height:auto}#map{height:60vh}}
 @media(max-width:720px){.app{grid-template-columns:1fr}.side{display:none}}
 </style>
@@ -444,18 +460,27 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
       <div class="panel"><div class="p-head"><h3>À contacter en priorité</h3><span class="hint">score le plus élevé, non traités</span></div><div class="hot" id="hot"></div></div>
     </section>
     <section class="view" id="v-opps">
+      <div class="opps-bar">
+        <div class="opps-intro">Marchés à saisir : avis d'appel d'offres et signaux privés (les <b>attributions</b> ont leur propre onglet). Une ligne = une action.</div>
+        <button class="chip-toggle" id="f-neuf" onclick="toggleNeuf()">✦ Nouveautés du dernier run</button>
+      </div>
       <div class="filters">
         <div class="facet"><select id="f-zone"><option value="">Tous les théâtres</option></select></div>
         <div class="facet"><select id="f-sect"><option value="">Tous les secteurs</option></select></div>
+        <div class="facet"><select id="f-type"><option value="">Avis + signaux</option><option value="avis">Avis de marché</option><option value="prive">Signaux privés</option></select></div>
         <div class="facet"><select id="f-src"><option value="">Toutes les sources</option></select></div>
-        <div class="seg" id="f-prio"><button data-p="" class="on">Toutes</button><button data-p="contacter">À contacter</button><button data-p="surveiller">À surveiller</button></div>
+        <div class="seg" id="f-prio"><button data-p="traiter" class="on">À traiter</button><button data-p="contacter">À contacter</button><button data-p="surveiller">À surveiller</button><button data-p="">Tout</button></div>
         <button class="chip-toggle" id="f-surv" onclick="toggleSurv()">👁 Surveillés</button>
         <button class="chip-clear" onclick="resetFilters()">Réinitialiser</button>
       </div>
       <div class="tbl-wrap"><table><thead><tr>
-        <th data-sort="titre">Marché<span class="ar">↕</span></th><th data-sort="zone">Théâtre<span class="ar">↕</span></th>
-        <th data-sort="secteur">Secteur<span class="ar">↕</span></th><th data-sort="valeur">Valeur<span class="ar">↕</span></th>
-        <th data-sort="score">Score<span class="ar">↕</span></th><th data-sort="src">Source<span class="ar">↕</span></th><th data-sort="prio">Priorité<span class="ar">↕</span></th>
+        <th data-sort="titre">Marché<span class="ar">↕</span></th>
+        <th data-sort="ts">Détecté<span class="ar">↕</span></th>
+        <th data-sort="zone">Théâtre<span class="ar">↕</span></th>
+        <th data-sort="secteur">Secteur<span class="ar">↕</span></th>
+        <th data-sort="valeur">Montant<span class="ar">↕</span></th>
+        <th data-sort="score" title="Score = risque zone + secteur + montant. Avis : potentiel marché. Signal privé : intensité du signal.">Score<span class="ar">↕</span></th>
+        <th data-sort="prio">Action<span class="ar">↕</span></th>
       </tr></thead><tbody id="tbody"></tbody></table></div>
       <div style="padding:12px 4px;font-family:var(--mono);font-size:12px;color:var(--ink-3)" id="tbl-count"></div>
     </section>
@@ -474,14 +499,19 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
     </section>
     <section class="view" id="v-attrib">
       <div class="kpis" id="kpis-attrib"></div>
-      <div class="tbl-wrap"><table><thead><tr><th>Titulaire</th><th>Marché gagné</th><th>Théâtre</th><th>Origine</th><th>Valeur</th><th>Statut</th></tr></thead><tbody id="tbody-attrib"></tbody></table></div>
+      <div class="opps-bar"><div class="opps-intro">Qui a gagné quoi en zone à risque. Un titulaire étranger = un déploiement à démarcher. Trié du plus récent au plus ancien.</div></div>
+      <div class="tbl-wrap"><table><thead><tr><th>Titulaire</th><th>Marché gagné</th><th>Détecté</th><th>Théâtre</th><th>Origine</th><th>Montant</th><th>Statut</th></tr></thead><tbody id="tbody-attrib"></tbody></table></div>
     </section>
     <section class="view" id="v-watch">
       <div class="filters"><div class="facet"><select id="w-dom"><option value="">Tous les domaines</option></select></div><div class="seg" id="w-sig"><button data-s="" class="on">Toutes</button><button data-s="1">Avec signaux</button></div><span class="chip-clear" id="w-count"></span></div>
       <div id="watch-body"></div>
     </section>
     <section class="view" id="v-doss">
-      <div class="filters"><div class="seg" id="d-mp"><button data-m="" class="on">Tous les dossiers</button><button data-m="1">Suivi actif (2+ phases)</button></div><span class="chip-clear" id="d-count"></span></div>
+      <div class="doss-explain">
+        <div class="doss-explain-ic">📁</div>
+        <div><b>Un dossier suit un même projet Banque Mondiale à travers ses phases</b> : étude amont, avis d'appel d'offres, puis attribution. Le rattachement est automatique via l'identifiant projet BM (<span class="mono-inline">P######</span>), sans rapprochement de texte. Par défaut, seuls les dossiers <b>multi-phases</b> sont affichés (là où on voit le marché évoluer). Chaque ligne de la frise est cliquable.</div>
+      </div>
+      <div class="filters"><div class="seg" id="d-mp"><button data-m="1" class="on">Suivi actif (2+ phases)</button><button data-m="">Tous (dont mono-phase)</button></div><span class="chip-clear" id="d-count"></span></div>
       <div id="doss-body"></div>
     </section>
     <section class="view" id="v-firmo">
@@ -535,15 +565,37 @@ const LEADS=RAW.map((l,i)=>({
   etranger:!!l.etranger_titulaire,renouv:l.statut_renouv||"",nature:l.nature_deploiement||"",besoin:l.besoin_surete||"",
   interlocuteur:l.interlocuteur||"",cible:l.cible||"",justif:l.justif||"",lien:l.lien||"",secu:!!l.secu,
   type_activite:l.grp||"",resume:l.justif||"",
-  mois:l.mois_label||l.mois||"",nom:l.nom||"n.c.",email:l.email||"n.c.",tel:l.tel||"n.c.",win:l.win||"",pub:l.pub||""
+  mois:l.mois_label||l.mois||"",moiscle:l.mois||"",nom:l.nom||"n.c.",email:l.email||"n.c.",tel:l.tel||"n.c.",win:l.win||"",pub:l.pub||"",
+  proj:l.projet_id||"",deadline:l.deadline||"",datedet:l.date_det||"",
+  type:(l.src==="ATTRIB"?"attrib":(l.src==="PRIVÉ"?"prive":"avis"))
 }));
+// Date de detection -> timestamp triable (le "run" ou le lead est apparu).
+// Gere ISO (2026-08-17) et FR (17/08/2026) ; repli sur la cle mois. 0 si vide.
+function parseDate(s){
+  if(!s)return 0;s=String(s).trim();
+  let m=s.match(/^(\d{4})-(\d{2})-(\d{2})/);if(m)return Date.UTC(+m[1],+m[2]-1,+m[3]);
+  m=s.match(/^(\d{2})\/(\d{2})\/(\d{4})/);if(m)return Date.UTC(+m[3],+m[2]-1,+m[1]);
+  const t=Date.parse(s);return isNaN(t)?0:t;
+}
+LEADS.forEach(l=>{l.ts=parseDate(l.datedet)||parseDate(l.moiscle);});
+// Dernier run = date de detection la plus recente presente. Sert au badge
+// "nouveau" et au filtre "Nouveautes du dernier run".
+const LAST_RUN=LEADS.reduce((m,l)=>Math.max(m,l.ts||0),0);
+function estNouveau(l){return LAST_RUN>0&&l.ts>0&&(LAST_RUN-l.ts)<36*3600*1000;}
+function relDate(l){
+  if(!l.ts){return l.mois&&l.mois!=="Sans date"?esc(l.mois):"n.c.";}
+  const j=Math.floor((Date.now()-l.ts)/86400000);
+  if(j<=0)return "aujourd'hui";if(j===1)return "hier";if(j<7)return "il y a "+j+" j";
+  if(j<30)return "il y a "+Math.floor(j/7)+" sem.";
+  const d=new Date(l.ts);return d.getUTCDate()+" "+["janv.","févr.","mars","avr.","mai","juin","juil.","août","sept.","oct.","nov.","déc."][d.getUTCMonth()];
+}
 const SECT_COLORS={"Génie civil / BTP":"#8E2649","Eau / assainissement":"#33628F","Énergie":"#B07419","Santé":"#237A57","Sécurité / défense":"#C0392B","Logistique / transport":"#6B5B95","Extractif / mines":"#7A5230","Télécom / IT":"#3A8FA8"};
 const PRIO_COLOR={contacter:"#C0392B",surveiller:"#B07419",ignorer:"#8B93A2"};
 const PRIO_LBL={contacter:"À contacter",surveiller:"À surveiller",ignorer:"À écarter"};
 const fmtEur=v=>!v?"n.c.":v>=1?v.toFixed(v<10?1:0)+" M€":(v*1000).toFixed(0)+" k€";
 const scoreColor=s=>s>=8?"#237A57":s>=6?"#B07419":s>=4?"#33628F":"#8B93A2";
 const actifs=()=>LEADS.filter(l=>l.statut!=="écarté"&&l.statut!=="perdu");
-let state={view:"overview",zone:"",sect:"",src:"",prio:"",q:"",surv:false,sort:"score",dir:-1};
+let state={view:"overview",zone:"",sect:"",src:"",type:"",prio:"traiter",q:"",surv:false,neuf:false,sort:"score",dir:-1};
 
 function renderTheatres(){
   const byZone={};actifs().forEach(l=>{(byZone[l.zone]=byZone[l.zone]||[]).push(l);});
@@ -560,7 +612,7 @@ function renderKPIs(){
   const renouv=LEADS.filter(l=>l.renouv).length;
   const cards=[
     {lbl:"À contacter",val:contacter,sub:"leads chauds actifs",ico:'<path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>',c:"var(--red)",cs:"var(--red-soft)"},
-    {lbl:"Valeur du pipeline",val:fmtEur(valeur),sub:"attributions chiffrées",ico:'<path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/>',c:"var(--green)",cs:"var(--green-soft)"},
+    {lbl:"Valeur du pipeline",val:fmtEur(valeur),sub:"montants chiffrés détectés",ico:'<path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/>',c:"var(--green)",cs:"var(--green-soft)"},
     {lbl:"Titulaires étrangers",val:etr,sub:"déploiements à démarcher",ico:'<circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 010 20 15 15 0 010-20"/>',c:"var(--blue)",cs:"var(--blue-soft)"},
     {lbl:"Renouvellements",val:renouv,sub:"contrats à échéance suivie",ico:'<path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0114.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0020.5 15"/>',c:"var(--amber)",cs:"var(--amber-soft)"}
   ];
@@ -604,35 +656,65 @@ function renderHot(){
 }
 function filtered(){
   return LEADS.filter(l=>{
+    if(l.src==="ATTRIB")return false;                    // attributions -> onglet dédié
+    if(state.neuf&&!estNouveau(l))return false;          // nouveautés du dernier run
     if(state.surv&&!estSurveille(l))return false;
     if(state.zone&&l.zone!==state.zone)return false;
     if(state.sect&&l.secteur!==state.sect)return false;
     if(state.src&&l.src!==state.src)return false;
-    if(state.prio&&l.prio!==state.prio)return false;
+    if(state.type&&l.type!==state.type)return false;
+    if(state.prio==="traiter"){if(l.prio!=="contacter"&&l.prio!=="surveiller")return false;}
+    else if(state.prio&&l.prio!==state.prio)return false;
+    // Masque les leads déjà écartés/perdus, sauf en vue "Tout" (prio vide).
+    if((l.statut==="écarté"||l.statut==="non_pertinent"||l.statut==="perdu")&&state.prio!=="")return false;
     if(state.q){const q=state.q.toLowerCase();if(!((l.titre+l.pays+l.zone+l.secteur+l.acheteur+l.titulaire).toLowerCase().includes(q)))return false;}
     return true;
   }).sort((a,b)=>{let va=a[state.sort],vb=b[state.sort];if(typeof va==="string"){va=va.toLowerCase();vb=(vb||"").toLowerCase();return va<vb?-state.dir:va>vb?state.dir:0;}return((va||0)-(vb||0))*state.dir;});
 }
 function esc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
+const DOSS_MULTI=new Set((DOSSIERS||[]).filter(d=>d.n_phases>=2).map(d=>d.proj_id));
 function renderTable(){
   const rows=filtered();
   document.getElementById("tbody").innerHTML=rows.map(l=>{
-    const b=[];if(attribParue(l))b.push('<span class="mb attribp">🎯 attribution parue</span>');else if(estSurveille(l))b.push('<span class="mb surv">👁 surveillé</span>');
+    const b=[];
+    if(estNouveau(l))b.push('<span class="mb neuf">✦ nouveau</span>');
+    if(attribParue(l))b.push('<span class="mb attribp">🎯 attribution parue</span>');else if(estSurveille(l))b.push('<span class="mb surv">👁 surveillé</span>');
     if(l.renouv==="imminent")b.push('<span class="mb renouv">renouv. imminent</span>');else if(l.renouv==="a_venir")b.push('<span class="mb renouv">renouv. à venir</span>');
-    if(l.etranger)b.push('<span class="mb etr">titulaire étranger</span>');if(l.secu)b.push('<span class="mb secu">sûreté en place</span>');
-    return `<tr onclick="openDrawer(${l.id})"><td><div class="t-title">${esc(l.titre)}</div><div class="t-sub">${esc(l.acheteur)}</div>${b.length?`<div class="mini-badges">${b.join("")}</div>`:""}</td><td>${l.zone}<div class="t-sub">${l.pays}</div></td><td>${l.secteur}</td><td class="t-val">${fmtEur(l.valeur)}</td><td><span class="t-score" style="color:${scoreColor(l.score)}">${l.score.toFixed(1)}</span></td><td><span class="tag-src ${l.src}">${l.src}</span></td><td><span class="pill ${l.prio}">${PRIO_LBL[l.prio]||l.prio}</span></td></tr>`;
-  }).join("")||'<tr><td colspan="7" class="empty">Aucun marché ne correspond à ces filtres.</td></tr>';
+    if(l.etranger)b.push('<span class="mb etr">titulaire étranger</span>');
+    if(l.secu)b.push('<span class="mb secu">sûreté en place</span>');
+    if(l.proj&&DOSS_MULTI.has(l.proj))b.push('<span class="mb proj" title="Projet suivi sur plusieurs phases" onclick="event.stopPropagation();ouvrirDossier(\''+esc(l.proj)+'\')">📁 dossier '+esc(l.proj)+'</span>');
+    const typeLbl=l.type==="prive"?"signal privé":"avis";
+    return `<tr onclick="openDrawer(${l.id})">`
+      +`<td><div class="t-title">${esc(l.titre)}</div><div class="t-sub"><span class="tag-src ${l.src}">${l.src}</span> · ${typeLbl} · ${esc(l.acheteur)}</div>${b.length?`<div class="mini-badges">${b.join("")}</div>`:""}</td>`
+      +`<td class="t-date">${relDate(l)}</td>`
+      +`<td>${l.zone}<div class="t-sub">${l.pays}</div></td>`
+      +`<td>${l.secteur}</td>`
+      +`<td class="t-val">${fmtEur(l.valeur)}</td>`
+      +`<td><span class="t-score" style="color:${scoreColor(l.score)}">${l.score.toFixed(1)}</span></td>`
+      +`<td><span class="pill ${l.prio}">${PRIO_LBL[l.prio]||l.prio}</span></td></tr>`;
+  }).join("")||'<tr><td colspan="7" class="empty">Aucun marché ne correspond à ces filtres. Essaie « Tout » ou réinitialise.</td></tr>';
   const val=rows.reduce((s,l)=>s+l.valeur,0);
-  document.getElementById("tbl-count").textContent=rows.length+" marché"+(rows.length>1?"s":"")+(val?" · "+fmtEur(val)+" cumulés":"");
+  const nNeuf=rows.filter(estNouveau).length;
+  document.getElementById("tbl-count").textContent=rows.length+" marché"+(rows.length>1?"s":"")
+    +(nNeuf?" · "+nNeuf+" nouveau"+(nNeuf>1?"x":"")+" ce run":"")
+    +(val?" · "+fmtEur(val)+" de montants chiffrés":"");
+}
+function ouvrirDossier(pid){
+  go("doss");
+  setTimeout(()=>{const el=document.getElementById("doss-"+pid);if(el){el.scrollIntoView({behavior:"smooth",block:"center"});el.classList.add("doss-hl");setTimeout(()=>el.classList.remove("doss-hl"),1900);}},90);
 }
 function renderAttrib(){
-  const at=LEADS.filter(l=>l.src==="ATTRIB");
-  const kp=[{lbl:"Attributions suivies",val:at.length,c:"var(--amarante)"},{lbl:"Titulaires étrangers",val:at.filter(l=>l.etranger).length,c:"var(--blue)"},{lbl:"Renouvellements",val:at.filter(l=>l.renouv).length,c:"var(--amber)"},{lbl:"Valeur cumulée",val:fmtEur(at.reduce((s,l)=>s+l.valeur,0)),c:"var(--green)"}];
+  const at=LEADS.filter(l=>l.src==="ATTRIB").slice().sort((a,b)=>(b.ts-a.ts)||(b.score-a.score));
+  const cnt={};at.forEach(l=>{const k=(l.titulaire||"").toLowerCase();if(k)cnt[k]=(cnt[k]||0)+1;});
+  const kp=[{lbl:"Attributions suivies",val:at.length,c:"var(--amarante)"},{lbl:"Titulaires étrangers",val:at.filter(l=>l.etranger).length,c:"var(--blue)"},{lbl:"Renouvellements",val:at.filter(l=>l.renouv).length,c:"var(--amber)"},{lbl:"Montant cumulé",val:fmtEur(at.reduce((s,l)=>s+l.valeur,0)),c:"var(--green)"}];
   document.getElementById("kpis-attrib").innerHTML=kp.map(k=>`<div class="kpi"><div class="k-lbl" style="margin-bottom:8px">${k.lbl}</div><div class="k-val" style="color:${k.c}">${k.val}</div></div>`).join("");
   document.getElementById("tbody-attrib").innerHTML=at.map(l=>{
+    const n=cnt[(l.titulaire||"").toLowerCase()]||0;
+    const inc=n>=2?` <span class="mb inc" title="Titulaire récurrent en zone à risque">⚔ ${n} gagnés</span>`:"";
+    const neuf=estNouveau(l)?'<span class="mb neuf">✦ nouveau</span> ':'';
     const st=l.renouv==="imminent"?'<span class="mb renouv">renouv. imminent</span>':l.renouv==="a_venir"?'<span class="mb renouv">renouv. à venir</span>':'<span class="pill contacter">attribué</span>';
-    return `<tr onclick="openDrawer(${l.id})"><td><strong>${esc(l.titulaire||"—")}</strong></td><td><div class="t-title" style="max-width:260px">${esc(l.titre)}</div></td><td>${l.zone}<div class="t-sub">${l.pays}</div></td><td>${l.pays_tit?`<span class="tag-src ${l.etranger?"ATTRIB":""}">${l.pays_tit}</span>${l.etranger?' <span class="flag">étr.</span>':""}`:"—"}</td><td class="t-val">${fmtEur(l.valeur)}</td><td>${st}</td></tr>`;
-  }).join("")||'<tr><td colspan="6" class="empty">Aucune attribution.</td></tr>';
+    return `<tr onclick="openDrawer(${l.id})"><td><strong>${esc(l.titulaire||"—")}</strong>${inc}</td><td><div class="t-title" style="max-width:240px">${esc(l.titre)}</div></td><td class="t-date">${relDate(l)}</td><td>${l.zone}<div class="t-sub">${l.pays}</div></td><td>${l.pays_tit?`<span class="tag-orig">${esc(l.pays_tit)}</span>${l.etranger?' <span class="flag">étr.</span>':""}`:'<span class="t-sub">origine n.c.</span>'}</td><td class="t-val">${fmtEur(l.valeur)}</td><td>${neuf}${st}</td></tr>`;
+  }).join("")||'<tr><td colspan="7" class="empty">Aucune attribution.</td></tr>';
 }
 let map,markers=[];
 function initMap(){
@@ -766,16 +848,23 @@ function carteEnt(e){
   return `<div class="went ${e.signaux.length?"hot":""}"><div class="went-top"><div class="went-nom" title="${esc(e.nom)}">${esc(e.nom)}</div><span class="went-n ${e.signaux.length?"":"zero"}">${e.signaux.length}</span></div>${sigs||'<div class="wsig-none">Aucun signal récent</div>'}</div>`;
 }
 // --- DOSSIERS (ecosysteme) : projets BM suivis a travers leurs phases ---
-let dossState={mp:""};
+let dossState={mp:"1"};
 const PH_LBL={amont:"Amont",avis:"Appel d'offres",attribution:"Attribution"};
 const PH_ORD=["amont","avis","attribution"];
+function leadDeTimeline(tl){
+  if(tl.pub){const l=LEADS.find(x=>x.pub&&x.pub===tl.pub);if(l)return l;}
+  return LEADS.find(x=>x.titre===tl.titre&&(!tl.src||x.src===tl.src));
+}
 function renderDoss(){
   try{
     let ds=DOSSIERS.slice();
     if(dossState.mp)ds=ds.filter(d=>d.n_phases>=2);
     const multi=DOSSIERS.filter(d=>d.n_phases>=2).length;
-    document.getElementById("d-count").textContent=ds.length+" dossier"+(ds.length>1?"s":"")+" · "+multi+" en suivi actif";
-    document.getElementById("doss-body").innerHTML=ds.map(carteDossier).join("")||'<div class="empty">Aucun dossier constitué pour l\'instant. Les dossiers se remplissent au fil des runs, à mesure que les phases (amont, avis, attribution) partagent le même identifiant projet.</div>';
+    document.getElementById("d-count").textContent=ds.length+" dossier"+(ds.length>1?"s":"")+" · "+multi+" multi-phases";
+    const vide=dossState.mp
+      ? 'Aucun dossier multi-phases pour l\'instant. Un dossier devient « multi-phases » quand au moins deux étapes d\'un même projet BM (amont, avis, attribution) sont détectées. Bascule sur « Tous » pour voir les projets à une seule phase.'
+      : 'Aucun dossier constitué pour l\'instant. Les dossiers se remplissent au fil des runs, à mesure que les phases partagent le même identifiant projet BM.';
+    document.getElementById("doss-body").innerHTML=ds.map(carteDossier).join("")||'<div class="empty">'+vide+'</div>';
   }catch(err){
     document.getElementById("doss-body").innerHTML='<div class="empty">Affichage des dossiers indisponible ('+esc(err&&err.message)+').</div>';
   }
@@ -792,11 +881,15 @@ function carteDossier(d){
     const info=l.phase==="attribution"
       ? `${esc(l.entreprise||"Titulaire")}${l.origine?" · "+esc(l.origine):""}${String(l.etranger).toLowerCase()==="oui"?' <span class="cand-etr">étranger</span>':""}${l.valeur?" · "+esc(l.valeur):""}`
       : `${l.pays?esc(l.pays)+" · ":""}${l.date?esc(l.date):""}${typeof l.score==="number"?" · score "+l.score.toFixed(1):""}`;
-    return `<div class="tl-row"><div class="tl-dot" style="background:${col}"></div><div class="tl-body"><div class="tl-t"><span class="tl-ph">${PH_LBL[l.phase]||l.phase}</span>${esc(l.titre||"").slice(0,90)}</div><div class="tl-m">${info}</div></div></div>`;
+    const lead=leadDeTimeline(l);
+    const clic=lead?`onclick="openDrawer(${lead.id})" style="cursor:pointer"`:"";
+    const fleche=lead?'<span class="tl-go">→</span>':"";
+    return `<div class="tl-row" ${clic}><div class="tl-dot" style="background:${col}"></div><div class="tl-body"><div class="tl-t"><span class="tl-ph">${PH_LBL[l.phase]||l.phase}</span>${esc(l.titre||"").slice(0,90)}${fleche}</div><div class="tl-m">${info}</div></div></div>`;
   }).join("");
   const cand=(CANDIDATS&&CANDIDATS.secteur?candidatsPour({secteur:d.secteur,zone:d.pays,titulaire:""}):[]);
-  const candHtml=cand.length?`<div class="cand-note" style="margin-top:12px">Candidats probables : ${cand.slice(0,4).map(x=>esc(x.entreprise)+(x.etranger?" ⚑":"")).join(" · ")}</div>`:"";
-  return `<div class="doss"><div class="doss-top"><div class="doss-tit"><div class="doss-nom">${esc(d.titre||"Projet "+d.proj_id)}</div><div class="doss-meta">${esc(d.pays||"")}${d.secteur?" · "+esc(d.secteur):""} · ${d.n_leads} signal${d.n_leads>1?"aux":""}</div></div><span class="doss-pid">${esc(d.proj_id)}</span></div><div class="pipe">${pipe}</div><div class="tl">${tl}</div>${candHtml}</div>`;
+  const candHtml=cand.length?`<div class="cand-note" style="margin-top:12px">Candidats probables (historique secteur/théâtre) : ${cand.slice(0,4).map(x=>esc(x.entreprise)+(x.etranger?" ⚑":"")).join(" · ")}</div>`:"";
+  const nph=(d.phases_presentes||[]).length;
+  return `<div class="doss" id="doss-${esc(d.proj_id)}"><div class="doss-top"><div class="doss-tit"><div class="doss-nom">${esc(d.titre||"Projet "+d.proj_id)}</div><div class="doss-meta">${esc(d.pays||"")}${d.secteur?" · "+esc(d.secteur):""} · ${nph} phase${nph>1?"s":""} · ${d.n_leads} signal${d.n_leads>1?"aux":""}</div></div><span class="doss-pid" title="Identifiant projet Banque Mondiale (clé de rattachement)">${esc(d.proj_id)}</span></div><div class="pipe">${pipe}</div><div class="tl">${tl}</div>${candHtml}</div>`;
 }
 const TITLES={overview:["Vue d'ensemble","Théâtre global"],opps:["Opportunités","Avis de marché et signaux privés"],map:["Carte des théâtres","Répartition géographique"],attrib:["Attributions","Qui a gagné quoi en zone à risque"],watch:["Watchlist entreprises","Comptes suivis et signaux de déploiement"],doss:["Dossiers","Projets suivis de l'amont à l'attribution"],firmo:["Entreprises","Fiches titulaires 360°"],geo:["Géopolitique","Alertes de la semaine"]};
 function go(v){
@@ -815,16 +908,18 @@ function initFilters(){
   const uniq=k=>[...new Set(LEADS.map(l=>l[k]).filter(Boolean))].sort();
   uniq("zone").forEach(z=>document.getElementById("f-zone").innerHTML+=`<option>${z}</option>`);
   uniq("secteur").forEach(s=>document.getElementById("f-sect").innerHTML+=`<option>${s}</option>`);
-  uniq("src").forEach(s=>document.getElementById("f-src").innerHTML+=`<option>${s}</option>`);
+  [...new Set(LEADS.filter(l=>l.src!=="ATTRIB").map(l=>l.src).filter(Boolean))].sort().forEach(s=>document.getElementById("f-src").innerHTML+=`<option>${s}</option>`);
   document.getElementById("f-zone").onchange=e=>{state.zone=e.target.value;renderTable();};
   document.getElementById("f-sect").onchange=e=>{state.sect=e.target.value;renderTable();};
   document.getElementById("f-src").onchange=e=>{state.src=e.target.value;renderTable();};
+  const ft=document.getElementById("f-type");if(ft)ft.onchange=e=>{state.type=e.target.value;renderTable();};
   document.querySelectorAll("#f-prio button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#f-prio button").forEach(x=>x.classList.remove("on"));b.classList.add("on");state.prio=b.dataset.p;renderTable();});
   document.querySelectorAll("thead th[data-sort]").forEach(th=>th.onclick=()=>{const k=th.dataset.sort;state.dir=(state.sort===k)?-state.dir:-1;state.sort=k;renderTable();});
   document.getElementById("search").oninput=e=>{state.q=e.target.value;if(state.view==="opps")renderTable();};
 }
 function toggleSurv(){state.surv=!state.surv;document.getElementById("f-surv").classList.toggle("on",state.surv);renderTable();}
-function resetFilters(){state.zone=state.sect=state.src=state.prio="";state.surv=false;document.getElementById("f-surv").classList.remove("on");["f-zone","f-sect","f-src"].forEach(i=>document.getElementById(i).value="");document.querySelectorAll("#f-prio button").forEach((x,i)=>x.classList.toggle("on",i===0));renderTable();}
+function toggleNeuf(){state.neuf=!state.neuf;document.getElementById("f-neuf").classList.toggle("on",state.neuf);renderTable();}
+function resetFilters(){state.zone=state.sect=state.src=state.type="";state.prio="traiter";state.surv=false;state.neuf=false;document.getElementById("f-surv").classList.remove("on");const fn=document.getElementById("f-neuf");if(fn)fn.classList.remove("on");["f-zone","f-sect","f-type","f-src"].forEach(i=>{const el=document.getElementById(i);if(el)el.value="";});document.querySelectorAll("#f-prio button").forEach((x,i)=>x.classList.toggle("on",i===0));renderTable();}
 function exportCSV(){
   const rows=state.view==="opps"?filtered():LEADS;
   const head=["titre","zone","pays","secteur","valeur_meur","score","source","priorite","titulaire","origine"];
@@ -838,7 +933,7 @@ document.getElementById("run-meta").textContent=LEADS.length+" leads";
 document.getElementById("ff-tri").onchange=e=>{firmoState.tri=e.target.value;renderFirmo();};
 document.querySelectorAll("#ff-etr button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#ff-etr button").forEach(x=>x.classList.remove("on"));b.classList.add("on");firmoState.etr=b.dataset.e;renderFirmo();});
 (function(){const doms=[...new Set(watchEntreprises().map(e=>e.secteur))].sort();const sel=document.getElementById("w-dom");doms.forEach(d=>sel.innerHTML+=`<option>${d}</option>`);sel.onchange=e=>{watchState.dom=e.target.value;renderWatch();};document.querySelectorAll("#w-sig button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#w-sig button").forEach(x=>x.classList.remove("on"));b.classList.add("on");watchState.sig=b.dataset.s;renderWatch();});document.getElementById("cnt-watch").textContent=watchEntreprises().length;})();
-(function(){document.getElementById("cnt-doss").textContent=DOSSIERS.length;document.querySelectorAll("#d-mp button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#d-mp button").forEach(x=>x.classList.remove("on"));b.classList.add("on");dossState.mp=b.dataset.m;renderDoss();});})();
+(function(){document.getElementById("cnt-doss").textContent=DOSSIERS.filter(d=>d.n_phases>=2).length;document.querySelectorAll("#d-mp button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#d-mp button").forEach(x=>x.classList.remove("on"));b.classList.add("on");dossState.mp=b.dataset.m;renderDoss();});})();
 initFilters();go("overview");
 </script>
 </body>
