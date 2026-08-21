@@ -276,6 +276,7 @@ class TestMigaIfcVisiblesApplication(unittest.TestCase):
         code, lire_onglets_pg ne lisait pas ces onglets -> leads absents."""
         import radar_app
         import radar_dashboard as dash
+        import radar_cockpit
 
         lignes_par_onglet = {
             "miga_radar": [_ligne_avis("MIGA", "Mozambique", "MIGA:1")],
@@ -287,15 +288,20 @@ class TestMigaIfcVisiblesApplication(unittest.TestCase):
         orig_onglet = radar_app.st.lire_onglet
         orig_statuts = radar_app.st.lire_statuts
         orig_html = dash.generer_html
+        orig_cockpit = radar_cockpit.generer_cockpit
         try:
             radar_app.st.lire_onglet = lambda conn, nom: list(lignes_par_onglet.get(nom, []))
             radar_app.st.lire_statuts = lambda conn: {}
+            # Le rendu passe desormais par le cockpit ; on capture les leads la,
+            # et aussi via le repli dashboard au cas ou le cockpit echouerait.
+            radar_cockpit.generer_cockpit = lambda leads, *a, **k: capture.setdefault("leads", leads) or ""
             dash.generer_html = lambda leads, *a, **k: capture.setdefault("leads", leads) or ""
             radar_app.generer_page(object())   # conn factice : jamais touche
         finally:
             radar_app.st.lire_onglet = orig_onglet
             radar_app.st.lire_statuts = orig_statuts
             dash.generer_html = orig_html
+            radar_cockpit.generer_cockpit = orig_cockpit
 
         srcs = {l["src"] for l in capture.get("leads", [])}
         self.assertIn("MIGA", srcs, "L'application doit exposer les leads MIGA.")
