@@ -620,6 +620,9 @@ def ligne_vers_lead(row, source):
         "valeur": ("" if _txt(row.get("valeur_estimee")).strip().lower()
                    in ("", "inconnu", "n.c.", "nc", "non communique",
                        "non communiqué") else _txt(row.get("valeur_estimee"))),
+        # Enveloppe PROJET (BM amont) : champ DISTINCT du montant marche. Ne
+        # doit jamais alimenter les sommes/tri "valeur" (echelle non comparable).
+        "enveloppe": _txt(row.get("enveloppe_usd")),
         # Nom de l'entreprise cible (pour la lentille Entreprises). Cote PRIVÉ,
         # c'est l'entreprise surveillee ; ailleurs le gagnant est inconnu.
         "entreprise": (_txt(row.get("acheteur")) or "n.c.") if source in ("PRIVÉ", "IFC", "MIGA", "PROPARCO", "DFC") else "",
