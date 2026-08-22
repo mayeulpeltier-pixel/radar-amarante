@@ -1,0 +1,47 @@
+name: Sonde Project Intelligence (Inga 3 / Tanzania LNG)
+# Diagnostic ponctuel, DECLENCHEMENT MANUEL UNIQUEMENT (workflow_dispatch).
+# Ne touche a RIEN : ni Google Sheet, ni Postgres, ni etat, ni dashboard.
+# N'appelle AUCUN LLM (cout zero). Repond a trois questions avant de decider
+# de construire `projets.py` :
+#   1. les signaux Inga 3 / Tanzania LNG sont-ils detectables via Google News
+#      avec une grille CYCLE DE VIE (et non plus "deploiement") ?
+#   2. se regroupent-ils sous un projet unique via la resolution d'alias ?
+#   3. quel volume de bruit faudrait-il faire passer au LLM (donc quel cout) ?
+# Elle mesure aussi la PROFONDEUR TEMPORELLE atteignable (le plus ancien signal
+# retrouve), qui est le coeur du sujet : detecter des mois/annees avant l'AO.
+#
+# UTILISATION : Actions > "Sonde Project Intelligence" > Run workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      cas:
+        description: "Un seul cas (inga|tanzanie), vide = les deux"
+        required: false
+        default: ""
+      jours:
+        description: "Profondeur temporelle demandee en jours (defaut 365)"
+        required: false
+        default: "365"
+      max_art:
+        description: "Articles max par requete (defaut 40)"
+        required: false
+        default: "40"
+jobs:
+  sonde-projets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer les dependances radar
+        run: pip install -r requirements-radar.txt
+      - name: Sonder la detectabilite des projets
+        env:
+          SONDE_CAS: ${{ github.event.inputs.cas }}
+          SONDE_JOURS: ${{ github.event.inputs.jours }}
+          SONDE_MAX_ART: ${{ github.event.inputs.max_art }}
+        run: python sonde_projets.py
