@@ -1,0 +1,75 @@
+name: Project Intelligence (collecte par projet)
+# Couche 2 du Project Intelligence : interroge les GRANDS PROJETS du registre
+# (projets_reference.py), classe la phase du cycle de vie par LLM en lots, et
+# ecrit l'onglet `projets_radar` + miroir Postgres.
+#
+# ADDITIF ET OPT-IN : RADAR_PROJETS=1 est pose ici et NULLE PART ailleurs.
+# Aucun collecteur existant n'est modifie ; si ce workflow est desactive, le
+# radar fonctionne exactement comme avant.
+#
+# DEUX USAGES
+#   1. BACKFILL (une fois) : Run workflow avec backfill=1. Desactive la fenetre
+#      de fraicheur pour reconstruire l'historique (la sonde a montre 10 a 14
+#      ans d'archive disponibles). Plus couteux : monter max_lots.
+#   2. REGIME COURANT : le cron hebdomadaire, fenetre 45 jours, quelques
+#      signaux par projet, cout marginal.
+on:
+  workflow_dispatch:
+    inputs:
+      backfill:
+        description: "1 = reconstruire l'historique (ignore la fraicheur). Defaut 0."
+        required: false
+        default: "0"
+      projets_par_run:
+        description: "Nombre de projets interroges (defaut 6)"
+        required: false
+        default: "6"
+      max_lots:
+        description: "Plafond de lots LLM par run (defaut 40)"
+        required: false
+        default: "40"
+  schedule:
+    # Mardi 06h10 UTC : decale des runs du radar (lundi/jeudi) pour ne pas
+    # concurrencer leur quota LLM.
+    - cron: "10 6 * * 2"
+jobs:
+  projets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer les dependances radar
+        run: pip install -r requirements-radar.txt
+      - name: Ecrire le compte de service Google
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -n "$GOOGLE_SERVICE_ACCOUNT_JSON" ]; then
+            echo "$GOOGLE_SERVICE_ACCOUNT_JSON" > compte_service.json
+          fi
+      - name: Collecter les projets
+        env:
+          RADAR_PROJETS: "1"
+          RADAR_PROJETS_BACKFILL: ${{ github.event.inputs.backfill }}
+          RADAR_PROJETS_PAR_RUN: ${{ github.event.inputs.projets_par_run }}
+          RADAR_PROJETS_MAX_LOTS: ${{ github.event.inputs.max_lots }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: compte_service.json
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python collecteur_projets.py
+      - name: Persister la memoire inter-runs
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain radar_etat.json)" ]; then
+            git config user.name "radar-bot"
+            git config user.email "radar-bot@users.noreply.github.com"
+            git add radar_etat.json
+            git commit -m "Project Intelligence : memoire inter-runs"
+            git push
+          fi
