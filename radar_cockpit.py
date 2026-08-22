@@ -151,7 +151,9 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
             .replace("__COORDS_JSON__", json.dumps(COORDS, ensure_ascii=False))
             .replace("__RISQUE_JSON__", json.dumps(risque, ensure_ascii=False))
             .replace("__GEO_JSON__", json.dumps(geo or [], ensure_ascii=False))
-            .replace("__WATCHLIST_JSON__", json.dumps(watchlist or [], ensure_ascii=False))
+            .replace("__WATCHLIST_JSON__", json.dumps(
+                [dict(w, ent_cle=dash._norm_ent(w.get("entreprise", "")))
+                 for w in (watchlist or [])], ensure_ascii=False))
             .replace("__CANDIDATS_JSON__", json.dumps(candidats or {}, ensure_ascii=False))
             .replace("__DOSSIERS_JSON__", json.dumps(dossiers or [], ensure_ascii=False))
             .replace("__SUIVI_URL__", json.dumps(suivi.get("url", "")))
@@ -362,6 +364,21 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .tl-ph{font-size:9px;font-family:var(--mono);font-weight:700;text-transform:uppercase;padding:1px 6px;border-radius:4px;background:var(--surface-2);color:var(--ink-3);margin-right:6px}
 .empty{padding:60px;text-align:center;color:var(--ink-3);font-family:var(--mono);font-size:13px}
 .firmo-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px}
+.fbadges{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 4px}
+.fbadge{font-family:var(--mono);font-size:10px;font-weight:600;padding:2px 8px;border-radius:5px;background:var(--surface-2);border:1px solid var(--line);color:var(--ink-2)}
+.fbadge.suivi{background:var(--amarante-soft);color:var(--amarante);border-color:transparent}
+.fbadge.etr{background:var(--blue-soft);color:var(--blue);border-color:transparent}
+.fbadge.sig{background:var(--amber-soft);color:var(--amber);border-color:transparent}
+.fbadge.zero{color:var(--ink-3)}
+.fchip.alt{background:var(--blue-soft);color:var(--blue)}
+.fi-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px}
+.fi-stat{background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:12px 10px;text-align:center}
+.fi-stat .n{font-family:var(--display);font-size:20px;font-weight:700;color:var(--ink)}
+.fi-stat .l{font-size:10px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.04em;margin-top:3px}
+.fi-tag{font-family:var(--mono);font-size:10px;font-weight:600;padding:1px 7px;border-radius:5px;margin-right:8px}
+.fi-tag.gagne{background:var(--green-soft);color:var(--green)}
+.fi-tag.sig{background:var(--amber-soft);color:var(--amber)}
+.fi-empty{font-size:13px;color:var(--ink-3);padding:14px;text-align:center;background:var(--surface-2);border-radius:10px}
 .fcard{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px;box-shadow:var(--sh);transition:.15s;cursor:pointer}
 .fcard:hover{box-shadow:var(--sh-2);transform:translateY(-2px)}
 .fcard-top{display:flex;align-items:flex-start;gap:12px;margin-bottom:14px}
@@ -439,8 +456,7 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
       <a data-view="map"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M9 3L3 6v15l6-3 6 3 6-3V3l-6 3-6-3z"/><path d="M9 3v15M15 6v15"/></svg>Carte des théâtres</a>
       <div class="nav-lbl">Renseignement</div>
       <a data-view="attrib"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 21V7a2 2 0 012-2h8a2 2 0 012 2v14"/><path d="M6 21h12M10 9h4M10 13h4M10 17h4"/></svg>Attributions<span class="cnt" id="cnt-attrib"></span></a>
-      <a data-view="firmo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>Entreprises</a>
-      <a data-view="watch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>Watchlist<span class="cnt" id="cnt-watch"></span></a>
+      <a data-view="firmo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>Entreprises<span class="cnt" id="cnt-firmo"></span></a>
       <a data-view="doss"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 7h16M4 12h16M4 17h10"/><circle cx="19" cy="17" r="2"/></svg>Dossiers<span class="cnt" id="cnt-doss"></span></a>
       <a data-view="geo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 2l9 5v6c0 5-4 8-9 9-5-1-9-4-9-9V7z"/></svg>Géopolitique</a>
     </nav>
@@ -510,9 +526,16 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
       <div class="opps-bar"><div class="opps-intro">Qui a gagné quoi en zone à risque. Un titulaire étranger = un déploiement à démarcher. Trié du plus récent au plus ancien.</div></div>
       <div class="tbl-wrap"><table><thead><tr><th>Titulaire</th><th>Marché gagné</th><th>Détecté</th><th>Théâtre</th><th>Origine</th><th>Montant</th><th>Statut</th></tr></thead><tbody id="tbody-attrib"></tbody></table></div>
     </section>
-    <section class="view" id="v-watch">
-      <div class="filters"><div class="facet"><select id="w-dom"><option value="">Tous les domaines</option></select></div><div class="seg" id="w-sig"><button data-s="" class="on">Toutes</button><button data-s="1">Avec signaux</button></div><span class="chip-clear" id="w-count"></span></div>
-      <div id="watch-body"></div>
+    <section class="view" id="v-firmo">
+      <div class="opps-bar"><div class="opps-intro">Chaque entreprise, dédupliquée par entité (une même société regroupée quelles que soient ses variantes de nom) : marchés gagnés, signaux de déploiement et comptes suivis, réunis. Clique une fiche pour son historique 360.</div></div>
+      <div class="filters">
+        <label class="search" style="max-width:240px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><input id="ff-q" placeholder="Rechercher une entreprise..."></label>
+        <div class="facet"><select id="ff-tri"><option value="activite">Activité récente</option><option value="marches">Marchés gagnés</option><option value="signaux">Signaux</option><option value="valeur">Valeur</option><option value="theatres">Présence</option></select></div>
+        <div class="seg" id="ff-etr"><button data-e="" class="on">Toutes</button><button data-e="1">Étrangères</button></div>
+        <button class="chip-toggle" id="ff-suivis" onclick="toggleSuivis()">👁 Suivies</button>
+        <span class="chip-clear" id="ff-count"></span>
+      </div>
+      <div id="firmo-grid" class="firmo-grid"></div>
     </section>
     <section class="view" id="v-doss">
       <div class="doss-explain">
@@ -521,10 +544,6 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
       </div>
       <div class="filters"><div class="seg" id="d-mp"><button data-m="1" class="on">Suivi actif (2+ phases)</button><button data-m="">Tous (dont mono-phase)</button></div><span class="chip-clear" id="d-count"></span></div>
       <div id="doss-body"></div>
-    </section>
-    <section class="view" id="v-firmo">
-      <div class="filters"><div class="facet"><select id="ff-tri"><option value="marches">Trier par marchés</option><option value="valeur">Trier par valeur</option><option value="theatres">Trier par présence</option></select></div><div class="seg" id="ff-etr"><button data-e="" class="on">Toutes</button><button data-e="1">Étrangères</button></div><span class="chip-clear" id="ff-count"></span></div>
-      <div id="firmo-grid" class="firmo-grid"></div>
     </section>
     <section class="view" id="v-geo">
       <div id="geo-head" class="geo-head"></div>
@@ -569,7 +588,7 @@ function posture(z){const r=RISQUE[z]||1.5;return r>=4.5?["p-rouge","Posture rou
 const LEADS=RAW.map((l,i)=>({
   id:i,titre:l.titre||"(sans titre)",src:l.src||"?",zone:l.zone||"Non classé",pays:l.pays||"",
   secteur:l.sect||l.grp||"Autre",score:+l.final||0,prio:l.action||"surveiller",valeur:+l.valeur_meur||0,enveloppe:+l.enveloppe_meur||0,
-  acheteur:l.agence||"n.c.",statut:l.statut||"nouveau",motif:l.motif_ecart||l.motif||"",titulaire:l.entreprise||"",pays_tit:l.origine||"",
+  acheteur:l.agence||"n.c.",statut:l.statut||"nouveau",motif:l.motif_ecart||l.motif||"",titulaire:l.entreprise||"",pays_tit:l.origine||"",entcle:l.ent_cle||"",
   etranger:!!l.etranger_titulaire,renouv:l.statut_renouv||"",nature:l.nature_deploiement||"",besoin:l.besoin_surete||"",
   interlocuteur:l.interlocuteur||"",cible:l.cible||"",justif:l.justif||"",lien:l.lien||"",secu:!!l.secu,
   type_activite:l.grp||"",resume:l.justif||"",
@@ -776,31 +795,89 @@ function openDrawer(id){
 function closeDrawer(){document.getElementById("drawer").classList.remove("on");document.getElementById("drawer-ov").classList.remove("on");}
 function ecarter(id){const l=LEADS.find(x=>x.id===id);if(!l)return;const motif=prompt("Motif pour écarter ce marché (facultatif) :","")||"";envoyerStatut(l,"non_pertinent",motif);}
 function rechercherEnt(nom){closeDrawer();state.q=nom;document.getElementById("search").value=nom;go("opps");renderTable();}
-// --- ENTREPRISES 360° : dedup transverse par titulaire ---
-let firmoState={tri:"marches",etr:""};
+// --- ENTREPRISES 360 : dedup transverse par entite (ent_cle), toutes sources ---
+const TACT_LBL={delegation_mission:"délégation / mission",recrutement_local:"recrutement",contrat_export:"contrat export",implantation:"implantation",livraison_mise_en_service:"mise en service",formation_mco:"formation / MCO",essais_demonstration:"essais",incident:"incident",autre:"signal"};
+let firmoState={tri:"activite",etr:"",suivis:false,q:""};
+// Cle canonique : ent_cle precalcule serveur (source de verite). Repli minuscules.
+function cleEnt(nom,entcle){return (entcle||"").trim()||String(nom||"").trim().toLowerCase();}
+const WL_CLES=new Set(WATCHLIST.map(w=>cleEnt(w.entreprise,w.ent_cle)).filter(Boolean));
+const WL_SECT={};WATCHLIST.forEach(w=>{const k=cleEnt(w.entreprise,w.ent_cle);if(k&&!WL_SECT[k])WL_SECT[k]=w.secteur||"Autre";});
 function entreprises(){
   const by={};
-  LEADS.forEach(l=>{const n=(l.titulaire||"").trim();if(!n)return;const k=n.toLowerCase();
-    if(!by[k])by[k]={nom:n,marches:[],zones:new Set(),secteurs:new Set(),valeur:0,origine:l.pays_tit||"",etranger:l.etranger,contact:{nom:l.nom,email:l.email}};
-    const e=by[k];e.marches.push(l);if(l.zone)e.zones.add(l.zone);if(l.secteur)e.secteurs.add(l.secteur);e.valeur+=l.valeur;
-    if(l.pays_tit&&!e.origine)e.origine=l.pays_tit;if(l.etranger)e.etranger=true;
-    if(l.email&&l.email!=="n.c."){e.contact={nom:l.nom,email:l.email};}});
-  return Object.values(by);
+  // 1) Leads porteurs d'une entreprise : ATTRIB = marche gagne, PRIVÉ/FI = signal.
+  LEADS.forEach(l=>{
+    const nom=(l.titulaire||"").trim();if(!nom)return;
+    const k=cleEnt(nom,l.entcle);if(!k)return;
+    if(!by[k])by[k]={cle:k,noms:{},marches:[],signaux:[],zones:new Set(),secteurs:new Set(),valeur:0,origine:"",etranger:false,contact:null,suivi:WL_CLES.has(k),secteurSuivi:WL_SECT[k]||"",lastTs:0};
+    const e=by[k];
+    e.noms[nom]=(e.noms[nom]||0)+1;
+    if(l.src==="ATTRIB"){e.marches.push(l);e.valeur+=l.valeur||0;}else{e.signaux.push(l);}
+    if(l.zone)e.zones.add(l.zone);if(l.secteur)e.secteurs.add(l.secteur);
+    if(l.pays_tit&&!e.origine)e.origine=l.pays_tit;
+    if(l.etranger)e.etranger=true;
+    if((l.ts||0)>e.lastTs)e.lastTs=l.ts||0;
+    if(l.email&&l.email!=="n.c."&&!e.contact)e.contact={nom:l.nom,email:l.email};
+  });
+  // 2) Comptes suivis (watchlist) sans activite detectee -> fiche quand meme.
+  WATCHLIST.forEach(w=>{
+    const nom=(w.entreprise||"").trim();if(!nom)return;
+    const k=cleEnt(nom,w.ent_cle);if(!k||by[k])return;
+    by[k]={cle:k,noms:{[nom]:1},marches:[],signaux:[],zones:new Set(),secteurs:new Set(),valeur:0,origine:"",etranger:false,contact:null,suivi:true,secteurSuivi:w.secteur||"Autre",lastTs:0};
+  });
+  // Nom d'affichage : la variante la plus frequente (repli : la plus longue).
+  return Object.values(by).map(e=>{
+    const noms=Object.keys(e.noms);
+    e.nom=noms.sort((a,b)=>(e.noms[b]-e.noms[a])||(b.length-a.length))[0]||"?";
+    e.activite=e.marches.length+e.signaux.length;
+    return e;
+  });
 }
+function toggleSuivis(){firmoState.suivis=!firmoState.suivis;document.getElementById("ff-suivis").classList.toggle("on",firmoState.suivis);renderFirmo();}
 function renderFirmo(){
   let ent=entreprises();
   if(firmoState.etr)ent=ent.filter(e=>e.etranger);
-  ent.sort((a,b)=>firmoState.tri==="valeur"?b.valeur-a.valeur:firmoState.tri==="theatres"?b.zones.size-a.zones.size:b.marches.length-a.marches.length);
-  document.getElementById("ff-count").textContent=ent.length+" entreprise"+(ent.length>1?"s":"");
+  if(firmoState.suivis)ent=ent.filter(e=>e.suivi);
+  if(firmoState.q){const q=firmoState.q.toLowerCase();ent=ent.filter(e=>e.nom.toLowerCase().includes(q));}
+  const t=firmoState.tri;
+  ent.sort((a,b)=>t==="valeur"?b.valeur-a.valeur:t==="theatres"?b.zones.size-a.zones.size:t==="marches"?b.marches.length-a.marches.length:t==="signaux"?b.signaux.length-a.signaux.length:(b.lastTs-a.lastTs)||(b.activite-a.activite));
+  const nSuivis=ent.filter(e=>e.suivi).length;
+  document.getElementById("ff-count").textContent=ent.length+" entreprise"+(ent.length>1?"s":"")+" · "+nSuivis+" suivie"+(nSuivis>1?"s":"");
   document.getElementById("firmo-grid").innerHTML=ent.map(e=>{
     const ini=e.nom.replace(/[^A-Za-zÀ-ÿ ]/g,"").split(/\s+/).slice(0,2).map(w=>w[0]||"").join("").toUpperCase()||"?";
     const z=[...e.zones];const s=[...e.secteurs];
-    return `<div class="fcard" onclick="openDrawer(${e.marches[0].id})">
-      <div class="fcard-top"><div class="fmono">${ini}</div><div><div class="fname">${esc(e.nom)}</div><div class="fmeta">${e.origine||"origine n.c."}${e.etranger?' · <span style="color:var(--blue)">étranger</span>':""}</div></div></div>
-      <div class="fstats"><div class="fstat"><div class="n">${e.marches.length}</div><div class="l">marchés</div></div><div class="fstat"><div class="n">${z.length}</div><div class="l">théâtres</div></div><div class="fstat"><div class="n">${e.valeur?fmtEur(e.valeur):"—"}</div><div class="l">valeur</div></div></div>
-      <div class="fchips">${z.slice(0,3).map(x=>`<span class="fchip">${x}</span>`).join("")}${s.slice(0,2).map(x=>`<span class="fchip">${x}</span>`).join("")}${e.contact.email&&e.contact.email!=="n.c."?'<span class="fchip" style="color:var(--green)">contact ✓</span>':""}</div>
+    const b=(e.suivi?'<span class="fbadge suivi">👁 suivi</span>':"")+(e.etranger?'<span class="fbadge etr">étranger</span>':"")+(e.signaux.length?'<span class="fbadge sig">'+e.signaux.length+' signal'+(e.signaux.length>1?'aux':'')+'</span>':"");
+    return `<div class="fcard" onclick="openFiche('${e.cle.replace(/'/g,"\\'")}')">
+      <div class="fcard-top"><div class="fmono">${ini}</div><div style="min-width:0"><div class="fname">${esc(e.nom)}</div><div class="fmeta">${e.origine||e.secteurSuivi||"origine n.c."}</div></div></div>
+      <div class="fbadges">${b||'<span class="fbadge zero">à qualifier</span>'}</div>
+      <div class="fstats"><div class="fstat"><div class="n">${e.marches.length}</div><div class="l">gagnés</div></div><div class="fstat"><div class="n">${e.signaux.length}</div><div class="l">signaux</div></div><div class="fstat"><div class="n">${z.length}</div><div class="l">théâtres</div></div><div class="fstat"><div class="n">${e.valeur?fmtEur(e.valeur):"—"}</div><div class="l">valeur</div></div></div>
+      <div class="fchips">${z.slice(0,3).map(x=>`<span class="fchip">${x}</span>`).join("")}${s.slice(0,2).map(x=>`<span class="fchip">${x}</span>`).join("")}${e.contact?'<span class="fchip" style="color:var(--green)">contact ✓</span>':""}</div>
     </div>`;
-  }).join("")||'<div class="empty">Aucune entreprise titulaire identifiée pour l\'instant.</div>';
+  }).join("")||'<div class="empty">Aucune entreprise pour ces filtres.</div>';
+}
+function openFiche(cle){
+  const e=entreprises().find(x=>x.cle===cle);if(!e)return;
+  const ini=e.nom.replace(/[^A-Za-zÀ-ÿ ]/g,"").split(/\s+/).slice(0,2).map(w=>w[0]||"").join("").toUpperCase()||"?";
+  const z=[...e.zones];const s=[...e.secteurs];
+  const items=[...e.marches.map(l=>({l,k:"m"})),...e.signaux.map(l=>({l,k:"s"}))].sort((a,b)=>(b.l.ts||0)-(a.l.ts||0));
+  const timeline=items.map(({l,k})=>{
+    const col=scoreColor(l.score);
+    const tag=k==="m"?'<span class="fi-tag gagne">marché gagné</span>':'<span class="fi-tag sig">'+(TACT_LBL[l.type_activite||"autre"]||"signal")+'</span>';
+    const meta=[l.zone,l.pays,relDate(l),(k==="m"&&l.valeur?fmtEur(l.valeur):"")].filter(Boolean).join(" · ");
+    return `<div class="tl-row" onclick="openDrawer(${l.id})" style="cursor:pointer"><div class="tl-dot" style="background:${col}"></div><div class="tl-body"><div class="tl-t">${tag}${esc(l.titre).slice(0,90)}<span class="tl-go">→</span></div><div class="tl-m">${meta}</div></div></div>`;
+  }).join("")||'<div class="fi-empty">Aucun marché ni signal détecté. Compte suivi en veille.</div>';
+  const contactNom=e.contact&&e.contact.nom&&e.contact.nom!=="n.c."?e.contact.nom:e.nom;
+  const mail=e.contact&&e.contact.email&&e.contact.email!=="n.c."?`<a class="btn" style="width:100%;justify-content:center" href="mailto:${e.contact.email}">Écrire à ${esc(contactNom)}</a>`:'<div style="font-size:12px;color:var(--ink-3);font-family:var(--mono)">Pas de contact enrichi.</div>';
+  document.getElementById("drawer-content").innerHTML=`
+  <div class="dr-head"><button class="dr-close" onclick="closeDrawer()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+    <div class="dr-src">Fiche entreprise 360°</div>
+    <div style="display:flex;gap:12px;align-items:center"><div class="fmono" style="width:44px;height:44px;font-size:15px">${ini}</div><div style="min-width:0"><h3 style="margin:0">${esc(e.nom)}</h3><div class="fmeta">${e.origine||"origine n.c."}${e.etranger?' · <span style="color:var(--blue)">étranger</span>':""}${e.suivi?' · <span style="color:var(--amarante)">👁 suivi</span>':""}</div></div></div></div>
+  <div class="dr-body">
+    <div class="fi-stats"><div class="fi-stat"><div class="n">${e.marches.length}</div><div class="l">marchés gagnés</div></div><div class="fi-stat"><div class="n">${e.signaux.length}</div><div class="l">signaux</div></div><div class="fi-stat"><div class="n">${z.length}</div><div class="l">théâtres</div></div><div class="fi-stat"><div class="n">${e.valeur?fmtEur(e.valeur):"—"}</div><div class="l">valeur cumulée</div></div></div>
+    ${(z.length||s.length)?`<div class="dr-sec"><h5>Présence</h5><div class="fchips">${z.map(x=>`<span class="fchip">${x}</span>`).join("")}${s.map(x=>`<span class="fchip alt">${x}</span>`).join("")}</div></div>`:""}
+    <div class="dr-sec"><h5>Historique unifié (marchés + signaux)</h5><div class="tl">${timeline}</div></div>
+    <div class="dr-sec"><h5>Contact</h5>${mail}</div>
+  </div>`;
+  document.getElementById("drawer").classList.add("on");document.getElementById("drawer-ov").classList.add("on");
 }
 // --- GEOPOLITIQUE : alertes de la semaine, par theatre ---
 function posColor(z){const p=posture(z)[0];return p==="p-rouge"?"#C0392B":p==="p-orange"?"#B07419":"#33628F";}
@@ -820,45 +897,6 @@ function renderGeo(){
       return `<div class="geo-row" style="border-left-color:${col}"><div class="geo-sev" style="background:${sc}">${sev||"·"}</div><div class="geo-mid"><div class="geo-pays">${esc(g.pays||g.iso3||"?")}</div><div class="geo-motif">${esc(g.motif||(g.avant&&g.apres?g.avant+" → "+g.apres:""))||"—"}</div></div><span class="geo-sens ${up?"up":"down"}">${up?"▲ aggravation":"▼ amélioration"}</span><span class="geo-date">${g.date||""}</span></div>`;
     }).join("")}</div>`;
   }).join("");
-}
-// --- WATCHLIST ENTREPRISES : toutes les entreprises suivies, par domaine,
-// celles a signaux en tete. Signaux = leads prives rattaches par nom. ---
-let watchState={dom:"",sig:""};
-const TACT_LBL={delegation_mission:"délégation / mission",recrutement_local:"recrutement",contrat_export:"contrat export",implantation:"implantation",livraison_mise_en_service:"mise en service",formation_mco:"formation / MCO",essais_demonstration:"essais",incident:"incident",autre:"signal"};
-function entreprises_norm(v){return String(v==null?"":v);}
-function watchEntreprises(){
-  const sig={};
-  LEADS.filter(l=>l.src==="PRIVÉ"&&l.titulaire).forEach(l=>{const k=entreprises_norm(l.titulaire).toLowerCase();if(k)(sig[k]=sig[k]||[]).push(l);});
-  const ents={};
-  WATCHLIST.forEach(w=>{const nom=entreprises_norm(w.entreprise);const k=nom.toLowerCase();if(k)ents[k]={nom:nom,secteur:entreprises_norm(w.secteur)||"Autre",signaux:[]};});
-  Object.keys(sig).forEach(k=>{if(!ents[k]){const l=sig[k][0];ents[k]={nom:entreprises_norm(l.titulaire),secteur:entreprises_norm(l.secteur)||"Autre",signaux:[]};}ents[k].signaux=sig[k].sort((a,b)=>b.score-a.score);});
-  return Object.values(ents);
-}
-function renderWatch(){
-  try{
-    let ents=watchEntreprises();
-    if(watchState.dom)ents=ents.filter(e=>e.secteur===watchState.dom);
-    if(watchState.sig)ents=ents.filter(e=>e.signaux.length);
-    const avecSig=ents.filter(e=>e.signaux.length).length;
-    document.getElementById("w-count").textContent=ents.length+" entreprise"+(ents.length>1?"s":"")+" · "+avecSig+" avec signaux";
-    const byDom={};ents.forEach(e=>{(byDom[e.secteur]=byDom[e.secteur]||[]).push(e);});
-    const doms=Object.keys(byDom).sort((a,b)=>byDom[b].reduce((s,e)=>s+e.signaux.length,0)-byDom[a].reduce((s,e)=>s+e.signaux.length,0));
-    document.getElementById("watch-body").innerHTML=doms.map(d=>{
-      const list=byDom[d].sort((a,b)=>b.signaux.length-a.signaux.length||String(a.nom).localeCompare(String(b.nom)));
-      const nSig=list.reduce((s,e)=>s+e.signaux.length,0);
-      return `<div class="w-dom"><div class="w-dom-h">${esc(d)}<span class="c">${list.length} entreprise${list.length>1?"s":""} · ${nSig} signal${nSig>1?"aux":""}</span></div><div class="w-grid">${list.map(e=>carteEnt(e)).join("")}</div></div>`;
-    }).join("")||'<div class="empty">Aucune entreprise dans la watchlist.</div>';
-  }catch(err){
-    document.getElementById("watch-body").innerHTML='<div class="empty">Affichage de la watchlist indisponible ('+esc(err&&err.message)+').</div>';
-  }
-}
-function carteEnt(e){
-  const ini=String(e.nom||"").replace(/[^A-Za-zÀ-ÿ ]/g,"").split(/\s+/).slice(0,2).map(w=>w[0]||"").join("").toUpperCase()||"?";
-  const sigs=e.signaux.slice(0,4).map(l=>{
-    const ta=l.type_activite||"autre";const lbl=TACT_LBL[ta]||"signal";
-    return `<div class="wsig" onclick="openDrawer(${l.id})"><div class="wsig-ico" style="background:${scoreColor(l.score)}22;color:${scoreColor(l.score)}">${l.score.toFixed(0)}</div><div class="wsig-txt"><div class="wsig-t">${esc(l.resume||l.titre).slice(0,90)}</div><div class="wsig-m"><span class="tact ${ta}">${lbl}</span> · ${l.pays||l.zone||""} · ${l.mois||""}</div></div></div>`;
-  }).join("");
-  return `<div class="went ${e.signaux.length?"hot":""}"><div class="went-top"><div class="went-nom" title="${esc(e.nom)}">${esc(e.nom)}</div><span class="went-n ${e.signaux.length?"":"zero"}">${e.signaux.length}</span></div>${sigs||'<div class="wsig-none">Aucun signal récent</div>'}</div>`;
 }
 // --- DOSSIERS (ecosysteme) : projets BM suivis a travers leurs phases ---
 let dossState={mp:"1"};
@@ -904,7 +942,7 @@ function carteDossier(d){
   const nph=(d.phases_presentes||[]).length;
   return `<div class="doss" id="doss-${esc(d.proj_id)}"><div class="doss-top"><div class="doss-tit"><div class="doss-nom">${esc(d.titre||"Projet "+d.proj_id)}</div><div class="doss-meta">${esc(d.pays||"")}${d.secteur?" · "+esc(d.secteur):""} · ${nph} phase${nph>1?"s":""} · ${d.n_leads} signal${d.n_leads>1?"aux":""}</div></div><span class="doss-pid" title="Identifiant projet Banque Mondiale (clé de rattachement)">${esc(d.proj_id)}</span></div><div class="pipe">${pipe}</div><div class="tl">${tl}</div>${candHtml}</div>`;
 }
-const TITLES={overview:["Vue d'ensemble","Théâtre global"],opps:["Opportunités","Avis de marché et signaux privés"],map:["Carte des théâtres","Répartition géographique"],attrib:["Attributions","Qui a gagné quoi en zone à risque"],watch:["Watchlist entreprises","Comptes suivis et signaux de déploiement"],doss:["Dossiers","Projets suivis de l'amont à l'attribution"],firmo:["Entreprises","Fiches titulaires 360°"],geo:["Géopolitique","Alertes de la semaine"]};
+const TITLES={overview:["Vue d'ensemble","Théâtre global"],opps:["Opportunités","Avis de marché et signaux privés"],map:["Carte des théâtres","Répartition géographique"],attrib:["Attributions","Qui a gagné quoi en zone à risque"],doss:["Dossiers","Projets suivis de l'amont à l'attribution"],firmo:["Entreprises 360°","Marchés gagnés, signaux et comptes suivis, dédupliqués par entité"],geo:["Géopolitique","Alertes de la semaine"]};
 function go(v){
   state.view=v;
   document.querySelectorAll(".nav a").forEach(a=>a.classList.toggle("on",a.dataset.view===v));
@@ -913,7 +951,7 @@ function go(v){
   document.getElementById("top-title").textContent=TITLES[v][0];document.getElementById("top-crumb").textContent=TITLES[v][1];
   if(v==="overview"){renderTheatres();renderKPIs();renderCharts();renderFunnel();renderHot();}
   if(v==="opps")renderTable();if(v==="attrib")renderAttrib();
-  if(v==="firmo")renderFirmo();if(v==="geo")renderGeo();if(v==="watch")renderWatch();if(v==="doss")renderDoss();
+  if(v==="firmo")renderFirmo();if(v==="geo")renderGeo();if(v==="doss")renderDoss();
   if(v==="map")setTimeout(()=>{initMap();map.invalidateSize();},60);
 }
 function goZone(z){state.zone=z;document.getElementById("f-zone").value=z;go("opps");renderTable();}
@@ -945,7 +983,8 @@ document.getElementById("cnt-attrib").textContent=LEADS.filter(l=>l.src==="ATTRI
 document.getElementById("run-meta").textContent=LEADS.length+" leads";
 document.getElementById("ff-tri").onchange=e=>{firmoState.tri=e.target.value;renderFirmo();};
 document.querySelectorAll("#ff-etr button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#ff-etr button").forEach(x=>x.classList.remove("on"));b.classList.add("on");firmoState.etr=b.dataset.e;renderFirmo();});
-(function(){const doms=[...new Set(watchEntreprises().map(e=>e.secteur))].sort();const sel=document.getElementById("w-dom");doms.forEach(d=>sel.innerHTML+=`<option>${d}</option>`);sel.onchange=e=>{watchState.dom=e.target.value;renderWatch();};document.querySelectorAll("#w-sig button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#w-sig button").forEach(x=>x.classList.remove("on"));b.classList.add("on");watchState.sig=b.dataset.s;renderWatch();});document.getElementById("cnt-watch").textContent=watchEntreprises().length;})();
+document.getElementById("ff-q").oninput=e=>{firmoState.q=e.target.value;renderFirmo();};
+(function(){document.getElementById("cnt-firmo").textContent=entreprises().length;})();
 (function(){document.getElementById("cnt-doss").textContent=DOSSIERS.filter(d=>d.n_phases>=2).length;document.querySelectorAll("#d-mp button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#d-mp button").forEach(x=>x.classList.remove("on"));b.classList.add("on");dossState.mp=b.dataset.m;renderDoss();});})();
 initFilters();go("overview");
 </script>
