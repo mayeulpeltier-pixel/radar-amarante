@@ -138,16 +138,60 @@ def charger_watchlist(sheet_id, fichier, lignes_bitd=None):
     return list(ents.values())
 
 
+def charger_projets(sheet_id, fichier):
+    """Projets suivis depuis l'onglet `projets_radar` (ecrit par
+    collecteur_projets). BEST-EFFORT : onglet absent, quota, structure
+    inattendue -> liste vide et cockpit normal. Le Project Intelligence est un
+    ajout : son indisponibilite ne doit jamais coter une page."""
+    if not (sheet_id and fichier):
+        return []
+    try:
+        import signaux_prives as sp
+        classeur = sp._ouvrir_classeur(sheet_id, fichier)
+        valeurs = classeur.worksheet("projets_radar").get_all_values()
+    except Exception as e:
+        print("(cockpit) onglet projets_radar non lu ({}) : vue Projets vide.".format(
+            str(e)[:70]))
+        return []
+    if len(valeurs) < 2:
+        return []
+    entetes = [str(c).strip() for c in valeurs[0]]
+    out = []
+    for ligne in valeurs[1:]:
+        d = {entetes[i]: (ligne[i] if i < len(ligne) else "")
+             for i in range(len(entetes))}
+        if not d.get("project_id"):
+            continue
+        # Numeriques : gspread renvoie du texte. String() + repli 0 (piege
+        # connu du projet : une valeur inattendue ne doit pas casser le JS).
+        for champ in ("maturite", "opportunite", "nb_signaux", "valeur_musd"):
+            try:
+                d[champ] = float(str(d.get(champ, "")).replace(",", ".") or 0)
+            except ValueError:
+                d[champ] = 0
+        try:
+            d["timeline"] = json.loads(d.get("timeline_json") or "[]")
+        except ValueError:
+            d["timeline"] = []
+        d.pop("timeline_json", None)
+        out.append(d)
+    return out
+
+
 def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
-                    candidats=None, dossiers=None):
+                    candidats=None, dossiers=None, projets=None):
     """leads (schema dashboard) -> HTML autonome. Fonction PURE.
     dossiers : liste compacte (dossiers.serialiser) pour la vue Ecosysteme
-               (projets BM suivis a travers leurs phases). Defaut []."""
+               (projets BM suivis a travers leurs phases). Defaut [].
+    projets  : projets suivis (Project Intelligence) pour la vue PROJETS /
+               TOP 20. Defaut [] : sans projets, le cockpit s'affiche
+               exactement comme avant (additif)."""
     risque = risque if risque is not None else getattr(dash, "RISQUE_ZONE", {})
     suivi = suivi or {}
     payload = enrichir(leads)
     return (GABARIT
             .replace("__LEADS_JSON__", json.dumps(payload, ensure_ascii=False))
+            .replace("__PROJETS_JSON__", json.dumps(projets or [], ensure_ascii=False))
             .replace("__COORDS_JSON__", json.dumps(COORDS, ensure_ascii=False))
             .replace("__RISQUE_JSON__", json.dumps(risque, ensure_ascii=False))
             .replace("__GEO_JSON__", json.dumps(geo or [], ensure_ascii=False))
@@ -189,7 +233,8 @@ def main():
         "token": os.environ.get("SUIVI_TOKEN", "") or "",
         "api": False,
     }
-    html = generer_cockpit(leads, geo=geo, suivi=suivi)
+    projets = charger_projets(sheet_id, fichier)
+    html = generer_cockpit(leads, geo=geo, suivi=suivi, projets=projets)
     dossier = os.path.dirname(sortie)
     if dossier:
         os.makedirs(dossier, exist_ok=True)
@@ -427,6 +472,16 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .opps-intro{flex:1;min-width:220px;font-size:12.5px;color:var(--ink-2);background:var(--surface-2);border:1px solid var(--line-2);border-left:3px solid var(--amarante);border-radius:9px;padding:10px 14px;line-height:1.5}
 .opps-intro b{color:var(--ink)}
 .t-date{font-family:var(--mono);font-size:12px;color:var(--ink-2);white-space:nowrap}
+.jauge{display:flex;align-items:center;gap:8px;min-width:96px}
+.jauge-bar{flex:1;height:6px;border-radius:3px;background:var(--line-2);overflow:hidden}
+.jauge-bar span{display:block;height:100%;border-radius:3px}
+.jauge b{font-family:var(--mono);font-size:12px;min-width:22px;text-align:right}
+.ph-pill{display:inline-block;font-family:var(--mono);font-size:11px;font-weight:600;padding:3px 9px;border-radius:6px;background:var(--surface-2);border:1px solid var(--line);color:var(--ink-2);white-space:nowrap}
+.mb.recul{background:var(--red-soft);color:var(--red)}
+.mb.prosp{background:var(--green-soft);color:var(--green)}
+.k-sub{font-size:10px;color:var(--ink-3);font-family:var(--mono);margin-top:4px}
+.tl-an{margin-bottom:14px}
+.tl-an-h{font-family:var(--mono);font-size:12px;font-weight:700;color:var(--amarante);padding-bottom:5px;margin-bottom:5px;border-bottom:1px solid var(--line-2)}
 .t-env{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--blue);white-space:nowrap}
 .t-nc{font-family:var(--mono);font-size:12px;color:var(--ink-3)}
 .mb.neuf{background:var(--amarante-soft);color:var(--amarante)}
@@ -455,6 +510,7 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
       <a data-view="opps"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 6h18M3 12h18M3 18h18"/></svg>Opportunités<span class="cnt" id="cnt-opps"></span></a>
       <a data-view="map"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M9 3L3 6v15l6-3 6 3 6-3V3l-6 3-6-3z"/><path d="M9 3v15M15 6v15"/></svg>Carte des théâtres</a>
       <div class="nav-lbl">Renseignement</div>
+      <a data-view="proj"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 20h18M6 20V10M11 20V4M16 20v-8M21 20v-5"/></svg>Projets<span class="cnt" id="cnt-proj"></span></a>
       <a data-view="attrib"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 21V7a2 2 0 012-2h8a2 2 0 012 2v14"/><path d="M6 21h12M10 9h4M10 13h4M10 17h4"/></svg>Attributions<span class="cnt" id="cnt-attrib"></span></a>
       <a data-view="firmo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>Entreprises<span class="cnt" id="cnt-firmo"></span></a>
       <a data-view="doss"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 7h16M4 12h16M4 17h10"/><circle cx="19" cy="17" r="2"/></svg>Dossiers<span class="cnt" id="cnt-doss"></span></a>
@@ -545,6 +601,32 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
       <div class="filters"><div class="seg" id="d-mp"><button data-m="1" class="on">Suivi actif (2+ phases)</button><button data-m="">Tous (dont mono-phase)</button></div><span class="chip-clear" id="d-count"></span></div>
       <div id="doss-body"></div>
     </section>
+    <section class="view" id="v-proj">
+      <div class="opps-bar">
+        <div class="opps-intro"><b>Grands projets suivis avant l'appel d'offres.</b> Un projet regroupe tous ses signaux (annonces, financements, consultants, EPC) sous une même entité, avec sa phase, sa trajectoire et les entreprises qui vont y déployer du personnel. <b>Maturité</b> = où en est le projet. <b>Opportunité</b> = ce qu'il vaut pour Amarante. Les deux sont indépendants.</div>
+        <button class="chip-toggle" id="p-top" onclick="toggleTop()">★ Top 20 opportunités</button>
+      </div>
+      <div class="kpis" id="kpis-proj"></div>
+      <div class="filters">
+        <label class="search" style="max-width:220px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><input id="p-q" placeholder="Rechercher un projet..."></label>
+        <div class="facet"><select id="p-pays"><option value="">Tous les pays</option></select></div>
+        <div class="facet"><select id="p-sect"><option value="">Tous les secteurs</option></select></div>
+        <div class="facet"><select id="p-phase"><option value="">Toutes les phases</option></select></div>
+        <div class="seg" id="p-alerte"><button data-a="" class="on">Toutes</button><button data-a="haute">🔴 Haute</button><button data-a="moyenne">🟠 Moyenne</button><button data-a="signal_precoce">🟡 Précoce</button></div>
+        <button class="chip-clear" onclick="resetProj()">Réinitialiser</button>
+      </div>
+      <div class="tbl-wrap"><table><thead><tr>
+        <th data-psort="libelle">Projet<span class="ar">↕</span></th>
+        <th data-psort="pays">Pays<span class="ar">↕</span></th>
+        <th data-psort="valeur_musd">Valeur<span class="ar">↕</span></th>
+        <th data-psort="rangPhase">Phase<span class="ar">↕</span></th>
+        <th data-psort="maturite" title="Où en est le PROJET, indépendamment d'Amarante.">Maturité<span class="ar">↕</span></th>
+        <th data-psort="opportunite" title="Ce que le projet vaut POUR AMARANTE. Ne pas confondre avec la maturité.">Opportunité<span class="ar">↕</span></th>
+        <th data-psort="derniere_maj">Dernier signal<span class="ar">↕</span></th>
+        <th>Fenêtre</th>
+      </tr></thead><tbody id="tbody-proj"></tbody></table></div>
+      <div style="padding:12px 4px;font-family:var(--mono);font-size:12px;color:var(--ink-3)" id="proj-count"></div>
+    </section>
     <section class="view" id="v-geo">
       <div id="geo-head" class="geo-head"></div>
       <div id="geo-body"></div>
@@ -554,7 +636,7 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 <div class="drawer-ov" id="drawer-ov" onclick="closeDrawer()"></div>
 <div class="drawer" id="drawer"><div id="drawer-content"></div></div>
 <script>
-const RAW=__LEADS_JSON__, COORDS=__COORDS_JSON__, RISQUE=__RISQUE_JSON__, GEO=__GEO_JSON__, WATCHLIST=__WATCHLIST_JSON__, CANDIDATS=__CANDIDATS_JSON__, DOSSIERS=__DOSSIERS_JSON__;
+const RAW=__LEADS_JSON__, COORDS=__COORDS_JSON__, RISQUE=__RISQUE_JSON__, GEO=__GEO_JSON__, WATCHLIST=__WATCHLIST_JSON__, CANDIDATS=__CANDIDATS_JSON__, DOSSIERS=__DOSSIERS_JSON__, PROJETS_RAW=__PROJETS_JSON__;
 function candidatsPour(l){
   if(!CANDIDATS||!CANDIDATS.secteur_zone)return [];
   const sect=(l.secteur||"Autre"), zone=(l.zone||"Non classe");
@@ -879,6 +961,123 @@ function openFiche(cle){
   </div>`;
   document.getElementById("drawer").classList.add("on");document.getElementById("drawer-ov").classList.add("on");
 }
+// --- PROJETS (Project Intelligence) : grands projets suivis avant l'AO ---
+const PHASES_ORD=["IDEA","POLITICAL_ANNOUNCEMENT","PRE_FEASIBILITY","FEASIBILITY","GOVERNMENT_AGREEMENT","MOU","FUNDING_SEARCH","FUNDING_APPROVED","CONSULTANT_SELECTION","FEED","PRE_FID","FID","EPC_PROCUREMENT","EPC_AWARDED","CONSTRUCTION","COMMISSIONING","OPERATIONS"];
+const ALERTE_LBL={haute:"🔴 haute",moyenne:"🟠 moyenne",signal_precoce:"🟡 précoce",aucune:"—"};
+// Normalisation : les valeurs viennent du Sheet (donc en texte). String() +
+// repli, sinon une cellule inattendue casse tout le rendu (piege connu).
+const PROJETS=(PROJETS_RAW||[]).map((p,i)=>({
+  i:i,
+  id:String(p.project_id||""),
+  libelle:String(p.libelle||p.project_id||"Projet"),
+  pays:String(p.pays||""),iso3:String(p.iso3||""),secteur:String(p.secteur||""),
+  phase:String(p.phase_courante||""),phaseLbl:String(p.libelle_phase||"Phase inconnue"),
+  phaseMax:String(p.phase_max_atteinte||""),recul:String(p.recul||"")==="oui",
+  maturite:+p.maturite||0,palier:String(p.palier_maturite||""),
+  opportunite:+p.opportunite||0,phrase:String(p.opportunite_phrase||""),
+  alerte:String(p.alerte||"aucune"),nbSignaux:+p.nb_signaux||0,
+  premiere:String(p.premiere_detection||""),derniere:String(p.derniere_maj||""),
+  suite:String(p.prochaine_etape||""),
+  fDebut:String(p.fenetre_debut||""),fFin:String(p.fenetre_fin||""),fConf:String(p.fenetre_confiance||""),
+  valeur_musd:+p.valeur_musd||0,
+  acteurs:String(p.acteurs||"").split(",").map(x=>x.trim()).filter(Boolean),
+  services:String(p.services||"").split(",").map(x=>x.trim()).filter(Boolean),
+  prospects:String(p.prospects||"").split(",").map(x=>x.trim()).filter(Boolean),
+  timeline:Array.isArray(p.timeline)?p.timeline:[],
+  rangPhase:Math.max(0,PHASES_ORD.indexOf(String(p.phase_courante||""))+1),
+  ts:parseDate(String(p.derniere_maj||"")),
+}));
+let projState={q:"",pays:"",sect:"",phase:"",alerte:"",top:false,sort:"opportunite",dir:-1};
+function fmtMusd(v){return !v?"n.c.":v>=1000?(v/1000).toFixed(v<10000?1:0)+" Md$":v+" M$";}
+function jaugeCouleur(v){return v>=70?"var(--red)":v>=45?"var(--amber)":"var(--blue)";}
+function jauge(v,titre){
+  return `<div class="jauge" title="${titre}"><div class="jauge-bar"><span style="width:${Math.max(2,Math.min(v,100))}%;background:${jaugeCouleur(v)}"></span></div><b style="color:${jaugeCouleur(v)}">${v}</b></div>`;
+}
+function projetsFiltres(){
+  let ps=PROJETS.filter(p=>{
+    if(projState.pays&&p.pays!==projState.pays)return false;
+    if(projState.sect&&p.secteur!==projState.sect)return false;
+    if(projState.phase&&p.phase!==projState.phase)return false;
+    if(projState.alerte&&p.alerte!==projState.alerte)return false;
+    if(projState.q){const q=projState.q.toLowerCase();
+      if(!((p.libelle+" "+p.pays+" "+p.acteurs.join(" ")).toLowerCase().includes(q)))return false;}
+    return true;
+  }).sort((a,b)=>{
+    const k=projState.sort;let va=a[k],vb=b[k];
+    if(typeof va==="string"){va=va.toLowerCase();vb=String(vb||"").toLowerCase();
+      return va<vb?-projState.dir:va>vb?projState.dir:0;}
+    return ((va||0)-(vb||0))*projState.dir;
+  });
+  if(projState.top)ps=ps.slice().sort((a,b)=>b.opportunite-a.opportunite).slice(0,20);
+  return ps;
+}
+function renderProj(){
+  try{
+    const ps=projetsFiltres();
+    const hautes=PROJETS.filter(p=>p.alerte==="haute").length;
+    const chauds=PROJETS.filter(p=>p.opportunite>=70).length;
+    const kp=[
+      {lbl:"Projets suivis",val:PROJETS.length,c:"var(--amarante)"},
+      {lbl:"Opportunités fortes",val:chauds,c:"var(--red)",sub:"score ≥ 70"},
+      {lbl:"Alertes hautes",val:hautes,c:"var(--amber)",sub:"FID, EPC, financement"},
+      {lbl:"Valeur suivie",val:fmtMusd(PROJETS.reduce((s,p)=>s+p.valeur_musd,0)),c:"var(--green)"},
+    ];
+    document.getElementById("kpis-proj").innerHTML=kp.map(k=>`<div class="kpi"><div class="k-lbl" style="margin-bottom:8px">${k.lbl}</div><div class="k-val" style="color:${k.c}">${k.val}</div>${k.sub?`<div class="k-sub">${k.sub}</div>`:""}</div>`).join("");
+    document.getElementById("tbody-proj").innerHTML=ps.map(p=>{
+      const b=[];
+      if(p.recul)b.push('<span class="mb recul">↓ recul de phase</span>');
+      if(p.prospects.length)b.push('<span class="mb prosp">'+p.prospects.length+' prospect'+(p.prospects.length>1?'s':'')+'</span>');
+      return `<tr onclick="openProjet(${p.i})">`
+        +`<td><div class="t-title">${esc(p.libelle)}</div><div class="t-sub">${esc(p.secteur)} · ${p.nbSignaux} signal${p.nbSignaux>1?"aux":""}</div>${b.length?`<div class="mini-badges">${b.join("")}</div>`:""}</td>`
+        +`<td>${esc(p.pays)}</td>`
+        +`<td class="t-val">${fmtMusd(p.valeur_musd)}</td>`
+        +`<td><span class="ph-pill">${esc(p.phaseLbl)}</span></td>`
+        +`<td>${jauge(p.maturite,"Maturité du projet : "+esc(p.palier))}</td>`
+        +`<td>${jauge(p.opportunite,"Opportunité Amarante")}</td>`
+        +`<td class="t-date">${p.derniere?relDate({ts:p.ts,mois:p.derniere}):"n.c."}</td>`
+        +`<td class="t-sub">${p.fDebut?esc(p.fDebut+"-"+p.fFin)+'<div class="t-sub">confiance '+esc(p.fConf)+'</div>':"—"}</td></tr>`;
+    }).join("")||'<tr><td colspan="8" class="empty">Aucun projet suivi. Active le collecteur Project Intelligence (RADAR_PROJETS=1) pour peupler cette vue.</td></tr>';
+    document.getElementById("proj-count").textContent=ps.length+" projet"+(ps.length>1?"s":"")+(projState.top?" (top 20 par opportunité)":"");
+  }catch(err){
+    document.getElementById("tbody-proj").innerHTML='<tr><td colspan="8" class="empty">Affichage des projets indisponible ('+esc(err&&err.message)+').</td></tr>';
+  }
+}
+function toggleTop(){projState.top=!projState.top;document.getElementById("p-top").classList.toggle("on",projState.top);renderProj();}
+function resetProj(){projState.q=projState.pays=projState.sect=projState.phase=projState.alerte="";projState.top=false;
+  ["p-q","p-pays","p-sect","p-phase"].forEach(i=>{const el=document.getElementById(i);if(el)el.value="";});
+  document.getElementById("p-top").classList.remove("on");
+  document.querySelectorAll("#p-alerte button").forEach((x,i)=>x.classList.toggle("on",i===0));renderProj();}
+function openProjet(i){
+  const p=PROJETS[i];if(!p)return;
+  const tl=(p.timeline||[]).map(bloc=>`<div class="tl-an"><div class="tl-an-h">${esc(bloc.annee)}</div>${(bloc.evenements||[]).map(e=>`<div class="tl-row"><div class="tl-dot" style="background:var(--amarante)"></div><div class="tl-body"><div class="tl-t"><span class="tl-ph">${esc(e.libelle_phase||e.phase||"")}</span>${esc(e.titre||"").slice(0,90)}</div><div class="tl-m">${esc(e.date||"")}</div></div></div>`).join("")}</div>`).join("")
+    ||'<div class="fi-empty">Aucun événement daté et classé pour l\'instant.</div>';
+  const prosp=p.prospects.length?p.prospects.map(x=>`<div class="cand" onclick="rechercherEnt('${x.replace(/'/g,"\\'")}')"><div class="cand-n">${esc(x)}</div><div class="cand-m">acteur international du projet · prospect à ouvrir</div></div>`).join(""):'<div class="fi-empty">Aucun contractor international identifié à ce stade.</div>';
+  document.getElementById("drawer-content").innerHTML=`
+  <div class="dr-head"><button class="dr-close" onclick="closeDrawer()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+    <div class="dr-src">Projet · ${esc(p.pays)} · ${esc(p.secteur)}</div><h3>${esc(p.libelle)}</h3>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="ph-pill">${esc(p.phaseLbl)}</span><span class="mb ${p.alerte==="haute"?"attribp":"surv"}">${ALERTE_LBL[p.alerte]||"—"}</span><span class="t-val" style="margin-left:auto;font-size:15px">${fmtMusd(p.valeur_musd)}</span></div></div>
+  <div class="dr-body">
+    <div class="fi-stats">
+      <div class="fi-stat"><div class="n" style="color:${jaugeCouleur(p.opportunite)}">${p.opportunite}</div><div class="l">opportunité Amarante</div></div>
+      <div class="fi-stat"><div class="n">${p.maturite}</div><div class="l">maturité projet</div></div>
+      <div class="fi-stat"><div class="n">${p.nbSignaux}</div><div class="l">signaux</div></div>
+      <div class="fi-stat"><div class="n">${p.fDebut||"—"}</div><div class="l">besoin probable</div></div>
+    </div>
+    <div class="dr-sec"><h5>Pourquoi cette opportunité</h5><div class="dr-analyse">${esc(p.phrase)||"—"}</div></div>
+    <div class="dr-sec"><h5>Trajectoire</h5><div class="dr-grid">
+      <div class="dr-field"><div class="l">Phase courante</div><div class="v">${esc(p.phaseLbl)}</div></div>
+      <div class="dr-field"><div class="l">Prochaine étape</div><div class="v">${esc(p.suite)||"—"}</div></div>
+      <div class="dr-field"><div class="l">Première détection</div><div class="v">${esc(p.premiere)||"—"}</div></div>
+      <div class="dr-field"><div class="l">Dernier signal</div><div class="v">${esc(p.derniere)||"—"}</div></div>
+      ${p.recul?`<div class="dr-field"><div class="l">Alerte trajectoire</div><div class="v" style="color:var(--red)">Recul depuis ${esc(p.phaseMax)}</div></div>`:""}
+    </div></div>
+    <div class="dr-sec"><h5>Services Amarante probables</h5><div class="fchips">${p.services.map(s=>`<span class="fchip">${esc(s)}</span>`).join("")||"—"}</div></div>
+    <div class="dr-sec"><h5>Prospects issus du projet</h5><div class="cand-list">${prosp}</div><div class="cand-note">Acteurs internationaux du projet : ce sont eux qui déploieront du personnel, donc les comptes à ouvrir avant l'appel d'offres.</div></div>
+    <div class="dr-sec"><h5>Chronologie</h5>${tl}</div>
+    ${p.acteurs.length?`<div class="dr-sec"><h5>Tous les acteurs cités</h5><div class="fchips">${p.acteurs.map(a=>`<span class="fchip">${esc(a)}</span>`).join("")}</div></div>`:""}
+  </div>`;
+  document.getElementById("drawer").classList.add("on");document.getElementById("drawer-ov").classList.add("on");
+}
 // --- GEOPOLITIQUE : alertes de la semaine, par theatre ---
 function posColor(z){const p=posture(z)[0];return p==="p-rouge"?"#C0392B":p==="p-orange"?"#B07419":"#33628F";}
 function renderGeo(){
@@ -942,7 +1141,7 @@ function carteDossier(d){
   const nph=(d.phases_presentes||[]).length;
   return `<div class="doss" id="doss-${esc(d.proj_id)}"><div class="doss-top"><div class="doss-tit"><div class="doss-nom">${esc(d.titre||"Projet "+d.proj_id)}</div><div class="doss-meta">${esc(d.pays||"")}${d.secteur?" · "+esc(d.secteur):""} · ${nph} phase${nph>1?"s":""} · ${d.n_leads} signal${d.n_leads>1?"aux":""}</div></div><span class="doss-pid" title="Identifiant projet Banque Mondiale (clé de rattachement)">${esc(d.proj_id)}</span></div><div class="pipe">${pipe}</div><div class="tl">${tl}</div>${candHtml}</div>`;
 }
-const TITLES={overview:["Vue d'ensemble","Théâtre global"],opps:["Opportunités","Avis de marché et signaux privés"],map:["Carte des théâtres","Répartition géographique"],attrib:["Attributions","Qui a gagné quoi en zone à risque"],doss:["Dossiers","Projets suivis de l'amont à l'attribution"],firmo:["Entreprises 360°","Marchés gagnés, signaux et comptes suivis, dédupliqués par entité"],geo:["Géopolitique","Alertes de la semaine"]};
+const TITLES={overview:["Vue d'ensemble","Théâtre global"],opps:["Opportunités","Avis de marché et signaux privés"],map:["Carte des théâtres","Répartition géographique"],proj:["Projets","Grands projets suivis avant l'appel d'offres"],attrib:["Attributions","Qui a gagné quoi en zone à risque"],doss:["Dossiers","Projets suivis de l'amont à l'attribution"],firmo:["Entreprises 360°","Marchés gagnés, signaux et comptes suivis, dédupliqués par entité"],geo:["Géopolitique","Alertes de la semaine"]};
 function go(v){
   state.view=v;
   document.querySelectorAll(".nav a").forEach(a=>a.classList.toggle("on",a.dataset.view===v));
@@ -951,7 +1150,7 @@ function go(v){
   document.getElementById("top-title").textContent=TITLES[v][0];document.getElementById("top-crumb").textContent=TITLES[v][1];
   if(v==="overview"){renderTheatres();renderKPIs();renderCharts();renderFunnel();renderHot();}
   if(v==="opps")renderTable();if(v==="attrib")renderAttrib();
-  if(v==="firmo")renderFirmo();if(v==="geo")renderGeo();if(v==="doss")renderDoss();
+  if(v==="firmo")renderFirmo();if(v==="geo")renderGeo();if(v==="doss")renderDoss();if(v==="proj")renderProj();
   if(v==="map")setTimeout(()=>{initMap();map.invalidateSize();},60);
 }
 function goZone(z){state.zone=z;document.getElementById("f-zone").value=z;go("opps");renderTable();}
@@ -985,6 +1184,31 @@ document.getElementById("ff-tri").onchange=e=>{firmoState.tri=e.target.value;ren
 document.querySelectorAll("#ff-etr button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#ff-etr button").forEach(x=>x.classList.remove("on"));b.classList.add("on");firmoState.etr=b.dataset.e;renderFirmo();});
 document.getElementById("ff-q").oninput=e=>{firmoState.q=e.target.value;renderFirmo();};
 (function(){document.getElementById("cnt-firmo").textContent=entreprises().length;})();
+// --- Init vue Projets : facettes derivees des donnees, tri par entete ---
+(function(){
+  const badge=document.getElementById("cnt-proj");
+  if(badge)badge.textContent=PROJETS.length||"";
+  const uniq=(k)=>[...new Set(PROJETS.map(p=>p[k]).filter(Boolean))].sort();
+  const remplir=(id,vals,libelle)=>{const el=document.getElementById(id);if(!el)return;
+    vals.forEach(v=>el.innerHTML+=`<option value="${v}">${libelle?libelle(v):v}</option>`);};
+  remplir("p-pays",uniq("pays"));
+  remplir("p-sect",uniq("secteur"));
+  const phases=[...new Set(PROJETS.map(p=>p.phase).filter(Boolean))]
+    .sort((a,b)=>PHASES_ORD.indexOf(a)-PHASES_ORD.indexOf(b));
+  const lbl={};PROJETS.forEach(p=>{if(p.phase)lbl[p.phase]=p.phaseLbl;});
+  remplir("p-phase",phases,v=>lbl[v]||v);
+  const on=(id,champ)=>{const el=document.getElementById(id);
+    if(el)el.onchange=e=>{projState[champ]=e.target.value;renderProj();};};
+  on("p-pays","pays");on("p-sect","sect");on("p-phase","phase");
+  const q=document.getElementById("p-q");
+  if(q)q.oninput=e=>{projState.q=e.target.value;renderProj();};
+  document.querySelectorAll("#p-alerte button").forEach(b=>b.onclick=()=>{
+    document.querySelectorAll("#p-alerte button").forEach(x=>x.classList.remove("on"));
+    b.classList.add("on");projState.alerte=b.dataset.a;renderProj();});
+  document.querySelectorAll("thead th[data-psort]").forEach(th=>th.onclick=()=>{
+    const k=th.dataset.psort;projState.dir=(projState.sort===k)?-projState.dir:-1;
+    projState.sort=k;renderProj();});
+})();
 (function(){document.getElementById("cnt-doss").textContent=DOSSIERS.filter(d=>d.n_phases>=2).length;document.querySelectorAll("#d-mp button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#d-mp button").forEach(x=>x.classList.remove("on"));b.classList.add("on");dossState.mp=b.dataset.m;renderDoss();});})();
 initFilters();go("overview");
 </script>
