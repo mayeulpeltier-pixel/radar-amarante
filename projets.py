@@ -154,9 +154,22 @@ def rattacher(signal, registre=None):
 
 def acteurs_du_signal(signal, projet):
     """Acteurs connus du projet cites dans le signal, plus ceux deja extraits
-    en amont (champ `acteurs`). Fonction PURE."""
+    en amont (champ `acteurs`). Fonction PURE.
+
+    La reconnaissance passe par les VARIANTES de chaque acteur (P6) : un
+    registre qui porte "ivanhoe mines" doit reconnaitre un titre qui n'ecrit
+    que "Ivanhoe". Sans cela, des acteurs pourtant identifies a la decouverte
+    disparaissaient du projet, et donc des prospects."""
     texte = _texte_signal(signal)
-    trouves = {a for a in projet.get("acteurs", []) if _norm(a) in texte}
+    try:
+        import acteurs_reference as aref
+        variantes = {a: aref.variantes(a) for a in projet.get("acteurs", [])}
+    except Exception:
+        variantes = {a: {str(a).lower()} for a in projet.get("acteurs", [])}
+    trouves = set()
+    for acteur, formes in variantes.items():
+        if any(_norm(f) in texte for f in formes):
+            trouves.add(acteur)
     for a in (signal.get("acteurs") or []):
         if str(a).strip():
             trouves.add(str(a).strip().lower())
@@ -524,14 +537,33 @@ def timeline(projet):
 
 
 def prospects(projet):
-    """PROJET -> ENTREPRISE -> besoin : les acteurs internationaux du projet
-    deviennent des prospects qualifies. Fonction PURE."""
+    """PROJET -> ENTREPRISE -> besoin : les acteurs qui vont DEPLOYER des
+    personnels deviennent des prospects qualifies. Fonction PURE.
+
+    Depuis P6, la qualification passe par `acteurs_reference`, une base de
+    connaissance OUVERTE : elle reconnait les acteurs connus, raisonne sur les
+    inconnus, et distingue ceux qui envoient des gens sur place (operateur,
+    EPC, minier, consultant, logisticien) de ceux qui financent ou autorisent
+    (bailleur, Etat). L'ancienne liste fermee servait de filtre unique et
+    perdait des prospects reels : Ivanhoe Mines et Zijin sur Kamoa-Kakula
+    etaient identifies mais jamais proposes. Elle reste ici en REPLI, au cas
+    ou le module de reference serait indisponible."""
+    try:
+        import acteurs_reference as aref
+        qualifies = aref.prospects_du_projet(projet.get("acteurs_top", []),
+                                             projet.get("secteur", ""))
+    except Exception:
+        qualifies = [{"nom": a, "role": "inconnu", "libelle_role": "",
+                      "origine": "", "connu": True}
+                     for a in projet.get("acteurs_top", [])
+                     if a in CONTRACTORS_INTERNATIONAUX]
     out = []
-    for a in projet.get("acteurs_top", []):
-        if a not in CONTRACTORS_INTERNATIONAUX:
-            continue
+    for a in qualifies:
         out.append({
-            "entreprise": a,
+            "entreprise": a["nom"],
+            "role": a.get("libelle_role", ""),
+            "origine": a.get("origine", ""),
+            "qualification": "confirmé" if a.get("connu") else "à qualifier",
             "project_id": projet["project_id"],
             "pays": projet.get("pays", ""),
             "iso3": projet.get("iso3", ""),
