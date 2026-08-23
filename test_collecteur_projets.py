@@ -235,7 +235,8 @@ class TestSortie(unittest.TestCase):
 
     def test_prospects_dans_la_ligne(self):
         ligne = cp.ligne_depuis_projet(self._projet())
-        self.assertIn("aecom", ligne[cp.COLONNES.index("prospects")])
+        # Nom CANONIQUE depuis la base d'acteurs (P6), pas la graphie brute.
+        self.assertIn("AECOM", ligne[cp.COLONNES.index("prospects")])
 
 
 class TestGardeFouActivation(unittest.TestCase):
