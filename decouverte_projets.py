@@ -79,6 +79,12 @@ SEUIL_CONFIANCE = float(os.environ.get("RADAR_PROMO_CONFIANCE", "60"))
 SEUIL_SIGNAUX = int(os.environ.get("RADAR_PROMO_SIGNAUX", "3"))
 SEUIL_SOURCES = int(os.environ.get("RADAR_PROMO_SOURCES", "2"))
 
+# Mode DISCOVERY_BACKFILL (P9) : exploration de l'archive au lieu de la seule
+# fenetre courante. Desactive la fraicheur et decoupe la periode en tranches
+# trimestrielles datees (voir fenetres_backfill).
+BACKFILL = os.environ.get("DISCOVERY_BACKFILL", "0") == "1"
+BACKFILL_MOIS = int(os.environ.get("DISCOVERY_BACKFILL_MOIS", "18"))
+
 
 # ===========================================================================
 # 1. REQUETES DE DECOUVERTE : pays x vocabulaire de NAISSANCE de projet
@@ -194,15 +200,45 @@ def url_pays(nom_pays, langue="en"):
     return bitd.url_google_news("", requete_perso=requete, hl=hl, gl=gl, ceid=ceid)
 
 
-def urls_du_pays(pays):
+def fenetres_backfill(mois=None, aujourd=None, pas_mois=3):
+    """Fenetres datees pour explorer l'archive (P9). Fonction PURE.
+
+    Google News limite le nombre de resultats par requete : demander "les 24
+    derniers mois" en une fois ne rend que les articles recents. On decoupe
+    donc en tranches trimestrielles, chacune interrogee separement, ce qui
+    fait remonter les signaux anciens que la fenetre courante masque.
+
+    Retour : [(debut_iso, fin_iso)], de la plus recente a la plus ancienne."""
+    import datetime
+    mois = BACKFILL_MOIS if mois is None else mois
+    fin = aujourd or datetime.date.today()
+    out = []
+    restant = max(1, int(mois))
+    while restant > 0:
+        pas = min(pas_mois, restant)
+        jours = int(round(pas * 30.44))
+        debut = fin - datetime.timedelta(days=jours)
+        out.append((debut.isoformat(), fin.isoformat()))
+        fin = debut
+        restant -= pas
+    return out
+
+
+def urls_du_pays(pays, fenetre=None):
     """URLs a interroger pour un pays du REFERENTIEL : une par langue
     pertinente, avec la grille de declencheurs traduite et l'edition Google
-    News locale. Retour : [(langue, url)]. Fonction PURE."""
+    News locale. Retour : [(langue, url)]. Fonction PURE.
+
+    `fenetre` = (debut_iso, fin_iso) ajoute les operateurs after:/before: pour
+    le mode backfill (P9)."""
     out = []
+    borne = ""
+    if fenetre:
+        borne = " after:{} before:{}".format(fenetre[0], fenetre[1])
     for langue in (pays.get("langues") or ["en"]):
         hl, gl, ceid = pref.params_google_news(pays, langue)
         nom = pref.nom_pour_requete(pays, langue)
-        requete = '{} "{}"'.format(declencheurs(langue), nom)
+        requete = '{} "{}"{}'.format(declencheurs(langue), nom, borne)
         out.append((langue, bitd.url_google_news("", requete_perso=requete,
                                                  hl=hl, gl=gl, ceid=ceid)))
     return out
@@ -747,10 +783,10 @@ def registre_enrichi(promus, registre=None):
 # ===========================================================================
 # 8. COLLECTE (I/O tolerant, injectable)
 # ===========================================================================
-def collecter_referentiel(pays_liste, fetch=None, session=None):
+def collecter_referentiel(pays_liste, fetch=None, session=None, fenetres=None):
     """Collecte multilingue pilotee par le REFERENTIEL pays (P3, P7, P8).
-    Une requete par langue pertinente, avec declencheurs traduits et edition
-    Google News locale. I/O tolerant."""
+    Une requete par langue pertinente x par fenetre temporelle (P9), avec
+    declencheurs traduits et edition Google News locale. I/O tolerant."""
     if fetch is None:
         sess = session or ted.session_robuste()
 
@@ -759,20 +795,22 @@ def collecter_referentiel(pays_liste, fetch=None, session=None):
             rep.raise_for_status()
             return rep.text
 
+    fenetres = fenetres or [None]
     articles = []
     for pays in pays_liste:
-        for langue, url in urls_du_pays(pays):
-            try:
-                lot = bitd.parser_rss(fetch(url))[:MAX_ARTICLES]
-            except Exception as e:
-                print("  (info) {} [{}] echec ({}).".format(
-                    pays["iso3"], langue, str(e)[:50]))
-                lot = []
-            for a in lot:
-                a["iso3_requete"] = pays["iso3"]
-                a["langue_requete"] = langue
-            articles.extend(lot)
-            time.sleep(PAUSE)
+        for fenetre in fenetres:
+            for langue, url in urls_du_pays(pays, fenetre=fenetre):
+                try:
+                    lot = bitd.parser_rss(fetch(url))[:MAX_ARTICLES]
+                except Exception as e:
+                    print("  (info) {} [{}] echec ({}).".format(
+                        pays["iso3"], langue, str(e)[:50]))
+                    lot = []
+                for a in lot:
+                    a["iso3_requete"] = pays["iso3"]
+                    a["langue_requete"] = langue
+                articles.extend(lot)
+                time.sleep(PAUSE)
     return articles
 
 
@@ -800,9 +838,11 @@ def collecter(pays, fetch=None, session=None):
     return articles
 
 
-def preparer(articles, vus=None, aujourd=None):
+def preparer(articles, vus=None, aujourd=None, backfill=None):
     """Articles -> signaux dedupliques et pre-filtres (avant tout appel LLM).
+    En BACKFILL la fraicheur est ignoree : on reconstruit justement le passe.
     Fonction PURE."""
+    backfill = BACKFILL if backfill is None else backfill
     vus, locaux, out = set(vus or ()), set(), []
     for a in articles or []:
         lien = a.get("lien", "")
@@ -813,7 +853,8 @@ def preparer(articles, vus=None, aujourd=None):
             continue
         if bitd.bruit_evident(a):
             continue
-        if not bitd.article_frais(a, aujourd=aujourd, jours=JOURS_FRAICHEUR):
+        if not backfill and not bitd.article_frais(a, aujourd=aujourd,
+                                                   jours=JOURS_FRAICHEUR):
             continue
         locaux.add(ident)
         out.append({"id": ident, "titre": a.get("titre", ""),
@@ -928,9 +969,31 @@ def main():
         len(fenetre), ", ".join("{}[{}]".format(p["iso3"], p["niveau"][:4])
                                 for p in fenetre)))
 
-    articles = collecter_referentiel(fenetre)
+    fenetres = None
+    if BACKFILL:
+        fenetres = fenetres_backfill()
+        print("  MODE BACKFILL : {} mois explores en {} fenetre(s) datee(s).".format(
+            BACKFILL_MOIS, len(fenetres)))
+    articles = collecter_referentiel(fenetre, fenetres=fenetres)
     signaux = preparer(articles, vus=vus)
-    print("  {} article(s), {} nouveau(x) a analyser.".format(len(articles), len(signaux)))
+    print("  presse : {} article(s), {} nouveau(x).".format(len(articles), len(signaux)))
+
+    # (P1) Les collecteurs DFI deja en place alimentent LE MEME pipeline :
+    # leurs avis sont convertis en signaux et concatenes ici, avant l'etape
+    # LLM. Aucun pipeline parallele, aucune recollecte.
+    try:
+        import adaptateurs_dfi as adfi
+        import radar_dashboard as dash
+        leads, _ = dash.charger_leads(os.environ.get("TED_SHEET_ID"),
+                                      os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE"))
+        signaux_dfi = adfi.signaux_depuis_leads(leads, vus=vus)
+        rep = adfi.repartition(signaux_dfi)
+        print("  DFI    : {} signal(aux) {} (poids cumule {}).".format(
+            rep["total"], rep["par_source"], rep["poids_cumule"]))
+        signaux = signaux + signaux_dfi
+    except Exception as e:
+        print("  (info) signaux DFI indisponibles ({}) : presse seule.".format(
+            str(e)[:70]))
 
     extraits, lots = extraire_par_lots(signaux)
     print("  {} lot(s) LLM.".format(lots))
