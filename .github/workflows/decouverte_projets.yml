@@ -31,6 +31,14 @@ on:
         description: "Seuil de promotion (defaut 60)"
         required: false
         default: "60"
+      backfill:
+        description: "1 = mode DISCOVERY_BACKFILL (explore l'archive au lieu de la fenetre courante). Defaut 0."
+        required: false
+        default: "0"
+      backfill_mois:
+        description: "Profondeur du backfill en mois (12 a 24, defaut 18)"
+        required: false
+        default: "18"
   schedule:
     # Vendredi 06h20 UTC : hors des runs radar (lundi/jeudi) et du run
     # Project Intelligence (mardi), pour ne pas se disputer le quota LLM.
@@ -62,6 +70,8 @@ jobs:
           RADAR_DECOUVERTE_PROJ_MAX_LOTS: ${{ github.event.inputs.max_lots }}
           RADAR_DECOUVERTE_PROJ_JOURS: ${{ github.event.inputs.jours }}
           RADAR_PROMO_CONFIANCE: ${{ github.event.inputs.seuil_confiance }}
+          DISCOVERY_BACKFILL: ${{ github.event.inputs.backfill }}
+          DISCOVERY_BACKFILL_MOIS: ${{ github.event.inputs.backfill_mois }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: compte_service.json
