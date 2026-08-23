@@ -1,0 +1,79 @@
+name: Project Discovery (decouverte de projets inconnus)
+# Couche 2bis : detecte des GRANDS PROJETS ABSENTS de projets_reference.py, a
+# partir de signaux gouvernementaux, bancaires et de presse (pays x vocabulaire
+# de naissance de projet), puis produit des CANDIDATS scores.
+#
+# ADDITIF ET OPT-IN : RADAR_DECOUVERTE_PROJETS=1 est pose ici et nulle part
+# ailleurs. Aucune couche existante n'est modifiee : la decouverte produit des
+# entrees AU FORMAT du registre, que le socle sait deja consommer.
+#
+# REVUE HUMAINE : un candidat promu est ecrit dans l'onglet `projets_candidats`
+# avec le statut "promu" et un PROJECT_ID propose. Le registre cure
+# (projets_reference.py) reste la SOURCE DE VERITE : l'ajout definitif est un
+# geste humain. C'est volontaire -- un faux projet coute plus cher qu'un projet
+# manque, et l'ajout au registre engage tout le pipeline aval.
+on:
+  workflow_dispatch:
+    inputs:
+      pays_par_run:
+        description: "Nombre de pays balayes (defaut 6)"
+        required: false
+        default: "6"
+      max_lots:
+        description: "Plafond de lots LLM par run (defaut 30)"
+        required: false
+        default: "30"
+      jours:
+        description: "Fenetre de fraicheur en jours (defaut 60)"
+        required: false
+        default: "60"
+      seuil_confiance:
+        description: "Seuil de promotion (defaut 60)"
+        required: false
+        default: "60"
+  schedule:
+    # Vendredi 06h20 UTC : hors des runs radar (lundi/jeudi) et du run
+    # Project Intelligence (mardi), pour ne pas se disputer le quota LLM.
+    - cron: "20 6 * * 5"
+jobs:
+  decouverte:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer les dependances radar
+        run: pip install -r requirements-radar.txt
+      - name: Ecrire le compte de service Google
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -n "$GOOGLE_SERVICE_ACCOUNT_JSON" ]; then
+            echo "$GOOGLE_SERVICE_ACCOUNT_JSON" > compte_service.json
+          fi
+      - name: Decouvrir des projets
+        env:
+          RADAR_DECOUVERTE_PROJETS: "1"
+          RADAR_DECOUVERTE_PROJ_PAYS: ${{ github.event.inputs.pays_par_run }}
+          RADAR_DECOUVERTE_PROJ_MAX_LOTS: ${{ github.event.inputs.max_lots }}
+          RADAR_DECOUVERTE_PROJ_JOURS: ${{ github.event.inputs.jours }}
+          RADAR_PROMO_CONFIANCE: ${{ github.event.inputs.seuil_confiance }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: compte_service.json
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python decouverte_projets.py
+      - name: Persister la memoire inter-runs
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain radar_etat.json)" ]; then
+            git config user.name "radar-bot"
+            git config user.email "radar-bot@users.noreply.github.com"
+            git add radar_etat.json
+            git commit -m "Project Discovery : memoire inter-runs"
+            git push
+          fi
