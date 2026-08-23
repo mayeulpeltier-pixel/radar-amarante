@@ -57,8 +57,10 @@ import unicodedata
 from datetime import date
 
 import bitd_signaux as bitd
+import pays_projets_reference as pref
 import projets as pj
 import projets_reference as ref
+import sources_reference as sref
 import ted_complet_v14 as ted
 
 
@@ -97,6 +99,66 @@ DECLENCHEURS_NAISSANCE = (
     '"deepwater port" OR "port development" OR railway OR "rail corridor" OR '
     '"airport expansion" OR "data center" OR "fertilizer plant" OR "cement plant")')
 
+# Traductions des declencheurs (P3). La presse locale d'un pays lusophone ou
+# arabophone n'emploie PAS le vocabulaire anglais : sans ces grilles, on ne
+# voit du pays que ce que sa presse anglophone veut bien relayer.
+DECLENCHEURS_LANGUE = {
+    "en": DECLENCHEURS_NAISSANCE,
+    "fr": ('("etude de faisabilite" OR "protocole d\'accord" OR "accord de principe" OR '
+           '"convention de concession" OR "accord d\'investissement" OR '
+           '"accord de financement" OR "financement approuve" OR "bouclage financier" OR '
+           '"conseil des ministres" OR "decision finale d\'investissement" OR '
+           '"contrat EPC" OR "appel d\'offres" OR "consultant retenu" OR '
+           '"corridor de developpement" OR "plan directeur" OR "zone economique speciale" OR '
+           '"parc industriel" OR "centrale electrique" OR "ligne de transport" OR '
+           'gazoduc OR oleoduc OR GNL OR raffinerie OR hydroelectrique OR '
+           '"parc solaire" OR "ferme eolienne" OR "projet minier" OR '
+           '"port en eau profonde" OR "chemin de fer" OR "extension aeroport" OR '
+           '"usine d\'engrais" OR cimenterie)'),
+    "pt": ('("estudo de viabilidade" OR "memorando de entendimento" OR '
+           '"acordo de concessao" OR "acordo de investimento" OR '
+           '"acordo de financiamento" OR "financiamento aprovado" OR '
+           '"decisao final de investimento" OR "contrato EPC" OR '
+           '"corredor de desenvolvimento" OR "plano diretor" OR '
+           '"zona economica especial" OR "parque industrial" OR '
+           '"central electrica" OR gasoduto OR oleoduto OR GNL OR refinaria OR '
+           '"projeto mineiro" OR "porto de aguas profundas" OR ferrovia OR '
+           '"parque solar" OR hidroeletrica)'),
+    "es": ('("estudio de factibilidad" OR "memorando de entendimiento" OR '
+           '"contrato de concesion" OR "acuerdo de inversion" OR '
+           '"acuerdo de financiamiento" OR "cierre financiero" OR '
+           '"decision final de inversion" OR "contrato EPC" OR '
+           '"corredor de desarrollo" OR "plan maestro" OR "zona economica especial" OR '
+           '"parque industrial" OR "central electrica" OR gasoducto OR oleoducto OR '
+           'GNL OR refineria OR "proyecto minero" OR "puerto de aguas profundas" OR '
+           'ferrocarril OR "parque solar" OR hidroelectrica)'),
+    "ar": ('("دراسة الجدوى" OR "مذكرة تفاهم" OR "اتفاقية امتياز" OR '
+           '"اتفاقية استثمار" OR "اتفاقية تمويل" OR "القرار النهائي للاستثمار" OR '
+           '"عقد هندسة وتوريد وإنشاء" OR "محطة كهرباء" OR "خط أنابيب" OR '
+           '"الغاز الطبيعي المسال" OR مصفاة OR "مشروع تعديني" OR "ميناء" OR '
+           '"سكة حديد" OR "منطقة اقتصادية خاصة" OR "مجلس الوزراء")'),
+    "ru": ('("технико-экономическое обоснование" OR "меморандум о взаимопонимании" OR '
+           '"концессионное соглашение" OR "инвестиционное соглашение" OR '
+           '"соглашение о финансировании" OR "окончательное инвестиционное решение" OR '
+           '"EPC контракт" OR "электростанция" OR "трубопровод" OR СПГ OR '
+           '"нефтеперерабатывающий завод" OR "горнодобывающий проект" OR '
+           '"глубоководный порт" OR "железная дорога" OR "промышленный парк")'),
+    "uk": ('("техніко-економічне обґрунтування" OR "меморандум про взаєморозуміння" OR '
+           '"концесійна угода" OR "інвестиційна угода" OR "угода про фінансування" OR '
+           '"остаточне інвестиційне рішення" OR "EPC контракт" OR "електростанція" OR '
+           '"трубопровід" OR "нафтопереробний завод" OR "гірничодобувний проект" OR '
+           '"глибоководний порт" OR "залізниця" OR "індустріальний парк")'),
+    "sw": ('("upembuzi yakinifu" OR "makubaliano ya awali" OR "mkataba wa uwekezaji" OR '
+           '"mradi wa nishati" OR "mradi wa madini" OR "bandari" OR "reli" OR '
+           '"kiwanda" OR "mtambo wa umeme" OR "bomba la gesi")'),
+}
+
+
+def declencheurs(langue):
+    """Grille de declencheurs dans la langue visee, repli anglais."""
+    return DECLENCHEURS_LANGUE.get(langue, DECLENCHEURS_NAISSANCE)
+
+
 # Pays balayes. Volontairement PLUS LARGE que PAYS_COUVERTS_AMARANTE : la
 # decouverte doit voir naitre un projet meme dans un pays aujourd'hui hors
 # perimetre de collecte (c'est exactement le cas Tanzanie / Tanzania LNG).
@@ -125,9 +187,25 @@ def pays_du_run(curseur=0, par_run=None):
 
 
 def url_pays(nom_pays, langue="en"):
-    hl, gl, ceid = _LOCALES.get(langue, _LOCALES["en"])
-    requete = '{} "{}"'.format(DECLENCHEURS_NAISSANCE, nom_pays)
+    """Compatibilite : URL pour un nom de pays et une langue (ancien appel)."""
+    hl, gl, ceid = _LOCALES.get(langue) or pref.PARAMS_LANGUE.get(
+        langue, pref.PARAMS_LANGUE["en"])
+    requete = '{} "{}"'.format(declencheurs(langue), nom_pays)
     return bitd.url_google_news("", requete_perso=requete, hl=hl, gl=gl, ceid=ceid)
+
+
+def urls_du_pays(pays):
+    """URLs a interroger pour un pays du REFERENTIEL : une par langue
+    pertinente, avec la grille de declencheurs traduite et l'edition Google
+    News locale. Retour : [(langue, url)]. Fonction PURE."""
+    out = []
+    for langue in (pays.get("langues") or ["en"]):
+        hl, gl, ceid = pref.params_google_news(pays, langue)
+        nom = pref.nom_pour_requete(pays, langue)
+        requete = '{} "{}"'.format(declencheurs(langue), nom)
+        out.append((langue, bitd.url_google_news("", requete_perso=requete,
+                                                 hl=hl, gl=gl, ceid=ceid)))
+    return out
 
 
 # ===========================================================================
@@ -380,6 +458,28 @@ def _finaliser_candidat(c):
                     if c["secteurs"] else "infrastructure")
     c["nb_signaux"] = len(c["signaux"])
     c["nb_sources"] = len({s for s in c["sources"] if s})
+    # Poids de preuve (P5) : somme des fiabilites des sources DISTINCTES. Une
+    # source ne compte qu'une fois, quel que soit le nombre d'articles publies
+    # (sinon une seule redaction prolixe simulerait une convergence).
+    poids, officielles = 0.0, []
+    meilleure = 0.0
+    vus_sources = set()
+    for s in c["signaux"]:
+        cle = sref.domaine_du_lien(s.get("lien", "")) or str(s.get("source") or "")
+        if not cle or cle in vus_sources:
+            continue
+        vus_sources.add(cle)
+        f = sref.fiabilite_du_signal(s)
+        poids += f
+        meilleure = max(meilleure, f)
+        if sref.est_officielle(s):
+            officielles.append(sref.decrire_source(s))
+    c["poids_sources"] = round(poids, 3)
+    # La SOMME ne suffit pas : trois blogs inconnus (0.40 x 3 = 1.20) pesaient
+    # plus que Bloomberg + un quotidien national (0.65 + 0.50 = 1.15). On
+    # retient donc aussi la QUALITE de la meilleure source du faisceau.
+    c["meilleure_fiabilite"] = round(meilleure, 3)
+    c["sources_officielles"] = officielles
     c["acteurs_top"] = [a for a, _ in c["acteurs"].most_common(10)]
     c["montant_musd"] = max(c["montants"]) if c["montants"] else 0
     c["confiance_llm"] = (sum(c["confiances"]) / len(c["confiances"])
@@ -461,14 +561,30 @@ def _absorber(base, autre):
 # ===========================================================================
 def score_confiance(candidat):
     """Certitude que ce candidat est un VRAI projet, distinct et suivable.
-    Volontairement severe : un faux projet coute plus cher qu'un projet manque.
+
+    PONDERE PAR LA FIABILITE DES SOURCES (P5). L'ancienne regle comptait les
+    sources comme interchangeables, ce qui produisait deux absurdites :
+    l'annonce d'un pret par la Banque Mondiale (1 source) ne suffisait pas,
+    alors que deux reprises d'une meme depeche par deux blogs suffisaient.
+
+    Desormais c'est le POIDS DE PREUVE accumule qui compte : la somme des
+    fiabilites des sources DISTINCTES (une source ne compte qu'une fois, quel
+    que soit le nombre d'articles qu'elle publie). Une source officielle
+    (DFI/gouvernement/agence) pese 0.85 a 0.95, un agregateur 0.40.
     Fonction PURE."""
     pts = 0
+    poids = float(candidat.get("poids_sources", 0) or 0)
+    # Poids de preuve : 1.0 (une source officielle seule) suffit deja a
+    # atteindre l'essentiel du bareme ; 2.0 le sature.
+    pts += min(45.0, 45.0 * poids / 2.0)
     n = candidat.get("nb_signaux", 0)
-    pts += 30 if n >= 5 else 20 if n >= 3 else 10 if n >= 2 else 0
-    src = candidat.get("nb_sources", 0)
-    pts += 25 if src >= 3 else 15 if src >= 2 else 0
+    pts += 15 if n >= 5 else 10 if n >= 3 else 5 if n >= 2 else 0
     pts += int(round(0.25 * float(candidat.get("confiance_llm", 0))))   # max 25
+    if candidat.get("sources_officielles"):
+        # Le caractere officiel est un FAIT qualitatif, pas seulement un poids.
+        # Sans ce bonus, une annonce isolee de la Banque Mondiale restait sous
+        # le seuil de confiance et ne pouvait donc jamais etre promue.
+        pts += 12
     if candidat.get("phase"):
         pts += 10
     if candidat.get("acteurs_top"):
@@ -484,7 +600,11 @@ def motifs_confiance(candidat):
     """Justification lisible du score. Fonction PURE."""
     m = ["{} signal(aux)".format(candidat.get("nb_signaux", 0)),
          "{} source(s) distincte(s)".format(candidat.get("nb_sources", 0)),
+         "poids de preuve {:.2f}".format(candidat.get("poids_sources", 0) or 0),
          "confiance LLM {}%".format(int(candidat.get("confiance_llm", 0)))]
+    if candidat.get("sources_officielles"):
+        m.insert(0, "source officielle : "
+                 + ", ".join(candidat["sources_officielles"][:2]))
     if candidat.get("phase"):
         m.append("phase identifiee ({})".format(candidat["phase"]))
     if candidat.get("acteurs_top"):
@@ -497,16 +617,51 @@ def motifs_confiance(candidat):
 # ===========================================================================
 # 7. PROMOTION : candidat -> entree de registre
 # ===========================================================================
-def promouvable(candidat, seuil=None, min_signaux=None, min_sources=None):
+# Seuil de POIDS DE PREUVE pour la voie convergence. Calibre sur des cas
+# reels : deux agregateurs (0.40+0.40=0.80) echouent, deux quotidiens
+# nationaux (0.50+0.50=1.00) passent tout juste, un quotidien plus une presse
+# economique (0.50+0.65=1.15) passent nettement. Une source officielle seule
+# passe par l'autre voie (>= 0.85).
+SEUIL_POIDS = float(os.environ.get("RADAR_PROMO_POIDS", "1.00"))
+
+
+def promouvable(candidat, seuil=None, min_signaux=None, min_sources=None,
+                seuil_poids=None):
     """Le candidat est-il assez confirme pour devenir un projet suivi ?
-    Trois conditions CUMULATIVES. Fonction PURE."""
+
+    REGLE PONDEREE (P5), qui remplace le rigide "3 signaux ET 2 sources".
+    Un pays connu et une confiance suffisante restent OBLIGATOIRES. Ensuite,
+    DEUX chemins alternatifs, parce qu'une preuve peut venir de la qualite
+    autant que du nombre :
+
+      A. VOIE OFFICIELLE : au moins une source faisant autorite (DFI,
+         gouvernement, agence publique) et un poids de preuve suffisant.
+         Une annonce de la Banque Mondiale n'a pas besoin d'etre reprise par
+         deux blogs pour etre vraie.
+      B. VOIE CONVERGENCE : plusieurs signaux et plusieurs sources distinctes,
+         comme avant. C'est la voie de la presse, ou aucune source ne fait
+         foi a elle seule.
+
+    Fonction PURE."""
     seuil = SEUIL_CONFIANCE if seuil is None else seuil
     min_signaux = SEUIL_SIGNAUX if min_signaux is None else min_signaux
     min_sources = SEUIL_SOURCES if min_sources is None else min_sources
-    return bool(candidat.get("iso3")
-                and candidat.get("confiance", 0) >= seuil
-                and candidat.get("nb_signaux", 0) >= min_signaux
-                and candidat.get("nb_sources", 0) >= min_sources)
+    seuil_poids = SEUIL_POIDS if seuil_poids is None else seuil_poids
+    if not candidat.get("iso3"):
+        return False
+    if candidat.get("confiance", 0) < seuil:
+        return False
+    poids = float(candidat.get("poids_sources", 0) or 0)
+    meilleure = float(candidat.get("meilleure_fiabilite", 0) or 0)
+    voie_officielle = bool(candidat.get("sources_officielles")) and poids >= 0.85
+    # La convergence exige AUSSI qu'au moins une source soit identifiee et
+    # credible (>= presse generaliste). Sans ce garde-fou, trois blogs inconnus
+    # (0.40 x 3 = 1.20) l'emporteraient sur Bloomberg + un quotidien (1.15).
+    voie_convergence = (candidat.get("nb_signaux", 0) >= min_signaux
+                        and candidat.get("nb_sources", 0) >= min_sources
+                        and poids >= seuil_poids
+                        and meilleure >= 0.50)
+    return voie_officielle or voie_convergence
 
 
 def generer_project_id(nom, iso3):
@@ -592,6 +747,35 @@ def registre_enrichi(promus, registre=None):
 # ===========================================================================
 # 8. COLLECTE (I/O tolerant, injectable)
 # ===========================================================================
+def collecter_referentiel(pays_liste, fetch=None, session=None):
+    """Collecte multilingue pilotee par le REFERENTIEL pays (P3, P7, P8).
+    Une requete par langue pertinente, avec declencheurs traduits et edition
+    Google News locale. I/O tolerant."""
+    if fetch is None:
+        sess = session or ted.session_robuste()
+
+        def fetch(url):
+            rep = sess.get(url, timeout=30)
+            rep.raise_for_status()
+            return rep.text
+
+    articles = []
+    for pays in pays_liste:
+        for langue, url in urls_du_pays(pays):
+            try:
+                lot = bitd.parser_rss(fetch(url))[:MAX_ARTICLES]
+            except Exception as e:
+                print("  (info) {} [{}] echec ({}).".format(
+                    pays["iso3"], langue, str(e)[:50]))
+                lot = []
+            for a in lot:
+                a["iso3_requete"] = pays["iso3"]
+                a["langue_requete"] = langue
+            articles.extend(lot)
+            time.sleep(PAUSE)
+    return articles
+
+
 def collecter(pays, fetch=None, session=None):
     """Articles bruts pour une liste de pays. I/O tolerant."""
     if fetch is None:
@@ -722,12 +906,29 @@ def main():
     import radar_etat
 
     print("=== PROJECT DISCOVERY -- decouverte de projets inconnus ===")
+    stats = pref.statistiques()
+    print("  referentiel : {} pays ({}), langues {}".format(
+        stats["total"], stats["par_niveau"], sorted(stats["par_langue"])))
     curseur, vus = radar_etat.charger()
     curseur, vus = (curseur or 0), list(vus or [])
-    fenetre = pays_du_run(curseur)
-    print("  {} pays balayes (sur {}).".format(len(fenetre), len(PAYS_DECOUVERTE)))
+    # Cadence (P8) : faute d'un journal des passages par pays, on derive un
+    # dernier passage approximatif du curseur de rotation. Un pays "suivi" est
+    # donc du a chaque run, un "global_watch" une fois par cycle.
+    plafond = PAYS_PAR_RUN
+    fenetre = pref.selection_du_run({}, plafond=plafond) if curseur == 0 else None
+    if fenetre is None:
+        tous = pref.charger_pays()
+        debut = curseur % len(tous)
+        prioritaires = [p for p in tous if p["niveau"] == "suivi"]
+        reste = (tous[debut:] + tous[:debut])
+        vus_iso = {p["iso3"] for p in prioritaires}
+        fenetre = (prioritaires
+                   + [p for p in reste if p["iso3"] not in vus_iso])[:plafond]
+    print("  {} pays interroges : {}".format(
+        len(fenetre), ", ".join("{}[{}]".format(p["iso3"], p["niveau"][:4])
+                                for p in fenetre)))
 
-    articles = collecter(fenetre)
+    articles = collecter_referentiel(fenetre)
     signaux = preparer(articles, vus=vus)
     print("  {} article(s), {} nouveau(x) a analyser.".format(len(articles), len(signaux)))
 
