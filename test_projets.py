@@ -253,12 +253,16 @@ class TestProchainesEtapesEtProspects(unittest.TestCase):
 
     def test_prospects_issus_du_projet(self):
         p = pj.construire_projets(INGA, aujourd=AUJ)[0]
-        noms = {x["entreprise"] for x in pj.prospects(p)}
-        self.assertIn("aecom", noms)             # contractor international
-        self.assertNotIn("world bank", noms)     # bailleur, pas un deployeur
-        for x in pj.prospects(p):
+        prospects = pj.prospects(p)
+        noms = {x["entreprise"].lower() for x in prospects}
+        # Nom CANONIQUE restitue par la base d'acteurs, pas la graphie brute.
+        self.assertIn("aecom", noms)
+        self.assertNotIn("banque mondiale", noms)  # bailleur, pas un deployeur
+        self.assertNotIn("world bank", noms)
+        for x in prospects:
             self.assertTrue(x["besoin"])
             self.assertEqual(x["project_id"], "INGA3_COD")
+            self.assertTrue(x["role"])             # role qualifie (P6)
 
 
 class TestAlertes(unittest.TestCase):
