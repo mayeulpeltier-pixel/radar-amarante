@@ -301,7 +301,62 @@ def cle_projet(nom, iso3=""):
 # ===========================================================================
 # 3. DEDUP CONTRE LE REGISTRE EXISTANT
 # ===========================================================================
-def deja_connu(nom, registre=None):
+def ordre_de_grandeur(montant_musd):
+    """Tranche de taille d'un projet, pour rapprocher des signaux qui parlent
+    du meme chantier sans le nommer. Fonction PURE."""
+    try:
+        m = float(montant_musd or 0)
+    except (TypeError, ValueError):
+        return ""
+    if m <= 0:
+        return ""
+    if m < 100:
+        return "<100M"
+    if m < 1000:
+        return "100M-1Md"
+    if m < 10000:
+        return "1-10Md"
+    return ">10Md"
+
+
+def empreinte_sans_nom(extraction):
+    """Cle d'un projet NON NOMME (P4) : pays + secteur + le premier trait
+    discriminant disponible (localisation, sinon acteur principal, sinon
+    ordre de grandeur). Retourne "" si le faisceau est trop maigre pour
+    identifier quoi que ce soit. Fonction PURE.
+
+    Exigence : "meme pays, meme secteur, meme localisation, meme ordre de
+    grandeur financier, memes acteurs". On n'exige pas les cinq (ce serait
+    intenable sur des depeches courtes), mais pays + secteur + AU MOINS UN
+    trait discriminant, sinon on regrouperait tout le gaz d'un pays."""
+    iso3 = str(extraction.get("iso3") or "").strip().upper()
+    secteur = str(extraction.get("secteur") or "").strip().lower()
+    if not iso3 or not secteur:
+        return ""
+    loc = _norm(extraction.get("localisation", "")).strip()
+    acteurs = sorted(_norm(a) for a in (extraction.get("acteurs") or []) if a)
+    grandeur = ordre_de_grandeur(extraction.get("montant_musd"))
+    if loc:
+        trait = "loc:" + loc
+    elif acteurs:
+        trait = "act:" + acteurs[0]
+    elif grandeur:
+        trait = "tail:" + grandeur
+    else:
+        return ""
+    return "SANSNOM|{}|{}|{}".format(iso3, secteur, trait)
+
+
+def id_temporaire(empreinte):
+    """Identifiant TEMPORAIRE et stable d'un candidat sans nom. Il permet au
+    candidat de recevoir de nouveaux signaux run apres run, en attendant qu'un
+    nom officiel apparaisse. Fonction PURE."""
+    import hashlib
+    parties = empreinte.split("|")
+    iso3 = parties[1] if len(parties) > 1 else "XXX"
+    secteur = (parties[2] if len(parties) > 2 else "na")[:6].upper()
+    sceau = hashlib.sha1(empreinte.encode("utf-8")).hexdigest()[:6].upper()
+    return "TMP-{}-{}-{}".format(iso3, secteur, sceau)
     """PROJECT_ID du projet EXISTANT que ce nom designe, ou "".
 
     On reutilise `projets.rattacher` (la resolution d'entite deja testee du
@@ -323,6 +378,7 @@ PROMPT_DECOUVERTE = """Tu analyses des actualités pour une société de sûret�
 
 Pour CHAQUE actualité numérotée, identifie s'il s'agit d'un GRAND PROJET IDENTIFIABLE, et extrais :
 - "projet" : le NOM PROPRE du projet (ex. "Inga 3", "Tanzania LNG", "Simandou"). Si l'actualité ne nomme aucun projet précis, renvoie "".
+- "localisation" : ville, région, site ou bassin mentionné (ex. "Lindi", "Kolwezi", "offshore bloc 4"), sinon "". Renseigne-la MÊME si le projet n'a pas de nom.
 - "iso3" : code ISO3 du pays où le projet se réalise, sinon "".
 - "secteur" : energie | mines | transport | industrie | infrastructure
 - "phase" : une des phases suivantes, ou "" si aucune n'est démontrée :
@@ -359,7 +415,8 @@ def parser_reponse(texte, taille):
     JSON casse ou partiel -> entrees vides plutot que perte du lot.
     Fonction PURE."""
     vide = [{"projet": "", "iso3": "", "secteur": "", "phase": "",
-             "acteurs": [], "montant_musd": 0, "confiance": 0}
+             "localisation": "", "acteurs": [], "montant_musd": 0,
+             "confiance": 0}
             for _ in range(taille)]
     if not texte:
         return vide
@@ -384,6 +441,7 @@ def parser_reponse(texte, taille):
             continue
         e = vide[n]
         e["projet"] = str(item.get("projet") or "").strip()
+        e["localisation"] = str(item.get("localisation") or "").strip()[:60]
         e["iso3"] = str(item.get("iso3") or "").strip().upper()[:3]
         sect = str(item.get("secteur") or "").strip().lower()
         e["secteur"] = sect if sect in pj.INTENSITE_SECTEUR else "infrastructure"
@@ -433,6 +491,21 @@ def extraire_par_lots(signaux, appel=None, max_lots=None):
 # ===========================================================================
 # 5. REGROUPEMENT EN CANDIDATS
 # ===========================================================================
+def deja_connu(nom, registre=None):
+    """PROJECT_ID du projet EXISTANT que ce nom designe, ou "".
+
+    On reutilise `projets.rattacher` (la resolution d'entite deja testee du
+    socle) en lui presentant le nom comme un texte : un candidat qui matche un
+    alias connu N'EST PAS une decouverte, c'est un signal d'un projet suivi.
+    Fonction PURE."""
+    texte = str(nom or "")
+    if not texte.strip():
+        return ""
+    # On ajoute un mot de contexte : `rattacher` exige du contexte pour les
+    # alias faibles, or un nom nu ("Inga 3") n'en contient pas forcement.
+    return pj.rattacher({"titre": texte, "resume": "project"}, registre)
+
+
 def regrouper(signaux, registre=None, aujourd=None):
     """Signaux extraits -> candidats de NOUVEAUX projets. Fonction PURE.
 
@@ -443,20 +516,32 @@ def regrouper(signaux, registre=None, aujourd=None):
     for s in signaux or []:
         e = s.get("extraction") or {}
         nom = str(e.get("projet") or "").strip()
+        sans_nom = False
         if not nom:
-            continue
-        if deja_connu(nom, registre):
-            continue
-        cle = cle_projet(nom, e.get("iso3"))
-        if not cle:
-            continue
+            # (P4) Pas de nom officiel : on tente une EMPREINTE. Si le faisceau
+            # est trop maigre pour identifier un chantier, on abandonne le
+            # signal plutot que de fabriquer un projet fantome.
+            cle = empreinte_sans_nom(e)
+            if not cle:
+                continue
+            sans_nom = True
+        else:
+            if deja_connu(nom, registre):
+                continue
+            cle = cle_projet(nom, e.get("iso3"))
+            if not cle:
+                continue
         c = par_cle.setdefault(cle, {
             "cle": cle, "noms": collections.Counter(), "iso3": e.get("iso3", ""),
-            "secteurs": collections.Counter(), "phases": [], "acteurs": collections.Counter(),
-            "montants": [], "confiances": [], "sources": set(), "signaux": [],
-            "dates": [],
+            "secteurs": collections.Counter(), "phases": [],
+            "acteurs": collections.Counter(), "montants": [], "confiances": [],
+            "sources": set(), "signaux": [], "dates": [],
+            "sans_nom": sans_nom, "localisations": collections.Counter(),
         })
-        c["noms"][nom] += 1
+        if nom:
+            c["noms"][nom] += 1
+        if e.get("localisation"):
+            c["localisations"][e["localisation"]] += 1
         if e.get("secteur"):
             c["secteurs"][e["secteur"]] += 1
         if e.get("phase"):
@@ -473,11 +558,46 @@ def regrouper(signaux, registre=None, aujourd=None):
             c["dates"].append(str(s["date"]))
     candidats = list(par_cle.values())
     candidats = fusionner(candidats)
+    candidats = absorber_sans_nom(candidats)
     candidats = [_finaliser_candidat(c) for c in candidats]
     for c in candidats:
         c["confiance"] = score_confiance(c)
     candidats.sort(key=lambda c: -c["confiance"])
     return candidats
+
+
+def absorber_sans_nom(candidats):
+    """(P4) Quand un NOM OFFICIEL apparait, le candidat temporaire qui suivait
+    le meme chantier doit disparaitre dans le projet nomme, en lui apportant
+    tout son historique. Fonction PURE.
+
+    Rapprochement : meme pays, meme secteur, et un trait commun (localisation
+    partagee ou acteur partage). Sans trait commun, le candidat temporaire
+    reste autonome : mieux vaut deux fiches qu'une fusion abusive."""
+    nommes = [c for c in candidats if not c.get("sans_nom")]
+    anonymes = [c for c in candidats if c.get("sans_nom")]
+    restants = []
+    for anon in anonymes:
+        cible = None
+        for nomme in nommes:
+            if anon.get("iso3") != nomme.get("iso3"):
+                continue
+            if _secteur_dominant(anon) != _secteur_dominant(nomme):
+                continue
+            locs_a = {_norm(x) for x in (anon.get("localisations") or {})}
+            locs_n = {_norm(x) for x in (nomme.get("localisations") or {})}
+            acts_a = {_norm(x) for x in (anon.get("acteurs") or {})}
+            acts_n = {_norm(x) for x in (nomme.get("acteurs") or {})}
+            if (locs_a & locs_n) or (acts_a & acts_n):
+                cible = nomme
+                break
+        if cible is not None:
+            _absorber(cible, anon)
+            cible["absorbe_temporaires"] = (
+                cible.get("absorbe_temporaires", 0) + 1)
+        else:
+            restants.append(anon)
+    return nommes + restants
 
 
 def _domaine(lien):
@@ -488,6 +608,17 @@ def _domaine(lien):
 
 def _finaliser_candidat(c):
     c["nom"] = c["noms"].most_common(1)[0][0] if c["noms"] else ""
+    c["localisation"] = (c["localisations"].most_common(1)[0][0]
+                         if c.get("localisations") else "")
+    if not c["nom"]:
+        # (P4) PROJECT_CANDIDATE sans nom officiel : identifiant TEMPORAIRE et
+        # libelle descriptif, pour qu'il soit lisible et continue de recevoir
+        # des signaux en attendant d'etre nomme.
+        c["sans_nom"] = True
+        c["id_temporaire"] = id_temporaire(c["cle"])
+        c["nom"] = "[sans nom] {} {}{}".format(
+            c.get("iso3", "?"), _secteur_dominant(c),
+            " · " + c["localisation"] if c["localisation"] else "")
     # Toutes les autres graphies rencontrees deviennent des alias du projet.
     c["alias_fusionnes"] = sorted({n for n in c["noms"] if n != c["nom"]})
     c["secteur"] = (c["secteurs"].most_common(1)[0][0]
@@ -684,6 +815,11 @@ def promouvable(candidat, seuil=None, min_signaux=None, min_sources=None,
     min_sources = SEUIL_SOURCES if min_sources is None else min_sources
     seuil_poids = SEUIL_POIDS if seuil_poids is None else seuil_poids
     if not candidat.get("iso3"):
+        return False
+    if candidat.get("sans_nom"):
+        # (P4) Un PROJECT_CANDIDATE sans nom officiel n'accede JAMAIS au statut
+        # de projet suivi : un PROJECT_ID stable suppose un nom stable. Il reste
+        # vivant, recoit des signaux, et sera absorbe des qu'un nom apparait.
         return False
     if candidat.get("confiance", 0) < seuil:
         return False
