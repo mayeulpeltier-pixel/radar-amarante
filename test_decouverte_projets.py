@@ -273,13 +273,39 @@ class TestConfianceEtPromotion(unittest.TestCase):
     def _cand(self, **kw):
         base = {"nom": "Projet Test", "iso3": "MLI", "secteur": "mines",
                 "nb_signaux": 4, "nb_sources": 3, "confiance_llm": 85,
-                "phase": "FEASIBILITY", "acteurs_top": ["x"], "montant_musd": 900}
+                "phase": "FEASIBILITY", "acteurs_top": ["x"], "montant_musd": 900,
+                "poids_sources": 1.6, "meilleure_fiabilite": 0.65,
+                "sources_officielles": []}
         base.update(kw)
         base["confiance"] = dp.score_confiance(base)
         return base
 
     def test_candidat_solide_est_promouvable(self):
         self.assertTrue(dp.promouvable(self._cand()))
+
+    def test_voie_officielle_une_seule_source_suffit(self):
+        """P5 : une annonce de la Banque Mondiale n'a pas besoin d'etre reprise
+        par deux blogs pour etre vraie."""
+        officiel = self._cand(nb_signaux=1, nb_sources=1, poids_sources=0.95,
+                              sources_officielles=["Banque Mondiale"])
+        self.assertTrue(dp.promouvable(officiel))
+
+    def test_deux_agregateurs_ne_suffisent_pas(self):
+        """L'inverse : deux sources faibles ne font pas une preuve."""
+        faible = self._cand(nb_signaux=3, nb_sources=2, poids_sources=0.80,
+                            meilleure_fiabilite=0.40, sources_officielles=[])
+        self.assertFalse(dp.promouvable(faible))
+
+    def test_qualite_prime_sur_quantite_dans_la_decision(self):
+        """Le point de P5 n'est pas le score brut mais la DECISION : un signal
+        officiel unique est promu, tandis qu'un candidat plus bavard mais
+        adosse a des sources faibles reste en attente."""
+        officiel = self._cand(nb_signaux=1, nb_sources=1, poids_sources=0.95,
+                              sources_officielles=["AfDB"])
+        bavard = self._cand(nb_signaux=6, nb_sources=2, poids_sources=0.80,
+                            meilleure_fiabilite=0.40)
+        self.assertTrue(dp.promouvable(officiel))
+        self.assertFalse(dp.promouvable(bavard))
 
     def test_signal_unique_refuse(self):
         self.assertFalse(dp.promouvable(self._cand(nb_signaux=1, nb_sources=1)))
