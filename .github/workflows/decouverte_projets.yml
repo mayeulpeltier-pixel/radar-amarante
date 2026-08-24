@@ -18,7 +18,7 @@ on:
       pays_par_run:
         description: "Nombre de pays balayes (defaut 6)"
         required: false
-        default: "6"
+        default: "3"
       max_lots:
         description: "Plafond de lots LLM par run (defaut 30)"
         required: false
@@ -72,6 +72,8 @@ jobs:
           RADAR_PROMO_CONFIANCE: ${{ github.event.inputs.seuil_confiance }}
           DISCOVERY_BACKFILL: ${{ github.event.inputs.backfill }}
           DISCOVERY_BACKFILL_MOIS: ${{ github.event.inputs.backfill_mois }}
+          RADAR_ETAT_PROJETS: radar_etat_decouverte.json
+          RADAR_PROJETS_MAX_TOKENS: "2000"
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: compte_service.json
@@ -80,10 +82,10 @@ jobs:
       - name: Persister la memoire inter-runs
         if: always()
         run: |
-          if [ -n "$(git status --porcelain radar_etat.json)" ]; then
+          if [ -n "$(git status --porcelain radar_etat_decouverte.json)" ]; then
             git config user.name "radar-bot"
             git config user.email "radar-bot@users.noreply.github.com"
-            git add radar_etat.json
+            git add radar_etat_decouverte.json
             git commit -m "Project Discovery : memoire inter-runs"
             git push
           fi
