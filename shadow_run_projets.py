@@ -69,7 +69,7 @@ PRIX_IN, PRIX_OUT = 1.0, 5.0
 M = collections.Counter()          # compteurs globaux
 ERREURS = []                       # (etape, detail)
 CHRONO = {}                        # duree par pays
-USAGE = {"in": 0, "out": 0, "appels": 0, "tronques": 0}
+USAGE = {"in": 0, "out": 0, "appels": 0, "tronques": 0, "dumps": 0}
 
 
 # ===========================================================================
@@ -96,18 +96,41 @@ def appel_llm_mesure(prompt):
     if charge.get("stop_reason") == "max_tokens":
         USAGE["tronques"] += 1
         ERREURS.append(("llm", "reponse TRONQUEE (max_tokens) : lot perdu"))
-    texte = ted.texte_des_blocs(charge)
-    if DEBUG:
-        print("\n    --- REPONSE BRUTE DU MODELE (appel {}) ---".format(USAGE["appels"]))
+    # CAUSE RACINE DU PREMIER RUN A 0 CANDIDAT : `texte_des_blocs` renvoie un
+    # TUPLE (texte, motif_echec), pas une chaine. Le harnais renvoyait le tuple
+    # tel quel, `parser_reponse` faisait str(tuple) -> JSON illisible -> chaque
+    # lot retournait des entrees vides. Les collecteurs de production, eux,
+    # depaquettent correctement (`texte, motif = ...`) : le defaut etait dans
+    # l'instrument de mesure, pas dans le systeme mesure.
+    texte, motif = ted.texte_des_blocs(charge)
+    if texte is None:
+        ERREURS.append(("llm", "reponse inexploitable : {}".format(motif)))
+        texte = ""
+    # AUTO-DIAGNOSTIC. Le flag DEBUG suppose que quelqu'un pense a l'activer,
+    # et le premier run l'a justement oublie. Des qu'un lot ne produit AUCUN
+    # projet, on dumpe la reponse brute d'office : c'est exactement le cas ou
+    # l'on a besoin de savoir si le modele a repondu "aucun projet" ou si sa
+    # reponse n'a pas ete comprise. Borne a 2 dumps pour ne pas noyer le log.
+    interp = dp.parser_reponse(texte, TAILLE_LOT)
+    nommes = sum(1 for e in interp if e["projet"])
+    pays = sum(1 for e in interp if e["iso3"])
+    muet = (nommes == 0 and pays == 0)
+    if DEBUG or (muet and USAGE["dumps"] < 2):
+        if muet:
+            USAGE["dumps"] += 1
+            print("\n    !!! LOT MUET (0 projet, 0 pays) -- reponse brute dumpee "
+                  "automatiquement pour diagnostic !!!")
+        print("    --- REPONSE BRUTE DU MODELE (appel {}) ---".format(USAGE["appels"]))
         print("    stop_reason={} | blocs={} | {} caracteres".format(
             charge.get("stop_reason"),
             [b.get("type") for b in (charge.get("content") or [])], len(texte or "")))
-        print("    " + (texte or "(vide)")[:1200].replace("\n", "\n    "))
-        interp = dp.parser_reponse(texte, TAILLE_LOT)
-        nommes = sum(1 for e in interp if e["projet"])
-        pays = sum(1 for e in interp if e["iso3"])
+        print("    " + (texte or "(VIDE : aucun bloc texte)")[:1500].replace("\n", "\n    "))
         print("    --- INTERPRETATION : {}/{} avec nom de projet, {} avec pays ---"
               .format(nommes, TAILLE_LOT, pays))
+        if muet and texte and texte.strip():
+            print("    LECTURE : le modele A REPONDU. Si sa reponse cite des projets")
+            print("    ci-dessus, le defaut est dans parser_reponse. Sinon, il rejette")
+            print("    reellement ces articles et le defaut est dans la COLLECTE.")
     return texte
 
 
@@ -343,9 +366,11 @@ def main():
         M["articles_rejetes"] += len(articles) - len(signaux)
         print("    -> {} article(s), {} retenu(s) apres pre-filtres".format(
             len(articles), len(signaux)))
-        if DEBUG:
-            print("    --- ARTICLES RETENUS ({}) : sont-ils seulement des "
-                  "annonces de projet ? ---".format(len(signaux)))
+        # Toujours affiches : sans eux, impossible de juger si la COLLECTE
+        # ramene des annonces de projet ou du bruit generaliste.
+        if signaux:
+            print("    --- ARTICLES RETENUS ({}) : sont-ils des annonces de "
+                  "projet ? ---".format(len(signaux)))
             for s in signaux:
                 print("      [{}] {}".format(s.get("date") or "date ?",
                                              (s.get("titre") or "")[:90]))
