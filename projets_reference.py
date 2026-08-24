@@ -111,8 +111,12 @@ REGISTRE = [
         "libelle": "EACOP (oleoduc Ouganda-Tanzanie) et Tilenga",
         "pays": "Ouganda", "iso3": "UGA", "secteur": "energie",
         "valeur_musd": 5000,
+        # "Uganda-Tanzania Oil Pipeline" manquait : le shadow run du 24/08 a
+        # cree un candidat doublon faute de cet alias.
         "alias": ["eacop", "east african crude oil pipeline", "tilenga",
-                  "kingfisher project", "oleoduc ouganda"],
+                  "kingfisher project", "oleoduc ouganda",
+                  "uganda-tanzania oil pipeline", "uganda tanzania oil pipeline",
+                  "uganda's oil route to the sea"],
         "alias_faibles": [],
         "acteurs": ["totalenergies", "total", "cnooc", "unoc", "tpdc"],
     },
