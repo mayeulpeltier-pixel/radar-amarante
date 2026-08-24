@@ -118,3 +118,58 @@ class TestPaysCibles(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBugTupleTexteDesBlocs(unittest.TestCase):
+    """REGRESSION. Le premier shadow run a produit 0 candidat parce que
+    `ted.texte_des_blocs` renvoie (texte, motif) et que le harnais renvoyait le
+    TUPLE. `parser_reponse` faisait alors str(tuple) et n'y trouvait aucun JSON
+    valide : chaque lot ressortait vide. Ce test verrouille le depaquetage."""
+
+    def test_appel_renvoie_une_chaine_pas_un_tuple(self):
+        import json as _json
+        import os
+        import ted_complet_v14 as ted
+
+        charge = {"content": [{"type": "text", "text": '[{"n":1,"projet":"X"}]'}],
+                  "usage": {"input_tokens": 10, "output_tokens": 5},
+                  "stop_reason": "end_turn"}
+
+        class Rep:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return charge
+
+        class Sess:
+            def post(self, *a, **k):
+                return Rep()
+
+        ancien = ted.session_robuste
+        ted.session_robuste = lambda *a, **k: Sess()
+        os.environ["ANTHROPIC_API_KEY"] = "test"
+        try:
+            out = sh.appel_llm_mesure("prompt")
+        finally:
+            ted.session_robuste = ancien
+        self.assertIsInstance(out, str)
+        self.assertEqual(_json.loads(out)[0]["projet"], "X")
+
+    def test_le_parseur_comprend_la_sortie(self):
+        import decouverte_projets as dp
+        # Le modele repond en JSON INDENTE, donc multi-lignes : c'est le cas
+        # reel. Sur une chaine, le parseur comprend.
+        reel = '[\n  {"n": 1, "projet": "X"},\n  {"n": 2, "projet": "Y"}\n]'
+        self.assertEqual(dp.parser_reponse(reel, 2)[0]["projet"], "X")
+        # Passe en TUPLE, str() echappe les sauts de ligne en "\\n" litteraux :
+        # le JSON devient invalide et TOUT le lot ressort vide. C'est
+        # exactement ce qui s'est produit lors du premier shadow run.
+        self.assertEqual(dp.parser_reponse((reel, ""), 2)[0]["projet"], "")
+
+    def test_reponse_sur_une_seule_ligne_survivait_par_chance(self):
+        """Precision honnete : le bug ne se voyait PAS sur une reponse tenant
+        sur une ligne, ce qui explique qu'il ait passe les tests hors ligne."""
+        import decouverte_projets as dp
+        une_ligne = '[{"n":1,"projet":"X"}]'
+        self.assertEqual(dp.parser_reponse((une_ligne, ""), 1)[0]["projet"], "X")
