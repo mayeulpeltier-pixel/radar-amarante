@@ -138,6 +138,45 @@ def charger_watchlist(sheet_id, fichier, lignes_bitd=None):
     return list(ents.values())
 
 
+def charger_candidats_projets(sheet_id, fichier):
+    """Candidats de decouverte depuis l'onglet `projets_candidats` (ecrit par
+    decouverte_projets). BEST-EFFORT comme charger_projets.
+
+    Un candidat n'est PAS un projet suivi : c'est une piste que la decouverte
+    a reperee et que l'analyste doit trancher. Les afficher est le maillon
+    manquant -- sans cela, le systeme decouvre dans le vide."""
+    if not (sheet_id and fichier):
+        return []
+    try:
+        import signaux_prives as sp
+        classeur = sp._ouvrir_classeur(sheet_id, fichier)
+        valeurs = classeur.worksheet("projets_candidats").get_all_values()
+    except Exception as e:
+        print("(cockpit) onglet projets_candidats non lu ({}).".format(str(e)[:60]))
+        return []
+    if len(valeurs) < 2:
+        return []
+    entetes = [str(c).strip() for c in valeurs[0]]
+    out = []
+    for ligne in valeurs[1:]:
+        d = {entetes[i]: (ligne[i] if i < len(ligne) else "")
+             for i in range(len(entetes))}
+        if not d.get("nom"):
+            continue
+        for champ in ("confiance", "nb_signaux", "nb_sources", "montant_musd"):
+            try:
+                d[champ] = float(str(d.get(champ, "")).replace(",", ".") or 0)
+            except ValueError:
+                d[champ] = 0
+        try:
+            d["signaux"] = json.loads(d.get("signaux_json") or "[]")
+        except ValueError:
+            d["signaux"] = []
+        d.pop("signaux_json", None)
+        out.append(d)
+    return out
+
+
 def charger_projets(sheet_id, fichier):
     """Projets suivis depuis l'onglet `projets_radar` (ecrit par
     collecteur_projets). BEST-EFFORT : onglet absent, quota, structure
@@ -179,19 +218,23 @@ def charger_projets(sheet_id, fichier):
 
 
 def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
-                    candidats=None, dossiers=None, projets=None):
+                    candidats=None, dossiers=None, projets=None,
+                    candidats_projets=None):
     """leads (schema dashboard) -> HTML autonome. Fonction PURE.
     dossiers : liste compacte (dossiers.serialiser) pour la vue Ecosysteme
                (projets BM suivis a travers leurs phases). Defaut [].
     projets  : projets suivis (Project Intelligence) pour la vue PROJETS /
                TOP 20. Defaut [] : sans projets, le cockpit s'affiche
-               exactement comme avant (additif)."""
+               exactement comme avant (additif).
+    candidats_projets : pistes issues de la DECOUVERTE, non encore promues.
+               Affichees a part, car elles demandent un arbitrage humain."""
     risque = risque if risque is not None else getattr(dash, "RISQUE_ZONE", {})
     suivi = suivi or {}
     payload = enrichir(leads)
     return (GABARIT
             .replace("__LEADS_JSON__", json.dumps(payload, ensure_ascii=False))
             .replace("__PROJETS_JSON__", json.dumps(projets or [], ensure_ascii=False))
+            .replace("__CANDPROJ_JSON__", json.dumps(candidats_projets or [], ensure_ascii=False))
             .replace("__COORDS_JSON__", json.dumps(COORDS, ensure_ascii=False))
             .replace("__RISQUE_JSON__", json.dumps(risque, ensure_ascii=False))
             .replace("__GEO_JSON__", json.dumps(geo or [], ensure_ascii=False))
@@ -234,7 +277,9 @@ def main():
         "api": False,
     }
     projets = charger_projets(sheet_id, fichier)
-    html = generer_cockpit(leads, geo=geo, suivi=suivi, projets=projets)
+    cand_proj = charger_candidats_projets(sheet_id, fichier)
+    html = generer_cockpit(leads, geo=geo, suivi=suivi, projets=projets,
+                           candidats_projets=cand_proj)
     dossier = os.path.dirname(sortie)
     if dossier:
         os.makedirs(dossier, exist_ok=True)
@@ -476,6 +521,20 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .jauge-bar{flex:1;height:6px;border-radius:3px;background:var(--line-2);overflow:hidden}
 .jauge-bar span{display:block;height:100%;border-radius:3px}
 .jauge b{font-family:var(--mono);font-size:12px;min-width:22px;text-align:right}
+.cp-wrap{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--amber);border-radius:12px;padding:16px 18px;margin-bottom:18px;box-shadow:var(--sh)}
+.cp-titre{font-family:var(--display);font-size:15px;font-weight:700;margin-bottom:12px}
+.cp-sub{display:block;font-family:var(--mono);font-size:11px;font-weight:500;color:var(--ink-3);margin-top:3px}
+.cp{border-top:1px solid var(--line-2);padding:11px 0}
+.cp.promu{background:var(--amber-soft);margin:0 -10px;padding:11px 10px;border-radius:8px}
+.cp-h{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.cp-n{font-weight:600;font-size:13.5px}
+.cp-badges{display:flex;gap:5px;flex-wrap:wrap}
+.cp-conf{margin-left:auto;font-family:var(--mono);font-weight:700;font-size:14px}
+.cp-m{font-size:11.5px;color:var(--ink-2);margin-top:4px;font-family:var(--mono)}
+.cp-arts{margin-top:7px;padding-left:10px;border-left:2px solid var(--line-2)}
+.cp-art{font-size:11.5px;color:var(--ink-2);padding:2px 0}
+.cp-d{font-family:var(--mono);color:var(--ink-3);margin-right:7px}
+.cp-todo{margin-top:7px;font-size:11.5px;color:var(--amber);font-weight:600}
 .ph-pill{display:inline-block;font-family:var(--mono);font-size:11px;font-weight:600;padding:3px 9px;border-radius:6px;background:var(--surface-2);border:1px solid var(--line);color:var(--ink-2);white-space:nowrap}
 .mb.recul{background:var(--red-soft);color:var(--red)}
 .mb.prosp{background:var(--green-soft);color:var(--green)}
@@ -607,6 +666,7 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
         <button class="chip-toggle" id="p-top" onclick="toggleTop()">★ Top 20 opportunités</button>
       </div>
       <div class="kpis" id="kpis-proj"></div>
+      <div id="cand-proj"></div>
       <div class="filters">
         <label class="search" style="max-width:220px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><input id="p-q" placeholder="Rechercher un projet..."></label>
         <div class="facet"><select id="p-pays"><option value="">Tous les pays</option></select></div>
@@ -636,7 +696,7 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 <div class="drawer-ov" id="drawer-ov" onclick="closeDrawer()"></div>
 <div class="drawer" id="drawer"><div id="drawer-content"></div></div>
 <script>
-const RAW=__LEADS_JSON__, COORDS=__COORDS_JSON__, RISQUE=__RISQUE_JSON__, GEO=__GEO_JSON__, WATCHLIST=__WATCHLIST_JSON__, CANDIDATS=__CANDIDATS_JSON__, DOSSIERS=__DOSSIERS_JSON__, PROJETS_RAW=__PROJETS_JSON__;
+const RAW=__LEADS_JSON__, COORDS=__COORDS_JSON__, RISQUE=__RISQUE_JSON__, GEO=__GEO_JSON__, WATCHLIST=__WATCHLIST_JSON__, CANDIDATS=__CANDIDATS_JSON__, DOSSIERS=__DOSSIERS_JSON__, PROJETS_RAW=__PROJETS_JSON__, CANDPROJ_RAW=__CANDPROJ_JSON__;
 function candidatsPour(l){
   if(!CANDIDATS||!CANDIDATS.secteur_zone)return [];
   const sect=(l.secteur||"Autre"), zone=(l.zone||"Non classe");
@@ -961,6 +1021,42 @@ function openFiche(cle){
   </div>`;
   document.getElementById("drawer").classList.add("on");document.getElementById("drawer-ov").classList.add("on");
 }
+// --- CANDIDATS DE DECOUVERTE : pistes non encore promues, a arbitrer ---
+// Un candidat n'est PAS un projet suivi. Il est affiche a part, avec ce qui
+// permet de trancher : combien de redactions distinctes le rapportent, quelle
+// phase, quels acteurs, et les articles d'origine.
+const CANDPROJ=(CANDPROJ_RAW||[]).map((c,i)=>({
+  i:i, nom:String(c.nom||"?"), id:String(c.project_id_propose||""),
+  statut:String(c.statut||"candidat"), iso3:String(c.iso3||""),
+  secteur:String(c.secteur||""), phase:String(c.phase||""),
+  conf:+c.confiance||0, nsig:+c.nb_signaux||0, nsrc:+c.nb_sources||0,
+  montant:+c.montant_musd||0, acteurs:String(c.acteurs||""),
+  motifs:String(c.motifs||""), premiere:String(c.premiere_detection||""),
+  signaux:Array.isArray(c.signaux)?c.signaux:[],
+}));
+function renderCandProj(){
+  const el=document.getElementById("cand-proj");
+  if(!el)return;
+  if(!CANDPROJ.length){el.innerHTML="";return;}
+  const promus=CANDPROJ.filter(c=>c.statut==="promu");
+  const rows=CANDPROJ.slice().sort((a,b)=>b.conf-a.conf).map(c=>{
+    const chaud=c.statut==="promu";
+    const arts=c.signaux.slice(0,4).map(s=>`<div class="cp-art"><span class="cp-d">${esc(s.date||"")}</span>${esc(s.titre||"").slice(0,84)}${s.lien?` <a href="${esc(s.lien)}" target="_blank" rel="noopener">↗</a>`:""}</div>`).join("");
+    return `<div class="cp ${chaud?"promu":""}">
+      <div class="cp-h"><span class="cp-n">${esc(c.nom)}</span>
+        <span class="cp-badges">${chaud?'<span class="mb attribp">✦ à promouvoir</span>':'<span class="mb surv">piste</span>'}
+        <span class="mb">${esc(c.iso3)||"?"}</span><span class="mb">${esc(c.secteur)}</span>
+        ${c.phase?`<span class="ph-pill">${esc(c.phase)}</span>`:""}</span>
+        <span class="cp-conf" style="color:${jaugeCouleur(c.conf)}">${c.conf}</span></div>
+      <div class="cp-m">${c.nsrc} source${c.nsrc>1?"s":""} distincte${c.nsrc>1?"s":""} · ${c.nsig} signal${c.nsig>1?"aux":""}${c.montant?" · "+fmtMusd(c.montant):""}${c.acteurs?" · "+esc(c.acteurs):""}</div>
+      <div class="cp-m" style="color:var(--ink-3)">${esc(c.motifs).slice(0,150)}</div>
+      ${arts?`<div class="cp-arts">${arts}</div>`:""}
+      ${chaud?`<div class="cp-todo">Identifiant proposé <span class="mono-inline">${esc(c.id)}</span> · à ajouter au registre après validation</div>`:""}
+    </div>`;
+  }).join("");
+  el.innerHTML=`<div class="cp-wrap"><div class="cp-titre">Pistes de découverte
+    <span class="cp-sub">${CANDPROJ.length} candidat${CANDPROJ.length>1?"s":""}${promus.length?` · ${promus.length} prêt${promus.length>1?"s":""} à promouvoir`:""} · non suivis tant qu'ils ne sont pas validés</span></div>${rows}</div>`;
+}
 // --- PROJETS (Project Intelligence) : grands projets suivis avant l'AO ---
 const PHASES_ORD=["IDEA","POLITICAL_ANNOUNCEMENT","PRE_FEASIBILITY","FEASIBILITY","GOVERNMENT_AGREEMENT","MOU","FUNDING_SEARCH","FUNDING_APPROVED","CONSULTANT_SELECTION","FEED","PRE_FID","FID","EPC_PROCUREMENT","EPC_AWARDED","CONSTRUCTION","COMMISSIONING","OPERATIONS"];
 const ALERTE_LBL={haute:"🔴 haute",moyenne:"🟠 moyenne",signal_precoce:"🟡 précoce",aucune:"—"};
@@ -1013,6 +1109,7 @@ function projetsFiltres(){
 }
 function renderProj(){
   try{
+    renderCandProj();
     const ps=projetsFiltres();
     const hautes=PROJETS.filter(p=>p.alerte==="haute").length;
     const chauds=PROJETS.filter(p=>p.opportunite>=70).length;
