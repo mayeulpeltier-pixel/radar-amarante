@@ -218,6 +218,75 @@ def _index():
     return _INDEX
 
 
+# Agregateurs : leur domaine ne dit RIEN de la source reelle. Un flux Google
+# News renvoie tous ses liens sur news.google.com, si bien que dix medias
+# distincts comptaient pour UNE SEULE source. Mesure du shadow run du
+# 24/08/2026 : le projet Tanga Refinery reunissait 10 articles de 10 redactions
+# differentes (TanzaniaInvest, CNBC Africa, The EastAfrican, African Energy,
+# TRT Afrika, dailynews, thecitizen, ippmedia...) et restait plafonne a
+# nb_sources=1, poids=0.40 -- donc INPROMOUVABLE quoi qu'il arrive.
+AGREGATEURS = {"news.google.com", "google.com", "news.yahoo.com", "flipboard.com",
+               "msn.com", "allafrica.com", "linkedin.com"}
+
+
+def editeur_du_titre(titre):
+    """Editeur reel d'un article Google News, extrait du suffixe du titre.
+    Google formate ses titres 'Titre de l'article - Editeur'. Fonction PURE.
+    Retourne '' si aucun suffixe plausible."""
+    t = str(titre or "").strip()
+    if " - " not in t:
+        return ""
+    editeur = t.rsplit(" - ", 1)[1].strip()
+    # Un suffixe trop long ou ponctue n'est pas un nom de media.
+    if not editeur or len(editeur) > 40 or editeur.endswith((".", "?", "!")):
+        return ""
+    return editeur
+
+
+def _norm_editeur(nom):
+    import unicodedata
+    t = unicodedata.normalize("NFD", str(nom or "").lower())
+    t = "".join(c for c in t if unicodedata.category(c) != "Mn")
+    return re.sub(r"[^a-z0-9]+", "", t)
+
+
+_INDEX_EDITEURS = None
+
+
+def _index_editeurs():
+    """Index nom d'editeur normalise -> source connue (libelle ou domaine)."""
+    global _INDEX_EDITEURS
+    if _INDEX_EDITEURS is None:
+        _INDEX_EDITEURS = {}
+        for s in SOURCES:
+            _INDEX_EDITEURS.setdefault(_norm_editeur(s["libelle"]), s)
+            racine = s["domaine"].split(".")[0]
+            _INDEX_EDITEURS.setdefault(_norm_editeur(racine), s)
+    return _INDEX_EDITEURS
+
+
+def source_de_l_editeur(titre):
+    """Source connue derriere le suffixe d'un titre agrege, ou None."""
+    nom = editeur_du_titre(titre)
+    if not nom:
+        return None
+    return _index_editeurs().get(_norm_editeur(nom))
+
+
+def cle_source(signal):
+    """Identite de la SOURCE d'un signal, pour le comptage des sources
+    distinctes. Derriere un agregateur, c'est l'EDITEUR qui compte, pas
+    l'agregateur. Fonction PURE."""
+    origine = str(signal.get("source") or "").strip()
+    if origine and origine.upper() in COLLECTEURS:
+        return origine.upper()
+    dom = domaine_du_lien(signal.get("lien", ""))
+    if dom and dom not in AGREGATEURS:
+        return dom
+    editeur = editeur_du_titre(signal.get("titre", ""))
+    return _norm_editeur(editeur) or dom
+
+
 def domaine_du_lien(lien):
     """Domaine d'une URL, sans 'www.'. Fonction PURE."""
     m = re.search(r"https?://([^/]+)", str(lien or ""))
@@ -251,8 +320,16 @@ def type_du_signal(signal):
     if info and info.get("type"):
         return info["type"]
     src = source_du_lien(signal.get("lien", ""))
-    if src:
+    if src and domaine_du_lien(signal.get("lien", "")) not in AGREGATEURS:
         return src["type"]
+    # Lien d'agregateur : c'est le suffixe du titre qui porte l'editeur reel.
+    par_editeur = source_de_l_editeur(signal.get("titre", ""))
+    if par_editeur:
+        return par_editeur["type"]
+    # Editeur inconnu mais IDENTIFIE : une redaction nommee vaut mieux qu'un
+    # lien anonyme, sans pour autant valoir une source qualifiee.
+    if editeur_du_titre(signal.get("titre", "")):
+        return "presse_generaliste"
     return TYPE_PAR_DEFAUT
 
 
