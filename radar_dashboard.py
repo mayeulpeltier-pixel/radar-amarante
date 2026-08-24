@@ -1540,9 +1540,31 @@ def main():
             except Exception as e:
                 print("(cockpit) dossiers indisponibles ({}).".format(str(e)[:80]))
                 doss = []
+            # Project Intelligence. CE chemin est celui qui tourne en
+            # production : `radar_cockpit.main()` n'est jamais appele par
+            # radar.yml. Sans ces deux lignes, la vue Projets restait vide meme
+            # apres l'execution des collecteurs (defaut constate le 24/08/2026).
+            # Best-effort : onglets absents -> listes vides, cockpit inchange.
+            try:
+                projets_suivis = radar_cockpit.charger_projets(
+                    os.environ.get("TED_SHEET_ID"),
+                    os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE"))
+            except Exception as e:
+                print("(cockpit) projets indisponibles ({}).".format(str(e)[:80]))
+                projets_suivis = []
+            try:
+                cand_projets = radar_cockpit.charger_candidats_projets(
+                    os.environ.get("TED_SHEET_ID"),
+                    os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE"))
+            except Exception as e:
+                print("(cockpit) candidats projets indisponibles ({}).".format(str(e)[:80]))
+                cand_projets = []
+            print("(cockpit) Project Intelligence : {} projet(s) suivi(s), "
+                  "{} candidat(s).".format(len(projets_suivis), len(cand_projets)))
             html_ck = radar_cockpit.generer_cockpit(
                 leads, geo=geo, suivi=suivi, watchlist=watch, candidats=idx_cand,
-                dossiers=doss)
+                dossiers=doss, projets=projets_suivis,
+                candidats_projets=cand_projets)
             d2 = os.path.dirname(cockpit_sortie)
             if d2:
                 os.makedirs(d2, exist_ok=True)
