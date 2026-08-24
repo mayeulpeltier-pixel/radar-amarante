@@ -263,10 +263,12 @@ class TestCorrectionFormeRequete(unittest.TestCase):
                           + " ".join(pref.pays_par_iso3(iso3)["noms_locaux"].values()).lower())
 
     def test_requete_courte(self):
-        # L'ancienne forme faisait ~780 caracteres ; les familles < 250.
+        # L'ancienne forme (0 % de pertinence) faisait ~780 caracteres. Les
+        # familles restent bien en deca ; la Guinee monte a ~260 a cause de ses
+        # six exclusions d'homonymes, ce qui reste sans commune mesure.
         for iso3 in ("TZA", "COD", "GIN"):
             for i in range(len(dp.urls_du_pays(pref.pays_par_iso3(iso3)))):
-                self.assertLess(len(self._requete(iso3, i)), 250, iso3)
+                self.assertLess(len(self._requete(iso3, i)), 300, iso3)
 
     def test_plusieurs_familles_par_langue(self):
         urls = dp.urls_du_pays(pref.pays_par_iso3("TZA"))
@@ -366,3 +368,59 @@ class TestEditeurDerriereAgregateur(unittest.TestCase):
         c = dp.regrouper(sig, registre=[])[0]
         self.assertEqual(c["nb_sources"], 1)
         self.assertFalse(dp.promouvable(c))
+
+
+class TestPlancherConfianceLLM(unittest.TestCase):
+    """SHADOW RUN DU 24/08/2026, faux positif PROMU. Le candidat "Gasabo" --
+    une raffinerie rwandaise sanctionnee pour contrebande d'or, donc pas un
+    projet -- est passe promouvable parce que Bloomberg, la BBC et The Africa
+    Report l'avaient couvert (poids 1.65), alors que le modele ne lui donnait
+    que 25 % de confiance. Le poids des sources rachetait le rejet du modele."""
+
+    def _cand(self, **kw):
+        base = {"nom": "Test", "iso3": "RWA", "secteur": "industrie",
+                "nb_signaux": 3, "nb_sources": 3, "poids_sources": 1.65,
+                "meilleure_fiabilite": 0.65, "confiance_llm": 70,
+                "phase": "OPERATIONS", "acteurs_top": [], "sources_officielles": []}
+        base.update(kw)
+        base["confiance"] = dp.score_confiance(base)
+        return base
+
+    def test_cas_gasabo_bloque(self):
+        self.assertFalse(dp.promouvable(self._cand(confiance_llm=25)))
+
+    def test_cas_tanga_passe(self):
+        self.assertTrue(dp.promouvable(self._cand(
+            confiance_llm=66, nb_signaux=9, nb_sources=9, poids_sources=4.8)))
+
+    def test_le_poids_ne_rachete_pas_un_doute_du_modele(self):
+        """Meme avec dix sources de reference, un doute du modele bloque."""
+        self.assertFalse(dp.promouvable(self._cand(
+            confiance_llm=20, nb_sources=10, poids_sources=6.5)))
+
+    def test_seuil_configurable(self):
+        self.assertGreater(dp.SEUIL_CONFIANCE_LLM, 0)
+
+
+class TestCorrectifsIssusDuShadowRun(unittest.TestCase):
+    """Trois autres defauts reveles par le run reel du 24/08/2026."""
+
+    def test_exclusion_papouasie_en_francais(self):
+        """L'article rate etait francophone : 'Un projet minier fait craindre
+        un desastre environnemental en Papouasie-Nouvelle-Guinee'."""
+        self.assertIn('-"Papouasie"', dp.EXCLUSIONS_PAYS["GIN"])
+        from urllib.parse import unquote
+        p = pref.pays_par_iso3("GIN")
+        q = unquote(dp.urls_du_pays(p)[0][1].split("q=")[1].split("&")[0])
+        self.assertIn("Papouasie", q)
+
+    def test_eacop_reconnait_son_doublon(self):
+        """Le run a cree "Uganda-Tanzania Oil Pipeline" comme NOUVEAU projet
+        alors qu'EACOP est deja au registre : alias manquant."""
+        self.assertEqual(dp.deja_connu("Uganda-Tanzania Oil Pipeline"), "EACOP_UGA")
+        self.assertEqual(dp.deja_connu("Uganda Tanzania Oil Pipeline"), "EACOP_UGA")
+
+    def test_prompt_rejette_sanctions_et_cooperation(self):
+        p = dp.construire_prompt([{"titre": "x"}])
+        self.assertIn("SANCTION", p)
+        self.assertIn("COOPÉRATION SANITAIRE", p)
