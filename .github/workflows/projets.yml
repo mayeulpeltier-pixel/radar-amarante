@@ -23,7 +23,7 @@ on:
       projets_par_run:
         description: "Nombre de projets interroges (defaut 6)"
         required: false
-        default: "6"
+        default: "3"
       max_lots:
         description: "Plafond de lots LLM par run (defaut 40)"
         required: false
@@ -58,6 +58,11 @@ jobs:
           RADAR_PROJETS_BACKFILL: ${{ github.event.inputs.backfill }}
           RADAR_PROJETS_PAR_RUN: ${{ github.event.inputs.projets_par_run }}
           RADAR_PROJETS_MAX_LOTS: ${{ github.event.inputs.max_lots }}
+          # Etat DEDIE : ne jamais toucher radar_etat.json, partage avec le
+          # radar principal (signaux_prives y stocke son propre curseur).
+          RADAR_ETAT_PROJETS: radar_etat_projets.json
+          # 400 tokens (defaut historique) tronquent un lot de 10.
+          RADAR_PROJETS_MAX_TOKENS: "2000"
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_FILE: compte_service.json
@@ -66,10 +71,10 @@ jobs:
       - name: Persister la memoire inter-runs
         if: always()
         run: |
-          if [ -n "$(git status --porcelain radar_etat.json)" ]; then
+          if [ -n "$(git status --porcelain radar_etat_projets.json)" ]; then
             git config user.name "radar-bot"
             git config user.email "radar-bot@users.noreply.github.com"
-            git add radar_etat.json
+            git add radar_etat_projets.json
             git commit -m "Project Intelligence : memoire inter-runs"
             git push
           fi
