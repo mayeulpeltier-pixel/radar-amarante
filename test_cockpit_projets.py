@@ -194,3 +194,33 @@ class TestRegistreEnrichiParLaDecouverte(unittest.TestCase):
         self.assertEqual(dp.deja_connu("Tanga Refinery"), "TANGAREFINERY_TZA")
         self.assertEqual(dp.deja_connu("Tanga Energy Hub"), "TANGAREFINERY_TZA")
         self.assertEqual(dp.deja_connu("Raffinerie d'alumine de Boffa"), "BOFFA_GIN")
+
+
+class TestCheminDeProduction(unittest.TestCase):
+    """DEFAUT DU 24/08/2026. La vue Projets restait VIDE en production parce
+    que `radar_dashboard.py` -- le seul chemin execute par radar.yml --
+    appelait generer_cockpit() SANS `projets` ni `candidats_projets`. Le
+    chargement n'existait que dans radar_cockpit.main(), jamais appele."""
+
+    @staticmethod
+    def _appel_production():
+        import inspect
+        import radar_dashboard as dash
+        src = inspect.getsource(dash)
+        debut = src.find("html_ck = radar_cockpit.generer_cockpit(")
+        return src[debut:debut + 400]
+
+    def test_les_projets_sont_passes(self):
+        self.assertIn("projets=projets_suivis", self._appel_production())
+
+    def test_les_candidats_sont_passes(self):
+        self.assertIn("candidats_projets=cand_projets", self._appel_production())
+
+    def test_le_chargement_est_best_effort(self):
+        import inspect
+        import radar_dashboard as dash
+        src = inspect.getsource(dash)
+        self.assertIn("charger_projets", src)
+        self.assertIn("charger_candidats_projets", src)
+        # Un onglet absent ne doit jamais casser la generation du cockpit.
+        self.assertIn("projets indisponibles", src)
