@@ -53,7 +53,12 @@ class TestInnocuite(unittest.TestCase):
         self.assertNotIn("entree_registre", appels)
 
     def test_registre_intact_apres_import(self):
-        self.assertEqual(len(ref.charger_registre()), 19)
+        # On teste l'INVARIANCE, pas un nombre fige : le registre grossit au
+        # fil des decouvertes validees a la main.
+        avant = len(ref.charger_registre())
+        import shadow_run_projets  # noqa: F401  (re-import volontaire)
+        self.assertEqual(len(ref.charger_registre()), avant)
+        self.assertGreaterEqual(avant, 19)
 
 
 class TestInstrumentation(unittest.TestCase):
@@ -91,9 +96,10 @@ class TestInstrumentation(unittest.TestCase):
         c = {"nom": "Projet Test", "iso3": "COD", "secteur": "mines",
              "montant_musd": 3000, "phase": "CONSTRUCTION", "nb_signaux": 3,
              "derniere_maj": "2026-08-01", "acteurs_top": ["ivanhoe mines"]}
+        avant = len(ref.charger_registre())
         score = sh.score_amarante(c)
         self.assertGreater(score, 0)
-        self.assertEqual(len(ref.charger_registre()), 19)   # registre intact
+        self.assertEqual(len(ref.charger_registre()), avant)   # registre intact
 
     def test_famille_de_source(self):
         self.assertIn("developpement",
