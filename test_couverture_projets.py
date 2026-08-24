@@ -294,3 +294,75 @@ class TestCorrectionFormeRequete(unittest.TestCase):
 
     def test_langue_inconnue_retombe_sur_anglais(self):
         self.assertEqual(dp.familles("zz"), dp.FAMILLES_DECLENCHEURS["en"])
+
+
+class TestEditeurDerriereAgregateur(unittest.TestCase):
+    """SHADOW RUN DU 24/08/2026 : tous les liens Google News pointent sur
+    news.google.com. Dix redactions distinctes comptaient donc pour UNE seule
+    source, le poids de preuve etait plafonne a 0.40 et AUCUN candidat ne
+    pouvait jamais etre promu. L'editeur reel est dans le suffixe du titre."""
+
+    L = "https://news.google.com/rss/articles/CBM"
+
+    def test_editeur_extrait_du_titre(self):
+        self.assertEqual(sref.editeur_du_titre(
+            "Tanzania, Uganda Sign MoU for Tanga Energy Hub - TanzaniaInvest"),
+            "TanzaniaInvest")
+
+    def test_titre_sans_suffixe(self):
+        self.assertEqual(sref.editeur_du_titre("Un titre sans editeur"), "")
+
+    def test_suffixe_trop_long_rejete(self):
+        long = "Titre - " + "x" * 50
+        self.assertEqual(sref.editeur_du_titre(long), "")
+
+    def test_cle_source_distingue_les_redactions(self):
+        a = {"titre": "X - TanzaniaInvest", "lien": self.L + "1"}
+        b = {"titre": "Y - CNBC Africa", "lien": self.L + "2"}
+        self.assertNotEqual(sref.cle_source(a), sref.cle_source(b))
+
+    def test_meme_redaction_meme_cle(self):
+        a = {"titre": "X - The EastAfrican", "lien": self.L + "1"}
+        b = {"titre": "Y - The EastAfrican", "lien": self.L + "2"}
+        self.assertEqual(sref.cle_source(a), sref.cle_source(b))
+
+    def test_editeur_connu_recoit_sa_fiabilite(self):
+        sig = {"titre": "X - Bloomberg", "lien": self.L + "1"}
+        self.assertEqual(sref.type_du_signal(sig), "presse_economique")
+
+    def test_editeur_inconnu_mais_nomme_vaut_mieux_qu_anonyme(self):
+        nomme = {"titre": "X - Journal du Coin Perdu", "lien": self.L + "1"}
+        anonyme = {"titre": "X", "lien": self.L + "2"}
+        self.assertGreater(sref.fiabilite_du_signal(nomme),
+                           sref.fiabilite_du_signal(anonyme))
+
+    def test_lien_direct_prime_sur_le_titre(self):
+        sig = {"titre": "X - Blog Inconnu", "lien": "https://www.worldbank.org/p"}
+        self.assertEqual(sref.type_du_signal(sig), "dfi")
+
+    def test_cas_reel_tanga_refinery_devient_promouvable(self):
+        titres = ["A - TanzaniaInvest", "B - CNBC Africa", "C - The EastAfrican",
+                  "D - African Energy", "E - TRT Afrika"]
+        sig = [{"titre": t, "lien": self.L + str(i), "date": "2026-08-07",
+                "resume": "", "extraction": {
+                    "projet": "Tanga Refinery", "iso3": "TZA", "secteur": "energie",
+                    "phase": "MOU", "acteurs": ["vitol"], "montant_musd": 20000,
+                    "confiance": 56, "localisation": "Tanga"}}
+               for i, t in enumerate(titres)]
+        c = dp.regrouper(sig, registre=[])[0]
+        self.assertEqual(c["nb_sources"], 5)
+        self.assertGreater(c["poids_sources"], 1.0)
+        self.assertTrue(dp.promouvable(c))
+
+    def test_une_seule_redaction_repetee_ne_suffit_pas(self):
+        """Controle inverse : la correction ne doit pas ouvrir les vannes."""
+        sig = [{"titre": "Titre {} - TanzaniaInvest".format(i),
+                "lien": self.L + str(i), "date": "2026-08-07", "resume": "",
+                "extraction": {"projet": "Projet Solo", "iso3": "TZA",
+                               "secteur": "energie", "phase": "MOU",
+                               "acteurs": [], "montant_musd": 0,
+                               "confiance": 60, "localisation": "Tanga"}}
+               for i in range(4)]
+        c = dp.regrouper(sig, registre=[])[0]
+        self.assertEqual(c["nb_sources"], 1)
+        self.assertFalse(dp.promouvable(c))
