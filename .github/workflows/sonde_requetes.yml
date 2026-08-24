@@ -1,0 +1,37 @@
+name: Sonde conception de requete (sans LLM)
+# Diagnostic decisif apres le shadow run : la RDC et la Guinee ont renvoye
+# EXACTEMENT les memes articles, et les candidats produits etaient au
+# Royaume-Uni, aux Etats-Unis et au Pakistan -- des pays non interroges.
+# Le terme de pays n'a donc aucun effet sur la requete.
+#
+# Cette sonde compare 8 formes de requete et mesure, SANS LLM (cout zero), la
+# part des titres qui parlent reellement du pays. Elle dira s'il faut
+# simplement decouper les declencheurs, ou renoncer a Google News.
+#
+# Lecture seule : aucune ecriture, aucun appel modele.
+on:
+  workflow_dispatch:
+    inputs:
+      pays:
+        description: "Pays ISO3 separes par des virgules (defaut TZA,COD,GIN)"
+        required: false
+        default: "TZA,COD,GIN"
+      max_articles:
+        description: "Articles max par requete (defaut 20)"
+        required: false
+        default: "20"
+jobs:
+  sonde:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-radar.txt
+      - name: Sonder les formes de requete
+        env:
+          SONDE_REQ_PAYS: ${{ github.event.inputs.pays }}
+          SONDE_REQ_MAX: ${{ github.event.inputs.max_articles }}
+        run: python sonde_requetes.py
