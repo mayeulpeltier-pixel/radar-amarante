@@ -1,0 +1,67 @@
+name: Shadow run Project Intelligence (lecture seule)
+# EXECUTION REELLE de la chaine de decouverte sur Tanzanie, RDC et Guinee,
+# entierement instrumentee, pour produire le rapport d'observation.
+#
+# LECTURE SEULE, GARANTI PAR TEST (analyse AST dans test_shadow_run.py) :
+#   - aucune ecriture Google Sheets ;
+#   - aucune ecriture Postgres ;
+#   - aucune ecriture de radar_etat.json (la memoire inter-runs n'est ni lue
+#     ni sauvee : le prochain run normal du radar n'est pas affecte) ;
+#   - aucune modification de projets_reference.py ;
+#   - AUCUNE promotion : les candidats promouvables sont affiches en DRY-RUN.
+# Seul effet de bord : consommation de tokens Anthropic, mesuree et affichee.
+#
+# DECLENCHEMENT MANUEL UNIQUEMENT. Aucun cron : ce run est un diagnostic.
+on:
+  workflow_dispatch:
+    inputs:
+      pays:
+        description: "Pays ISO3 separes par des virgules (defaut TZA,COD,GIN)"
+        required: false
+        default: "TZA,COD,GIN"
+      jours:
+        description: "Fenetre de fraicheur en jours (defaut 60)"
+        required: false
+        default: "60"
+      max_articles:
+        description: "Articles max par requete (defaut 20)"
+        required: false
+        default: "20"
+      max_lots:
+        description: "Plafond de lots LLM (defaut 20, borne le cout)"
+        required: false
+        default: "20"
+      max_tokens:
+        description: "Tokens de sortie par lot (defaut 2000 ; 400 tronque !)"
+        required: false
+        default: "2000"
+jobs:
+  shadow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer les dependances radar
+        run: pip install -r requirements-radar.txt
+      - name: Verifier l'innocuite AVANT de lancer
+        run: python -m unittest test_shadow_run -v
+      - name: Shadow run
+        env:
+          SHADOW_PAYS: ${{ github.event.inputs.pays }}
+          SHADOW_JOURS: ${{ github.event.inputs.jours }}
+          SHADOW_MAX_ART: ${{ github.event.inputs.max_articles }}
+          SHADOW_MAX_LOTS: ${{ github.event.inputs.max_lots }}
+          SHADOW_MAX_TOKENS: ${{ github.event.inputs.max_tokens }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python shadow_run_projets.py | tee shadow_run.log
+      - name: Conserver le journal
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadow-run-log
+          path: shadow_run.log
