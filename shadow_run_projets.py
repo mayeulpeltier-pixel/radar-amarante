@@ -38,7 +38,7 @@ import collections
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import bitd_signaux as bitd
 import decouverte_projets as dp
@@ -57,6 +57,11 @@ TAILLE_LOT = int(os.environ.get("SHADOW_LOT", "10"))
 MAX_LOTS = int(os.environ.get("SHADOW_MAX_LOTS", "20"))
 MAX_TOKENS = int(os.environ.get("SHADOW_MAX_TOKENS", "2000"))
 PAUSE = float(os.environ.get("SHADOW_PAUSE", "1.0"))
+# Mode diagnostic. Le premier run a produit 0 candidat sans qu'on puisse dire
+# si le modele avait REPONDU "aucun projet" ou si sa reponse n'avait pas ete
+# COMPRISE : le harnais ne journalisait pas les reponses brutes. C'est un
+# manque de l'instrumentation, corrige ici.
+DEBUG = os.environ.get("SHADOW_DEBUG", "0") == "1"
 
 # Tarif Haiku 4.5 verifie le 24/08/2026 : 1 $/MTok entree, 5 $/MTok sortie.
 PRIX_IN, PRIX_OUT = 1.0, 5.0
@@ -91,7 +96,19 @@ def appel_llm_mesure(prompt):
     if charge.get("stop_reason") == "max_tokens":
         USAGE["tronques"] += 1
         ERREURS.append(("llm", "reponse TRONQUEE (max_tokens) : lot perdu"))
-    return ted.texte_des_blocs(charge)
+    texte = ted.texte_des_blocs(charge)
+    if DEBUG:
+        print("\n    --- REPONSE BRUTE DU MODELE (appel {}) ---".format(USAGE["appels"]))
+        print("    stop_reason={} | blocs={} | {} caracteres".format(
+            charge.get("stop_reason"),
+            [b.get("type") for b in (charge.get("content") or [])], len(texte or "")))
+        print("    " + (texte or "(vide)")[:1200].replace("\n", "\n    "))
+        interp = dp.parser_reponse(texte, TAILLE_LOT)
+        nommes = sum(1 for e in interp if e["projet"])
+        pays = sum(1 for e in interp if e["iso3"])
+        print("    --- INTERPRETATION : {}/{} avec nom de projet, {} avec pays ---"
+              .format(nommes, TAILLE_LOT, pays))
+    return texte
 
 
 def cout_usd():
@@ -297,7 +314,7 @@ def score_amarante(c):
 # ORCHESTRATION
 # ===========================================================================
 def main():
-    debut = datetime.utcnow()
+    debut = datetime.now(timezone.utc)
     print("#" * 78)
     print("LIVE SHADOW RUN -- PROJECT INTELLIGENCE  ({} UTC)".format(
         debut.strftime("%Y-%m-%d %H:%M")))
@@ -326,6 +343,12 @@ def main():
         M["articles_rejetes"] += len(articles) - len(signaux)
         print("    -> {} article(s), {} retenu(s) apres pre-filtres".format(
             len(articles), len(signaux)))
+        if DEBUG:
+            print("    --- ARTICLES RETENUS ({}) : sont-ils seulement des "
+                  "annonces de projet ? ---".format(len(signaux)))
+            for s in signaux:
+                print("      [{}] {}".format(s.get("date") or "date ?",
+                                             (s.get("titre") or "")[:90]))
         par_pays[iso3] = {"requetes": len(detail), "articles": len(articles),
                           "signaux": len(signaux)}
         CHRONO[iso3] = time.time() - t0
