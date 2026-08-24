@@ -35,6 +35,10 @@ on:
         description: "Tokens de sortie par lot (defaut 2000 ; 400 tronque !)"
         required: false
         default: "2000"
+      debug:
+        description: "1 = journaliser les titres retenus ET les reponses brutes du modele"
+        required: false
+        default: "0"
 jobs:
   shadow:
     runs-on: ubuntu-latest
@@ -57,6 +61,7 @@ jobs:
           SHADOW_MAX_ART: ${{ github.event.inputs.max_articles }}
           SHADOW_MAX_LOTS: ${{ github.event.inputs.max_lots }}
           SHADOW_MAX_TOKENS: ${{ github.event.inputs.max_tokens }}
+          SHADOW_DEBUG: ${{ github.event.inputs.debug }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python shadow_run_projets.py | tee shadow_run.log
       - name: Conserver le journal
