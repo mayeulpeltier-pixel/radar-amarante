@@ -165,6 +165,107 @@ def declencheurs(langue):
     return DECLENCHEURS_LANGUE.get(langue, DECLENCHEURS_NAISSANCE)
 
 
+# ===========================================================================
+# FAMILLES DE DECLENCHEURS -- correction prouvee par sonde_requetes.py
+# ===========================================================================
+# MESURE DU 24/08/2026, sur Tanzanie, RDC et Guinee :
+#   forme actuelle (38 declencheurs en OR PUIS le pays) ... 0,0 % de titres
+#     parlant reellement du pays, sur les TROIS pays ;
+#   meme groupe mais pays EN TETE ......................... 75 a 85 % ;
+#   pays en tete + famille COURTE (4 termes) .............. 65 a 95 %.
+# La cause n'est donc pas la longueur mais la POSITION : place en fin de
+# requete, le terme de pays est ignore. On place desormais le pays EN TETE et
+# on interroge par FAMILLES courtes, ce qui donne en prime plusieurs angles
+# d'attaque par pays au lieu d'un seul.
+FAMILLES_DECLENCHEURS = {
+    "en": {
+        "accords": '("memorandum of understanding" OR "concession agreement" OR '
+                   '"investment agreement" OR "host government agreement" OR '
+                   '"development agreement")',
+        "financement": '("financing agreement" OR "funding approved" OR '
+                       '"financial close" OR "final investment decision" OR '
+                       '"approves loan")',
+        "etudes": '("feasibility study" OR "consultant selected" OR '
+                  '"preferred bidder" OR "master plan" OR "front-end engineering")',
+        "travaux": '("EPC contract" OR groundbreaking OR "construction begins" OR '
+                   '"deepwater port" OR "power plant" OR "mining project" OR '
+                   'pipeline OR refinery OR "rail corridor")',
+    },
+    "fr": {
+        # ACCENTS RETABLIS : la sonde a mesure 0 article pour la grille sans
+        # accents (trois runs consecutifs), contre 90 % de pertinence avec.
+        "accords": '("protocole d\'accord" OR "accord de principe" OR '
+                   '"convention de concession" OR "accord d\'investissement")',
+        "financement": '("accord de financement" OR "financement approuvé" OR '
+                       '"bouclage financier" OR "décision finale d\'investissement")',
+        "etudes": '("étude de faisabilité" OR "appel d\'offres" OR '
+                  '"consultant retenu" OR "plan directeur")',
+        "travaux": '("contrat EPC" OR "centrale électrique" OR "projet minier" OR '
+                   'gazoduc OR oléoduc OR raffinerie OR "port en eau profonde")',
+    },
+    "pt": {
+        "accords": '("memorando de entendimento" OR "acordo de concessão" OR '
+                   '"acordo de investimento")',
+        "financement": '("acordo de financiamento" OR "financiamento aprovado" OR '
+                       '"decisão final de investimento")',
+        "etudes": '("estudo de viabilidade" OR "plano diretor")',
+        "travaux": '("contrato EPC" OR "central eléctrica" OR "projeto mineiro" OR '
+                   'gasoduto OR refinaria OR ferrovia)',
+    },
+    "es": {
+        "accords": '("memorando de entendimiento" OR "contrato de concesión" OR '
+                   '"acuerdo de inversión")',
+        "financement": '("acuerdo de financiamiento" OR "cierre financiero" OR '
+                       '"decisión final de inversión")',
+        "etudes": '("estudio de factibilidad" OR "plan maestro")',
+        "travaux": '("contrato EPC" OR "central eléctrica" OR "proyecto minero" OR '
+                   'gasoducto OR refinería OR ferrocarril)',
+    },
+    "ar": {
+        "accords": '("مذكرة تفاهم" OR "اتفاقية امتياز" OR "اتفاقية استثمار")',
+        "financement": '("اتفاقية تمويل" OR "القرار النهائي للاستثمار")',
+        "etudes": '("دراسة الجدوى" OR "مناقصة")',
+        "travaux": '("محطة كهرباء" OR "خط أنابيب" OR "مشروع تعديني" OR مصفاة)',
+    },
+    "ru": {
+        "accords": '("меморандум о взаимопонимании" OR "концессионное соглашение")',
+        "financement": '("соглашение о финансировании" OR '
+                       '"окончательное инвестиционное решение")',
+        "etudes": '("технико-экономическое обоснование" OR "генеральный план")',
+        "travaux": '("EPC контракт" OR "электростанция" OR "трубопровод" OR '
+                   '"горнодобывающий проект")',
+    },
+    "uk": {
+        "accords": '("меморандум про взаєморозуміння" OR "концесійна угода")',
+        "financement": '("угода про фінансування" OR '
+                       '"остаточне інвестиційне рішення")',
+        "etudes": '("техніко-економічне обґрунтування" OR "генеральний план")',
+        "travaux": '("EPC контракт" OR "електростанція" OR "трубопровід")',
+    },
+    # Le swahili est volontairement REDUIT aux termes non ambigus. La sonde a
+    # montre que "bandari" (port) ramenait 10 matchs du Bandari FC, un club de
+    # football kenyan : un mot commun ne peut pas servir de declencheur.
+    "sw": {
+        "accords": '("makubaliano ya awali" OR "mkataba wa uwekezaji")',
+        "etudes": '("upembuzi yakinifu")',
+        "travaux": '("mradi wa nishati" OR "mradi wa madini" OR "mtambo wa umeme")',
+    },
+}
+
+# Termes d'exclusion par pays homonyme. La sonde a montre que "Guinea" ramene
+# massivement la Papouasie-Nouvelle-Guinee, et "Congo" la Republique du Congo.
+EXCLUSIONS_PAYS = {
+    "GIN": ['-"Papua New Guinea"', '-"Equatorial Guinea"', '-"Guinea-Bissau"'],
+    "COD": ['-"Republic of the Congo"', '-Brazzaville'],
+    "COG": ['-"Democratic Republic"', '-Kinshasa'],
+}
+
+
+def familles(langue):
+    """Familles de declencheurs pour une langue, repli anglais."""
+    return FAMILLES_DECLENCHEURS.get(langue) or FAMILLES_DECLENCHEURS["en"]
+
+
 # Pays balayes. Volontairement PLUS LARGE que PAYS_COUVERTS_AMARANTE : la
 # decouverte doit voir naitre un projet meme dans un pays aujourd'hui hors
 # perimetre de collecte (c'est exactement le cas Tanzanie / Tanzania LNG).
@@ -224,23 +325,37 @@ def fenetres_backfill(mois=None, aujourd=None, pas_mois=3):
     return out
 
 
-def urls_du_pays(pays, fenetre=None):
-    """URLs a interroger pour un pays du REFERENTIEL : une par langue
-    pertinente, avec la grille de declencheurs traduite et l'edition Google
-    News locale. Retour : [(langue, url)]. Fonction PURE.
+def urls_du_pays(pays, fenetre=None, familles_choisies=None):
+    """URLs a interroger pour un pays : une par (langue x famille de
+    declencheurs). Fonction PURE.
 
-    `fenetre` = (debut_iso, fin_iso) ajoute les operateurs after:/before: pour
-    le mode backfill (P9)."""
+    TROIS CORRECTIONS MESUREES (sonde_requetes.py du 24/08/2026) :
+      1. le PAYS EST PLACE EN TETE. En fin de requete il etait purement et
+         simplement ignore : 0,0 % de pertinence sur les trois pays testes ;
+      2. les declencheurs sont decoupes en FAMILLES courtes plutot qu'un
+         unique groupe de 38 termes en OR ;
+      3. les homonymes sont EXCLUS ("Papua New Guinea" polluait la Guinee).
+
+    `fenetre` = (debut_iso, fin_iso) ajoute after:/before: pour le backfill."""
     out = []
     borne = ""
     if fenetre:
         borne = " after:{} before:{}".format(fenetre[0], fenetre[1])
+    exclusions = " ".join(EXCLUSIONS_PAYS.get(pays.get("iso3", ""), []))
+    if exclusions:
+        exclusions = " " + exclusions
     for langue in (pays.get("langues") or ["en"]):
         hl, gl, ceid = pref.params_google_news(pays, langue)
         nom = pref.nom_pour_requete(pays, langue)
-        requete = '{} "{}"{}'.format(declencheurs(langue), nom, borne)
-        out.append((langue, bitd.url_google_news("", requete_perso=requete,
-                                                 hl=hl, gl=gl, ceid=ceid)))
+        fams = familles(langue)
+        noms_fams = familles_choisies or list(fams.keys())
+        for nom_famille in noms_fams:
+            motif = fams.get(nom_famille)
+            if not motif:
+                continue
+            requete = '"{}" {}{}{}'.format(nom, motif, exclusions, borne)
+            out.append((langue, bitd.url_google_news(
+                "", requete_perso=requete, hl=hl, gl=gl, ceid=ceid)))
     return out
 
 
