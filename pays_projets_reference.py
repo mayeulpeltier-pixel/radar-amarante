@@ -80,9 +80,9 @@ PAYS = [
     _p("TCD", "Chad", "suivi", ["fr", "en"], {"fr": "Tchad"}),
     _p("MRT", "Mauritania", "suivi", ["fr", "ar", "en"],
        {"fr": "Mauritanie", "ar": "موريتانيا"}),
-    _p("CIV", "Ivory Coast", "suivi", ["fr", "en"], {"fr": "Cote d'Ivoire"},
+    _p("CIV", "Ivory Coast", "suivi", ["fr", "en"], {"fr": "Côte d'Ivoire"},
        ("CI", "CI:fr")),
-    _p("SEN", "Senegal", "suivi", ["fr", "en"], {"fr": "Senegal"}, ("SN", "SN:fr")),
+    _p("SEN", "Senegal", "suivi", ["fr", "en"], {"fr": "Sénégal"}, ("SN", "SN:fr")),
     _p("COD", "Democratic Republic of Congo", "suivi", ["fr", "en"],
        {"fr": "RD Congo"}),
     _p("UKR", "Ukraine", "suivi", ["uk", "en", "ru"],
@@ -96,10 +96,10 @@ PAYS = [
     _p("TZA", "Tanzania", "strategique", ["en", "sw"],
        {"sw": "Tanzania"}, ("TZ", "TZ:en")),
     _p("MOZ", "Mozambique", "strategique", ["pt", "en"],
-       {"pt": "Mocambique"}, ("PT", "PT:pt-150")),      # LUSOPHONE (corrige)
+       {"pt": "Moçambique"}, ("PT", "PT:pt-150")),      # LUSOPHONE (corrige)
     _p("AGO", "Angola", "strategique", ["pt", "en"],
        {"pt": "Angola"}, ("PT", "PT:pt-150")),          # LUSOPHONE (corrige)
-    _p("GIN", "Guinea", "strategique", ["fr", "en"], {"fr": "Guinee"}),
+    _p("GIN", "Guinea", "strategique", ["fr", "en"], {"fr": "Guinée"}),
     _p("UGA", "Uganda", "strategique", ["en", "sw"], None, ("UG", "UG:en")),
     _p("KAZ", "Kazakhstan", "strategique", ["ru", "en"],
        {"ru": "Казахстан"}, ("KZ", "KZ:ru")),
