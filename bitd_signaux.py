@@ -260,8 +260,14 @@ Réponds UNIQUEMENT par un objet JSON strict :
 {{"confirme": true/false, "iso3": "ISO3 ou vide", "pays": "nom ou vide", "type_activite": "formation_mco|implantation|essais_demonstration|livraison_mise_en_service|recrutement_local|incident|contrat_export|delegation_mission|autre", "imminence": "immediate|court_terme|indetermine", "confiance": 0.0, "resume": "une phrase factuelle"}}"""
 
 
-def _appel_llm(prompt, modele=None, temperature=0.0):
+def _appel_llm(prompt, modele=None, temperature=0.0, max_tokens=400):
     """Appel modele du moteur de signaux prives.
+
+    `max_tokens` (defaut 400, valeur historique) est PARAMETRABLE depuis le
+    24/08/2026. Mesure du shadow run : un lot de 10 signaux a classer produit
+    ~870 tokens de sortie. A 400, la reponse etait TRONQUEE, le JSON devenait
+    illisible et le lot entier ressortait vide -- silencieusement, sans erreur.
+    Les couches Project Intelligence passent donc une valeur adaptee.
 
     ALIGNEMENT DU 23/07/2026 -- deux corrections
     --------------------------------------------
@@ -288,7 +294,7 @@ def _appel_llm(prompt, modele=None, temperature=0.0):
     session = ted.session_robuste()
     entetes = {"x-api-key": cle, "anthropic-version": "2023-06-01",
                "content-type": "application/json"}
-    corps = {"model": modele or ted.MODELE, "max_tokens": 400,
+    corps = {"model": modele or ted.MODELE, "max_tokens": max_tokens,
              "temperature": temperature,
              "messages": [{"role": "user", "content": prompt}]}
     ted.STATS_LLM["appels"] += 1
