@@ -72,7 +72,7 @@ class TestLangues(unittest.TestCase):
 
     def test_nom_du_pays_traduit_dans_la_requete(self):
         moz = pref.pays_par_iso3("MOZ")
-        self.assertEqual(pref.nom_pour_requete(moz, "pt"), "Mocambique")
+        self.assertEqual(pref.nom_pour_requete(moz, "pt"), "Moçambique")
         self.assertEqual(pref.nom_pour_requete(moz, "en"), "Mozambique")
 
     def test_declencheurs_traduits(self):
@@ -83,10 +83,14 @@ class TestLangues(unittest.TestCase):
     def test_langue_inconnue_retombe_sur_anglais(self):
         self.assertEqual(dp.declencheurs("zz"), dp.DECLENCHEURS_NAISSANCE)
 
-    def test_une_url_par_langue_pertinente(self):
+    def test_une_url_par_langue_et_par_famille(self):
+        """Depuis la correction du 24/08 : une requete par (langue x famille)
+        de declencheurs, et non plus une seule requete geante par langue."""
         moz = pref.pays_par_iso3("MOZ")
         urls = dp.urls_du_pays(moz)
-        self.assertEqual([l for l, _ in urls], ["pt", "en"])
+        langues = [l for l, _ in urls]
+        self.assertEqual(set(langues), {"pt", "en"})
+        self.assertGreater(len(urls), 2)
         self.assertTrue(all(u.startswith("https://news.google.com") for _, u in urls))
 
 
@@ -232,3 +236,61 @@ class TestPoidsDePreuveDansLesCandidats(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCorrectionFormeRequete(unittest.TestCase):
+    """Corrections validees par sonde_requetes.py le 24/08/2026.
+
+    Mesure : la forme de production (38 declencheurs en OR PUIS le pays)
+    obtenait 0,0 % de titres parlant du pays, sur TZA, COD et GIN. Placer le
+    pays EN TETE la faisait passer a 75-85 %, et une famille courte a 65-95 %.
+    Ces tests verrouillent les trois corrections."""
+
+    @staticmethod
+    def _requete(iso3, i=0):
+        from urllib.parse import unquote
+        p = pref.pays_par_iso3(iso3)
+        url = dp.urls_du_pays(p)[i][1]
+        return unquote(url.split("q=")[1].split("&")[0]).replace("+", " ")
+
+    def test_le_pays_est_en_tete(self):
+        for iso3 in ("TZA", "COD", "GIN"):
+            q = self._requete(iso3)
+            self.assertTrue(q.startswith('"'), iso3)
+            nom = q.split('"')[1]
+            self.assertIn(nom.lower()[:4],
+                          pref.pays_par_iso3(iso3)["nom"].lower()
+                          + " ".join(pref.pays_par_iso3(iso3)["noms_locaux"].values()).lower())
+
+    def test_requete_courte(self):
+        # L'ancienne forme faisait ~780 caracteres ; les familles < 250.
+        for iso3 in ("TZA", "COD", "GIN"):
+            for i in range(len(dp.urls_du_pays(pref.pays_par_iso3(iso3)))):
+                self.assertLess(len(self._requete(iso3, i)), 250, iso3)
+
+    def test_plusieurs_familles_par_langue(self):
+        urls = dp.urls_du_pays(pref.pays_par_iso3("TZA"))
+        self.assertGreaterEqual(len(urls), 4)
+
+    def test_accents_retablis_en_francais(self):
+        q = self._requete("GIN")
+        self.assertIn("Guinée", q)
+        fr = dp.familles("fr")
+        self.assertIn("étude de faisabilité", fr["etudes"])
+        self.assertIn("financement approuvé", fr["financement"])
+
+    def test_homonymes_exclus(self):
+        self.assertIn('-"Papua New Guinea"', self._requete("GIN"))
+        self.assertIn('-"Republic of the Congo"', self._requete("COD"))
+
+    def test_swahili_sans_mots_ambigus(self):
+        """'bandari' (port) ramenait 10 matchs du Bandari FC : retire."""
+        sw = " ".join(dp.familles("sw").values())
+        self.assertNotIn("bandari", sw.lower())
+
+    def test_toutes_les_langues_ont_des_familles(self):
+        for langue in ("en", "fr", "pt", "es", "ar", "ru", "uk", "sw"):
+            self.assertTrue(dp.familles(langue), langue)
+
+    def test_langue_inconnue_retombe_sur_anglais(self):
+        self.assertEqual(dp.familles("zz"), dp.FAMILLES_DECLENCHEURS["en"])
