@@ -235,6 +235,55 @@ REGISTRE = [
         "alias_faibles": ["tapi"],
         "acteurs": ["turkmengaz", "adb", "isdb"],
     },
+
+    # ==================================================================
+    # DECOUVERTS PAR LE SYSTEME (shadow run du 24/08/2026)
+    # ==================================================================
+    # Ajoutes A LA MAIN apres revue humaine, conformement a la doctrine : la
+    # promotion automatique ecrit dans l'onglet `projets_candidats`, jamais
+    # dans ce registre maitre.
+    {
+        "project_id": "TANGAREFINERY_TZA",
+        "libelle": "Tanga Refinery / Tanga Energy Hub",
+        "pays": "Tanzanie / Ouganda", "iso3": "TZA", "secteur": "energie",
+        "valeur_musd": 20000,
+        # PREMIERE DECOUVERTE REELLE DU SYSTEME. Detecte au stade MoU,
+        # corrobore par 8 redactions distinctes (TanzaniaInvest, CNBC Africa,
+        # The EastAfrican, African Energy, TRT Afrika, thecitizen, ippmedia,
+        # Business Insider), confiance 98/100.
+        "alias": ["tanga refinery", "tanga energy hub", "tanga oil refinery",
+                  "raffinerie de tanga", "tanga port energy"],
+        "alias_faibles": [],
+        "acteurs": ["vitol", "tpdc", "unoc", "uganda", "tanzania"],
+        "origine": "decouverte",
+        "premiere_detection": "2026-08-06",
+    },
+    {
+        "project_id": "TRANSGUINEEN_GIN",
+        "libelle": "Trans-guinéen (corridor ferroviaire)",
+        "pays": "Guinée", "iso3": "GIN", "secteur": "transport",
+        "valeur_musd": 0,          # chiffre public non consolide : a valider
+        # Decouvert au meme run, en phase APPEL D'OFFRES EPC. Distinct de
+        # SIMANDOU_GIN (la mine) : c'est l'infrastructure ferroviaire.
+        "alias": ["trans-guineen", "transguineen", "trans guineen",
+                  "chemin de fer trans-guineen", "trans-guinéen"],
+        "alias_faibles": [],
+        "acteurs": ["ageroute", "winning", "simfer", "rio tinto"],
+        "origine": "decouverte",
+        "premiere_detection": "2026-07-09",
+    },
+    {
+        "project_id": "BOFFA_GIN",
+        "libelle": "Raffinerie d'alumine de Boffa",
+        "pays": "Guinée", "iso3": "GIN", "secteur": "industrie",
+        "valeur_musd": 0,
+        "alias": ["raffinerie de boffa", "raffinerie d'alumine de boffa",
+                  "boffa alumina", "alumine boffa"],
+        "alias_faibles": [],
+        "acteurs": ["spic", "state power investment corporation"],
+        "origine": "decouverte",
+        "premiere_detection": "2026-08-19",
+    },
 ]
 
 
