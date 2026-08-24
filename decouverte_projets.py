@@ -666,7 +666,7 @@ def regrouper(signaux, registre=None, aujourd=None):
         if e.get("montant_musd"):
             c["montants"].append(float(e["montant_musd"]))
         c["confiances"].append(float(e.get("confiance") or 0))
-        c["sources"].add(_domaine(s.get("lien", "")))
+        c["sources"].add(sref.cle_source(s))
         c["signaux"].append({"titre": s.get("titre", ""), "date": s.get("date", ""),
                              "lien": s.get("lien", ""), "phase": e.get("phase", "")})
         if s.get("date"):
@@ -747,7 +747,9 @@ def _finaliser_candidat(c):
     meilleure = 0.0
     vus_sources = set()
     for s in c["signaux"]:
-        cle = sref.domaine_du_lien(s.get("lien", "")) or str(s.get("source") or "")
+        # Identite de la source : l'EDITEUR derriere l'agregateur, sinon le
+        # domaine. Sans cela, dix medias distincts comptaient pour un seul.
+        cle = sref.cle_source(s)
         if not cle or cle in vus_sources:
             continue
         vus_sources.add(cle)
