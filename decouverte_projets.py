@@ -73,6 +73,8 @@ MAX_LOTS = int(os.environ.get("RADAR_DECOUVERTE_PROJ_MAX_LOTS", "30"))
 MAX_ARTICLES = int(os.environ.get("RADAR_DECOUVERTE_PROJ_MAX_ART", "20"))
 JOURS_FRAICHEUR = int(os.environ.get("RADAR_DECOUVERTE_PROJ_JOURS", "60"))
 PAUSE = float(os.environ.get("RADAR_DECOUVERTE_PROJ_PAUSE", "1.0"))
+# Voir collecteur_projets : 400 tokens tronquent un lot de 10.
+MAX_TOKENS_LOT = int(os.environ.get("RADAR_PROJETS_MAX_TOKENS", "2000"))
 
 # Seuils de PROMOTION (un candidat devient un projet suivi).
 SEUIL_CONFIANCE = float(os.environ.get("RADAR_PROMO_CONFIANCE", "60"))
@@ -586,7 +588,8 @@ def extraire_par_lots(signaux, appel=None, max_lots=None):
     """Applique l'extraction LLM par lots. Retour : (signaux enrichis, nb lots).
     `appel(prompt) -> texte` injectable. S'arrete si le disjoncteur s'ouvre."""
     max_lots = MAX_LOTS if max_lots is None else max_lots
-    appel = appel or (lambda p: bitd._appel_llm(p, modele=ted.MODELE))
+    appel = appel or (lambda p: bitd._appel_llm(p, modele=ted.MODELE,
+                                            max_tokens=MAX_TOKENS_LOT))
     out, lots = [dict(s) for s in signaux], 0
     for debut in range(0, len(out), TAILLE_LOT):
         if lots >= max_lots:
@@ -1217,11 +1220,19 @@ def main():
         return
     import radar_etat
 
+    # ETAT SEPARE. `radar_etat` par defaut est PARTAGE avec
+    # signaux_prives, qui y stocke son propre curseur de rotation et sa
+    # liste de vus. Ecrire dedans depuis cette couche corromprait la
+    # memoire du radar principal : deux curseurs de semantiques
+    # differentes (pays ici, entreprises la-bas) dans le meme champ.
+    # On utilise donc un fichier dedie.
+    CHEMIN_ETAT = os.environ.get("RADAR_ETAT_PROJETS", "radar_etat_decouverte.json")
+
     print("=== PROJECT DISCOVERY -- decouverte de projets inconnus ===")
     stats = pref.statistiques()
     print("  referentiel : {} pays ({}), langues {}".format(
         stats["total"], stats["par_niveau"], sorted(stats["par_langue"])))
-    curseur, vus = radar_etat.charger()
+    curseur, vus = radar_etat.charger(chemin=CHEMIN_ETAT)
     curseur, vus = (curseur or 0), list(vus or [])
     # Cadence (P8) : faute d'un journal des passages par pays, on derive un
     # dernier passage approximatif du curseur de rotation. Un pays "suivi" est
@@ -1284,7 +1295,8 @@ def main():
     ecrire(candidats, [e["libelle"] for e in promus],
            os.environ.get("TED_SHEET_ID"),
            os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE"))
-    radar_etat.sauver(curseur + len(fenetre), vus, [s["id"] for s in signaux])
+    radar_etat.sauver(curseur + len(fenetre), vus, [s["id"] for s in signaux],
+                      chemin=CHEMIN_ETAT)
     if promus:
         print("\n  Les projets promus sont a AJOUTER a projets_reference.py "
               "(revue humaine) : le registre cure reste la source de verite.")
