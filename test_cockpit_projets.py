@@ -41,7 +41,7 @@ def _projets_via_sheet():
 
 
 def _projets_json(html):
-    return json.loads(re.search(r"PROJETS_RAW=(\[.*?\]);", html, re.S).group(1))
+    return json.loads(re.search(r"PROJETS_RAW=(\[.*?\])\s*[,;]", html, re.S).group(1))
 
 
 class TestInjection(unittest.TestCase):
@@ -123,3 +123,74 @@ class TestRobustesseDonnees(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCandidatsDeDecouverte(unittest.TestCase):
+    """Le maillon manquant : sans affichage, le systeme decouvrait dans le
+    vide. Les candidats sont montres A PART des projets suivis, parce qu'ils
+    demandent un arbitrage humain avant d'entrer au registre."""
+
+    @staticmethod
+    def _cand(**kw):
+        base = {"statut": "candidat", "nom": "Boffa",
+                "project_id_propose": "BOFFA_GIN", "iso3": "GIN",
+                "secteur": "industrie", "phase": "FEASIBILITY",
+                "confiance": 42.0, "nb_signaux": 1.0, "nb_sources": 1.0,
+                "montant_musd": 0.0, "acteurs": "spic", "motifs": "1 source",
+                "signaux": []}
+        base.update(kw)
+        return base
+
+    @staticmethod
+    def _json(html):
+        return json.loads(re.search(r"CANDPROJ_RAW=(\[.*?\]);", html, re.S).group(1))
+
+    def test_candidats_injectes(self):
+        h = rc.generer_cockpit(LEADS, candidats_projets=[self._cand()])
+        self.assertEqual(self._json(h)[0]["nom"], "Boffa")
+        self.assertNotIn("__CANDPROJ_JSON__", h)
+
+    def test_section_et_rendu_presents(self):
+        h = rc.generer_cockpit(LEADS, candidats_projets=[self._cand()])
+        for attendu in ('id="cand-proj"', "renderCandProj", "Pistes de découverte"):
+            self.assertIn(attendu, h, attendu)
+
+    def test_promu_distingue_du_candidat(self):
+        h = rc.generer_cockpit(LEADS, candidats_projets=[
+            self._cand(statut="promu", nom="Tanga Refinery", confiance=98.0)])
+        self.assertIn("à promouvoir", h)
+        self.assertEqual(self._json(h)[0]["statut"], "promu")
+
+    def test_retrocompatible_sans_candidats(self):
+        h = rc.generer_cockpit(LEADS)
+        self.assertEqual(self._json(h), [])
+
+    def test_donnees_inattendues_ne_cassent_pas(self):
+        h = rc.generer_cockpit(LEADS, candidats_projets=[{"nom": "X"}])
+        self.assertEqual(self._json(h)[0]["nom"], "X")
+
+    def test_chargement_best_effort(self):
+        self.assertEqual(rc.charger_candidats_projets(None, None), [])
+        self.assertEqual(rc.charger_candidats_projets("faux", "/inexistant.json"), [])
+
+
+class TestRegistreEnrichiParLaDecouverte(unittest.TestCase):
+    """Les trois projets trouves par le shadow run du 24/08/2026."""
+
+    def test_projets_decouverts_au_registre(self):
+        import projets_reference as ref
+        ids = {p["project_id"] for p in ref.charger_registre()}
+        for attendu in ("TANGAREFINERY_TZA", "TRANSGUINEEN_GIN", "BOFFA_GIN"):
+            self.assertIn(attendu, ids, attendu)
+
+    def test_origine_tracee(self):
+        import projets_reference as ref
+        tanga = ref.projet_par_id("TANGAREFINERY_TZA")
+        self.assertEqual(tanga["origine"], "decouverte")
+        self.assertEqual(tanga["valeur_musd"], 20000)
+
+    def test_desormais_reconnus_donc_plus_redecouverts(self):
+        import decouverte_projets as dp
+        self.assertEqual(dp.deja_connu("Tanga Refinery"), "TANGAREFINERY_TZA")
+        self.assertEqual(dp.deja_connu("Tanga Energy Hub"), "TANGAREFINERY_TZA")
+        self.assertEqual(dp.deja_connu("Raffinerie d'alumine de Boffa"), "BOFFA_GIN")
