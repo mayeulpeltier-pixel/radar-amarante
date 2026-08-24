@@ -202,11 +202,12 @@ class TestBackfill(unittest.TestCase):
             appels.append(url)
             return "<rss><channel></channel></rss>"
 
-        pays = [pref.pays_par_iso3("MOZ")]          # 2 langues
+        pays = [pref.pays_par_iso3("MOZ")]
+        base = len(dp.urls_du_pays(pays[0]))        # langues x familles
         dp.collecter_referentiel(pays, fetch=fetch,
                                  fenetres=[("2025-01-01", "2025-04-01"),
                                            ("2024-10-01", "2025-01-01")])
-        self.assertEqual(len(appels), 4)            # 2 langues x 2 fenetres
+        self.assertEqual(len(appels), base * 2)     # x 2 fenetres
 
 
 if __name__ == "__main__":
