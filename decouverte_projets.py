@@ -255,7 +255,10 @@ FAMILLES_DECLENCHEURS = {
 # Termes d'exclusion par pays homonyme. La sonde a montre que "Guinea" ramene
 # massivement la Papouasie-Nouvelle-Guinee, et "Congo" la Republique du Congo.
 EXCLUSIONS_PAYS = {
-    "GIN": ['-"Papua New Guinea"', '-"Equatorial Guinea"', '-"Guinea-Bissau"'],
+    # L'article rate etait FRANCOPHONE ("Papouasie-Nouvelle-Guinee") : les
+    # exclusions doivent couvrir les deux langues.
+    "GIN": ['-"Papua New Guinea"', '-"Papouasie"', '-"Equatorial Guinea"',
+            '-"Guinee equatoriale"', '-"Guinea-Bissau"', '-"Guinee-Bissau"'],
     "COD": ['-"Republic of the Congo"', '-Brazzaville'],
     "COG": ['-"Democratic Republic"', '-Kinshasa'],
 }
@@ -505,6 +508,8 @@ Pour CHAQUE actualité numérotée, identifie s'il s'agit d'un GRAND PROJET IDEN
 RÈGLES STRICTES :
 - N'INVENTE JAMAIS un nom de projet. Si l'article parle d'un secteur sans nommer de projet, renvoie "projet": "".
 - Une opinion, une analyse générale, un débat politique ou un article de bilan ne sont PAS un projet : "projet": "".
+- Une SANCTION, une enquête, une saisie, un procès, un scandale ou une mesure de police visant une installation existante n'est PAS un projet à venir : "projet": "". Exemple : "les États-Unis sanctionnent une raffinerie accusée de contrebande" doit renvoyer "".
+- Un accord de COOPÉRATION SANITAIRE, humanitaire, éducative, culturelle, militaire ou diplomatique n'est PAS un projet d'infrastructure, même chiffré en milliards : "projet": "".
 - Un projet purement financier (prêt, garantie) sans réalisation physique : "projet": "".
 - Mieux vaut renvoyer "" que de produire un projet douteux.
 
@@ -908,6 +913,15 @@ def motifs_confiance(candidat):
 # passe par l'autre voie (>= 0.85).
 SEUIL_POIDS = float(os.environ.get("RADAR_PROMO_POIDS", "1.00"))
 
+# Plancher de CONFIANCE LLM (0-100). Defaut mesure sur le shadow run du
+# 24/08/2026 : le candidat "Gasabo" -- une raffinerie rwandaise SANCTIONNEE
+# pour contrebande d'or, donc pas un projet -- a ete juge promouvable parce
+# que Bloomberg, la BBC et The Africa Report l'avaient couvert (poids 1.65),
+# alors que le modele ne lui accordait que 25 % de confiance. Le poids des
+# sources ne doit JAMAIS racheter un rejet du modele : une information tres
+# relayee peut n'etre pas un projet du tout.
+SEUIL_CONFIANCE_LLM = float(os.environ.get("RADAR_PROMO_CONF_LLM", "40"))
+
 
 def promouvable(candidat, seuil=None, min_signaux=None, min_sources=None,
                 seuil_poids=None):
@@ -939,6 +953,10 @@ def promouvable(candidat, seuil=None, min_signaux=None, min_sources=None,
         # vivant, recoit des signaux, et sera absorbe des qu'un nom apparait.
         return False
     if candidat.get("confiance", 0) < seuil:
+        return False
+    # Le modele est le seul a avoir LU l'article. S'il doute que ce soit un
+    # projet, aucune abondance de sources ne doit passer outre.
+    if float(candidat.get("confiance_llm", 0) or 0) < SEUIL_CONFIANCE_LLM:
         return False
     poids = float(candidat.get("poids_sources", 0) or 0)
     meilleure = float(candidat.get("meilleure_fiabilite", 0) or 0)
