@@ -62,6 +62,9 @@ JOURS_FRAICHEUR = int(os.environ.get("RADAR_PROJETS_JOURS", "45"))
 # repasse en fenetre courte. La sonde a montre 10 a 14 ans d'archive dispo.
 BACKFILL = os.environ.get("RADAR_PROJETS_BACKFILL", "0") == "1"
 PAUSE = float(os.environ.get("RADAR_PROJETS_PAUSE", "1.0"))
+# Un lot de 10 produit ~870 tokens de sortie (mesure du shadow run).
+# Le defaut historique de 400 tronquait la reponse et perdait le lot.
+MAX_TOKENS_LOT = int(os.environ.get("RADAR_PROJETS_MAX_TOKENS", "2000"))
 
 _LOCALES = {"fr": ("fr", "FR", "FR:fr"), "en": ("en", "US", "US:en")}
 
@@ -215,7 +218,8 @@ def classer_lots(signaux, appel=None, max_lots=None):
     `appel(prompt) -> texte` est injectable (tests offline).
     S'arrete net si le disjoncteur LLM s'ouvre. Retour : (signaux, nb_lots)."""
     max_lots = MAX_LOTS if max_lots is None else max_lots
-    appel = appel or (lambda p: bitd._appel_llm(p, modele=ted.MODELE))
+    appel = appel or (lambda p: bitd._appel_llm(p, modele=ted.MODELE,
+                                            max_tokens=MAX_TOKENS_LOT))
     out = [dict(s) for s in signaux]
     lots = 0
     for debut in range(0, len(out), TAILLE_LOT):
@@ -355,12 +359,20 @@ def main():
         return
     import radar_etat
 
+    # ETAT SEPARE. `radar_etat` par defaut est PARTAGE avec
+    # signaux_prives, qui y stocke son propre curseur de rotation et sa
+    # liste de vus. Ecrire dedans depuis cette couche corromprait la
+    # memoire du radar principal : deux curseurs de semantiques
+    # differentes (pays ici, entreprises la-bas) dans le meme champ.
+    # On utilise donc un fichier dedie.
+    CHEMIN_ETAT = os.environ.get("RADAR_ETAT_PROJETS", "radar_etat_projets.json")
+
     print("=== PROJECT INTELLIGENCE -- collecte par PROJET ===")
     if BACKFILL:
         print("  MODE BACKFILL : fenetre de fraicheur desactivee (reconstruction "
               "de l'historique). A repasser a 0 apres le premier passage.")
     registre = ref.charger_registre()
-    curseur, vus = radar_etat.charger()
+    curseur, vus = radar_etat.charger(chemin=CHEMIN_ETAT)
     curseur, vus = (curseur or 0), list(vus or [])
     fenetre = projets_du_run(registre, curseur)
     print("  {} projet(s) interroges ce run (sur {} au registre).".format(
@@ -388,7 +400,8 @@ def main():
 
     ecrire(calcules, os.environ.get("TED_SHEET_ID"),
            os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE"))
-    radar_etat.sauver(curseur + len(fenetre), vus, nouveaux_vus)
+    radar_etat.sauver(curseur + len(fenetre), vus, nouveaux_vus,
+                      chemin=CHEMIN_ETAT)
     ted.sortie_selon_sante_llm("projets")
 
 
