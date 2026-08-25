@@ -88,3 +88,61 @@ class TestGardeFousDActivation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPortéeEcritureSheet(unittest.TestCase):
+    """PREMIER RUN DE PRODUCTION, 24/08/2026 : l'ecriture Sheet a echoue en
+    "403 insufficient authentication scopes". Cause : les collecteurs
+    reutilisaient `signaux_prives._ouvrir_classeur`, qui ouvre le classeur en
+    spreadsheets.READONLY. Ecrire exige la portee `spreadsheets`."""
+
+    def test_les_deux_collecteurs_ouvrent_en_ecriture(self):
+        for module in (cp, dp):
+            src = inspect.getsource(module.ecrire)
+            self.assertIn('"https://www.googleapis.com/auth/spreadsheets"]', src,
+                          module.__name__)
+
+    def test_readonly_plus_utilise_pour_ecrire(self):
+        for module in (cp, dp):
+            src = inspect.getsource(module.ecrire)
+            self.assertNotIn("sp._ouvrir_classeur(", src, module.__name__)
+            self.assertNotIn("readonly", src.lower().replace("readonly :", ""),
+                             module.__name__)
+
+
+class TestRepliMiroirPostgres(unittest.TestCase):
+    """Le miroir Postgres etait correctement alimente alors que le Sheet
+    echouait. Sans lecture possible, des donnees disponibles restaient
+    invisibles."""
+
+    def test_lecture_du_miroir_existe(self):
+        import radar_stockage
+        self.assertTrue(callable(getattr(radar_stockage, "lire_miroir", None)))
+
+    def test_lecture_ne_leve_jamais(self):
+        import radar_stockage
+        self.assertEqual(radar_stockage.lire_miroir("onglet_inexistant"), [])
+
+    def test_cockpit_replie_sur_le_miroir(self):
+        import radar_cockpit as rc
+        for fonction in (rc.charger_projets, rc.charger_candidats_projets):
+            self.assertIn("_lire_miroir_pg", inspect.getsource(fonction))
+
+    def test_normaliseurs_partages_entre_sheet_et_miroir(self):
+        """Les deux sources doivent produire le meme format."""
+        import radar_cockpit as rc
+        p = rc._normaliser_projet({"project_id": "X", "maturite": "65",
+                                   "timeline_json": '[{"annee":"2026"}]'})
+        self.assertEqual(p["maturite"], 65.0)
+        self.assertEqual(p["timeline"][0]["annee"], "2026")
+        c = rc._normaliser_candidat({"nom": "Y", "confiance": "42",
+                                     "signaux_json": "[]"})
+        self.assertEqual(c["confiance"], 42.0)
+        self.assertEqual(c["signaux"], [])
+
+    def test_valeurs_aberrantes_ne_cassent_pas(self):
+        import radar_cockpit as rc
+        p = rc._normaliser_projet({"project_id": "X", "maturite": "n/a",
+                                   "timeline_json": "{casse"})
+        self.assertEqual(p["maturite"], 0)
+        self.assertEqual(p["timeline"], [])
