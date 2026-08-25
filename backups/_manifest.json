@@ -1,5 +1,5 @@
 {
-  "genere_le": "2026-08-24T22:26:39+00:00",
+  "genere_le": "2026-08-25T22:27:47+00:00",
   "onglets": [
     {
       "onglet": "Feuille 1",
@@ -25,7 +25,7 @@
     {
       "onglet": "ted_radar",
       "fichier": "ted_radar.csv",
-      "lignes": 109,
+      "lignes": 112,
       "colonnes": 32,
       "erreur": null
     },
@@ -39,7 +39,7 @@
     {
       "onglet": "prive_radar",
       "fichier": "prive_radar.csv",
-      "lignes": 22,
+      "lignes": 23,
       "colonnes": 22,
       "erreur": null
     },
@@ -81,7 +81,7 @@
     {
       "onglet": "attributions_radar",
       "fichier": "attributions_radar.csv",
-      "lignes": 1245,
+      "lignes": 1253,
       "colonnes": 18,
       "erreur": null
     },
@@ -109,28 +109,28 @@
     {
       "onglet": "reliefweb_radar",
       "fichier": "reliefweb_radar.csv",
-      "lignes": 1750,
+      "lignes": 1776,
       "colonnes": 34,
       "erreur": null
     },
     {
       "onglet": "ungm_radar",
       "fichier": "ungm_radar.csv",
-      "lignes": 1903,
+      "lignes": 1950,
       "colonnes": 32,
       "erreur": null
     },
     {
       "onglet": "attributions_analyse",
       "fichier": "attributions_analyse.csv",
-      "lignes": 1245,
+      "lignes": 1253,
       "colonnes": 17,
       "erreur": null
     },
     {
       "onglet": "alertes_radar",
       "fichier": "alertes_radar.csv",
-      "lignes": 182,
+      "lignes": 186,
       "colonnes": 11,
       "erreur": null
     },
@@ -158,8 +158,8 @@
     {
       "onglet": "bm_projets_radar",
       "fichier": "bm_projets_radar.csv",
-      "lignes": 549,
-      "colonnes": 17,
+      "lignes": 550,
+      "colonnes": 18,
       "erreur": null
     },
     {
@@ -174,6 +174,20 @@
       "fichier": "dfc_radar.csv",
       "lignes": 76,
       "colonnes": 32,
+      "erreur": null
+    },
+    {
+      "onglet": "projets_radar",
+      "fichier": "projets_radar.csv",
+      "lignes": 12,
+      "colonnes": 27,
+      "erreur": null
+    },
+    {
+      "onglet": "projets_candidats",
+      "fichier": "projets_candidats.csv",
+      "lignes": 140,
+      "colonnes": 17,
       "erreur": null
     }
   ]
