@@ -327,8 +327,17 @@ def ecrire(projets_calcules, sheet_id=None, fichier=None):
     lignes = [ligne_depuis_projet(p) for p in projets_calcules]
     if sheet_id and fichier:
         try:
-            import signaux_prives as sp
-            classeur = sp._ouvrir_classeur(sheet_id, fichier)
+            # ECRITURE : il faut la portee `spreadsheets` (lecture-ecriture).
+            # `sp._ouvrir_classeur` ouvre en spreadsheets.READONLY : l'employer
+            # ici renvoyait "403 insufficient authentication scopes" (constate
+            # au premier run de production du 24/08/2026).
+            import gspread
+            from google.oauth2.service_account import Credentials
+            creds = Credentials.from_service_account_file(
+                fichier, scopes=["https://www.googleapis.com/auth/spreadsheets"])
+            classeur = radar_resilience.avec_retry(
+                lambda: gspread.authorize(creds).open_by_key(sheet_id),
+                "ouverture classeur (ecriture)")
             try:
                 feuille = classeur.worksheet(NOM_ONGLET)
             except Exception:
