@@ -544,3 +544,33 @@ class TestMemoireNeSacrifiePasLesEcartes(unittest.TestCase):
         liens_retenus = {s["lien"] for s in retenus}
         for e in ecartes:
             self.assertNotIn(e["lien"], liens_retenus)
+
+
+class TestMotsEntiers(unittest.TestCase):
+    """RUN DU 24/08/2026. La recherche par SOUS-CHAINE faisait matcher "mine"
+    dans "determine", "dam" dans "fundamental", "port" dans "support". Un
+    programme de protection sociale heritait du "vocabulaire de grand
+    chantier" et gagnait 25 points de pertinence indus."""
+
+    def test_faux_positifs_de_sous_chaine_elimines(self):
+        for t in ("Determine the scope of the reform",
+                  "Fundamental restructuring", "Important support programme",
+                  "Rural export promotion", "Examine the framework"):
+            self.assertFalse(dp._contient_mot(dp._norm(t), dp.MOTS_GRAND_PROJET), t)
+
+    def test_vrais_positifs_conserves(self):
+        for t in ("New LNG terminal", "Copper mine development",
+                  "Hydropower dam project", "Transport corridors programme",
+                  "Deepwater port expansion"):
+            self.assertTrue(dp._contient_mot(dp._norm(t), dp.MOTS_GRAND_PROJET), t)
+
+    def test_pluriel_tolere(self):
+        self.assertTrue(dp._contient_mot(dp._norm("rail corridors"), ("corridor",)))
+
+    def test_le_filtre_de_pertinence_utilise_les_mots_entiers(self):
+        social = {"nom": "Resilient Social Protection Program", "iso3": "MLI",
+                  "secteur": "infrastructure", "montant_musd": 0,
+                  "signaux": [{"titre": "Determine the fundamental scope"}]}
+        pertinent, motif = dp.pertinent_pour_amarante(social)
+        self.assertFalse(pertinent)
+        self.assertNotIn("grand chantier", motif)
