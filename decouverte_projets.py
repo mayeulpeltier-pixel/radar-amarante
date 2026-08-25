@@ -634,7 +634,7 @@ def prioriser(signaux, plafond=None):
     for s in signaux or []:
         texte = _norm("{} {}".format(s.get("titre", ""), s.get("resume", "")))
         note = 0
-        note += 3 * sum(1 for m in MOTS_GRAND_PROJET if m in texte)
+        note += 3 * sum(1 for m in MOTS_GRAND_PROJET if _contient_mot(texte, (m,)))
         if re.search(r"\d[\d ,.]*\s*(md|bn|billion|milliard)", texte):
             note += 6
         elif re.search(r"\d[\d ,.]*\s*(m|million)\b", texte):
@@ -1000,6 +1000,20 @@ MOTS_ADMINISTRATIFS = (
 )
 
 
+def _contient_mot(texte, mots):
+    """Cherche des MOTS ENTIERS, pas des sous-chaines. Fonction PURE.
+
+    Mesure du 24/08/2026 : la recherche par sous-chaine faisait matcher "mine"
+    dans "determine", "dam" dans "fundamental" et "corridor" dans le pluriel.
+    Un programme de protection sociale heritait ainsi du "vocabulaire de grand
+    chantier" et gagnait 25 points de pertinence."""
+    for m in mots:
+        if re.search(r"(?<![a-z0-9])" + re.escape(_norm(m)) + r"s?(?![a-z0-9])",
+                     texte):
+            return True
+    return False
+
+
 def pertinent_pour_amarante(candidat, seuil=None):
     """Ce projet peut-il generer un besoin de surete pour Amarante ?
 
@@ -1013,8 +1027,8 @@ def pertinent_pour_amarante(candidat, seuil=None):
     texte = _norm("{} {}".format(candidat.get("nom", ""),
                                  " ".join(s.get("titre", "")
                                           for s in candidat.get("signaux", [])[:5])))
-    grand = any(m in texte for m in MOTS_GRAND_PROJET)
-    administratif = any(m in texte for m in MOTS_ADMINISTRATIFS)
+    grand = _contient_mot(texte, MOTS_GRAND_PROJET)
+    administratif = _contient_mot(texte, MOTS_ADMINISTRATIFS)
     montant = float(candidat.get("montant_musd") or 0)
     try:
         risque = pj._risque_pays(candidat.get("iso3"))
