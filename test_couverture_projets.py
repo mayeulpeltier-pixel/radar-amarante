@@ -202,13 +202,15 @@ class TestPoidsDePreuveDansLesCandidats(unittest.TestCase):
                                "phase": phase, "acteurs": [], "montant_musd": 0,
                                "confiance": 80}}
 
-    def test_source_officielle_unique_cree_un_candidat_promouvable(self):
+    def test_source_officielle_seule_ne_promeut_plus(self):
+        """Resserrement du 24/08/2026 : une source officielle isolee cree bien
+        un candidat, mais ne le promeut plus sans corroboration de presse."""
         c = dp.regrouper([self._signal("https://www.worldbank.org/p1")],
                          registre=[])
         self.assertEqual(len(c), 1)
         self.assertTrue(c[0]["sources_officielles"])
-        self.assertTrue(dp.promouvable(c[0]),
-                        (c[0]["confiance"], c[0]["poids_sources"]))
+        self.assertEqual(c[0]["nb_sources_presse"], 0)
+        self.assertFalse(dp.promouvable(c[0]))
 
     def test_deux_sources_faibles_ne_suffisent_pas(self):
         c = dp.regrouper([self._signal("https://blog-a.example/1"),
@@ -381,7 +383,9 @@ class TestPlancherConfianceLLM(unittest.TestCase):
         base = {"nom": "Test", "iso3": "RWA", "secteur": "industrie",
                 "nb_signaux": 3, "nb_sources": 3, "poids_sources": 1.65,
                 "meilleure_fiabilite": 0.65, "confiance_llm": 70,
-                "phase": "OPERATIONS", "acteurs_top": [], "sources_officielles": []}
+                "phase": "OPERATIONS", "acteurs_top": [], "sources_officielles": [],
+                "nb_sources_presse": 3, "montant_musd": 2000,
+                "signaux": [{"titre": "LNG refinery megaproject"}]}
         base.update(kw)
         base["confiance"] = dp.score_confiance(base)
         return base
@@ -424,3 +428,91 @@ class TestCorrectifsIssusDuShadowRun(unittest.TestCase):
         p = dp.construire_prompt([{"titre": "x"}])
         self.assertIn("SANCTION", p)
         self.assertIn("COOPÉRATION SANITAIRE", p)
+
+
+class TestCorrectifsDuRunDeProduction(unittest.TestCase):
+    """RUN DU 24/08/2026 : 38 promotions en un seul run, dont l'essentiel etait
+    le portefeuille de la Banque Mondiale (assainissement a Kinshasa, mobilite
+    urbaine a Karachi, resilience aux inondations). Trois correctifs."""
+
+    def _cand(self, **kw):
+        base = {"nom": "Projet Test", "iso3": "MLI", "secteur": "energie",
+                "nb_signaux": 2, "nb_sources": 2, "poids_sources": 1.6,
+                "meilleure_fiabilite": 0.95, "confiance_llm": 70,
+                "phase": "FUNDING_APPROVED", "acteurs_top": [],
+                "sources_officielles": ["BM"], "nb_sources_presse": 1,
+                "montant_musd": 2000,
+                "signaux": [{"titre": "LNG refinery project"}]}
+        base.update(kw)
+        base["confiance"] = dp.score_confiance(base)
+        return base
+
+    # --- 1. Corroboration de presse exigee -------------------------------
+    def test_dfi_seul_ne_promeut_plus(self):
+        self.assertFalse(dp.promouvable(self._cand(
+            nb_sources_presse=0, nb_signaux=1, nb_sources=1, poids_sources=0.95)))
+
+    def test_dfi_corrobore_par_la_presse_promeut(self):
+        self.assertTrue(dp.promouvable(self._cand()))
+
+    def test_le_comptage_des_sources_presse_exclut_les_officielles(self):
+        L = "https://news.google.com/rss/articles/CBM"
+        ext = {"projet": "Projet Alpha", "iso3": "TZA", "secteur": "energie",
+               "phase": "FEASIBILITY", "acteurs": [], "montant_musd": 0,
+               "confiance": 80, "localisation": ""}
+        sig = [{"titre": "A - Reuters", "lien": L + "1", "date": "2026-08-01",
+                "resume": "", "extraction": ext},
+               {"titre": "B", "lien": "https://www.worldbank.org/x",
+                "date": "2026-08-02", "resume": "", "extraction": ext}]
+        c = dp.regrouper(sig, registre=[])[0]
+        self.assertEqual(c["nb_sources"], 2)
+        self.assertEqual(c["nb_sources_presse"], 1)   # la BM ne compte pas
+
+    # --- 2. Filtre de pertinence Amarante --------------------------------
+    def test_assainissement_urbain_ecarte(self):
+        eau = self._cand(nom="DRC Urban Flood Resilience Project",
+                         secteur="infrastructure", montant_musd=0,
+                         signaux=[{"titre": "urban flood water supply sanitation"}])
+        self.assertFalse(dp.promouvable(eau))
+        self.assertFalse(dp.pertinent_pour_amarante(eau)[0])
+
+    def test_lng_en_pays_a_risque_retenu(self):
+        tanga = self._cand(nom="Tanga Refinery", iso3="TZA", nb_sources_presse=8,
+                           nb_sources=8, poids_sources=4.3, confiance_llm=72,
+                           montant_musd=20000,
+                           signaux=[{"titre": "Tanga refinery energy hub MoU"}])
+        self.assertTrue(dp.promouvable(tanga))
+
+    def test_motif_de_pertinence_explicable(self):
+        _, motif = dp.pertinent_pour_amarante(self._cand())
+        self.assertIn("secteur", motif)
+        self.assertIn("risque pays", motif)
+
+    def test_secteurs_hierarchises(self):
+        d = dp.SECTEURS_DEPLOIEMENT
+        self.assertGreater(d["energie"], d["transport"])
+        self.assertGreater(d["transport"], d["infrastructure"])
+
+    # --- 3. Priorisation avant le plafond --------------------------------
+    def test_les_grands_projets_passent_devant(self):
+        signaux = ([{"titre": "Institutional capacity building program",
+                     "resume": "", "lien": "http://x/{}".format(i)}
+                    for i in range(20)]
+                   + [{"titre": "New LNG terminal, $12 billion refinery",
+                       "resume": "", "lien": "http://y/1"}])
+        retenus, ecartes = dp.prioriser(signaux, plafond=5)
+        self.assertIn("LNG", retenus[0]["titre"])
+        self.assertEqual(len(ecartes), 16)
+
+    def test_priorisation_ne_perd_aucun_signal(self):
+        signaux = [{"titre": "T{}".format(i), "resume": "",
+                    "lien": "http://x/{}".format(i)} for i in range(50)]
+        retenus, ecartes = dp.prioriser(signaux, plafond=10)
+        self.assertEqual(len(retenus) + len(ecartes), 50)
+
+    def test_source_officielle_favorisee_a_note_egale(self):
+        officiel = {"titre": "Projet X", "resume": "",
+                    "lien": "https://www.worldbank.org/1"}
+        blog = {"titre": "Projet Y", "resume": "", "lien": "https://blog.example/1"}
+        retenus, _ = dp.prioriser([blog, officiel], plafond=1)
+        self.assertEqual(retenus[0]["lien"], officiel["lien"])
