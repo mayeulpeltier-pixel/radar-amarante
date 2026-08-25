@@ -311,6 +311,13 @@ def generer_page(conn):
                                  alertes=lignes_alertes)
     try:
         import radar_cockpit
+        # Rehausse geopolitique : cablee jusqu'ici UNIQUEMENT dans
+        # dash.generer_html, donc absente de l'application alors que l'onglet
+        # Geopolitique affichait l'alerte. Appel APRES la branche legacy :
+        # appliquer_boost_geo n'est pas idempotente, generer_html l'appelle
+        # deja pour son compte, un double appel doublerait le boost.
+        leads = radar_cockpit.appliquer_geo(leads, lignes_alertes)
+        sante = radar_cockpit.etat_sante(leads)
         suivi = {"url": os.environ.get("SUIVI_WEBAPP_URL", "") or "",
                  "token": os.environ.get("SUIVI_TOKEN", "") or "",
                  "api": True}
@@ -351,7 +358,8 @@ def generer_page(conn):
                                              watchlist=watch, candidats=idx_cand,
                                              dossiers=doss,
                                              projets=projets_suivis,
-                                             candidats_projets=cand_projets)
+                                             candidats_projets=cand_projets,
+                                             sante=sante)
     except Exception as e:
         print("(app) cockpit indisponible ({}), repli dashboard.".format(str(e)[:100]))
         return dash.generer_html(leads, lignes_watchlist, api_statut=True,
