@@ -321,3 +321,66 @@ class TestRegistre(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPhaseDeReference(unittest.TestCase):
+    """DOCTRINE DU 24/08/2026, constatee sur un run reel. EACOP, en
+    construction depuis 2023 et acheve a 88 %, etait affiche "Protocole
+    d'accord", maturite 48 au lieu de 95, alerte "signal precoce", prochaine
+    etape "Recherche de financement" et fenetre 2029-2031 -- parce qu'un
+    article recent mentionnait un MoU avec un partenaire logistique.
+
+    La phase COURANTE reste chronologique (elle revele l'enlisement), mais
+    tout ce qui mesure le CHEMIN PARCOURU se fonde sur la phase la plus
+    avancee atteinte."""
+
+    SIGNAUX = [
+        {"titre": "Inga 3 construction begins", "date": "2023-04-01",
+         "lien": "http://a", "phase": "CONSTRUCTION"},
+        {"titre": "Inga 3 pipeline 88% complete", "date": "2026-08-12",
+         "lien": "http://b", "phase": "CONSTRUCTION"},
+        {"titre": "Inga 3 signs MoU with logistics partner", "date": "2026-08-20",
+         "lien": "http://c", "phase": "MOU"},
+    ]
+
+    def setUp(self):
+        self.p = pj.construire_projets(self.SIGNAUX, aujourd=AUJ)[0]
+
+    def test_phase_courante_reste_chronologique(self):
+        """Le recul doit rester VISIBLE : c'est le signal d'un probleme."""
+        self.assertEqual(self.p["phase_courante"], "MOU")
+        self.assertEqual(self.p["phase_max_atteinte"], "CONSTRUCTION")
+        self.assertTrue(self.p["recul"])
+
+    def test_maturite_sur_la_phase_la_plus_avancee(self):
+        self.assertEqual(self.p["maturite"], pj.PHASES["CONSTRUCTION"]["maturite"])
+
+    def test_alerte_haute_pour_un_chantier(self):
+        self.assertEqual(self.p["alerte"], "haute")
+
+    def test_prochaine_etape_coherente(self):
+        self.assertEqual(self.p["prochaine_etape"], "Mise en service")
+
+    def test_fenetre_immediate_et_non_lointaine(self):
+        self.assertLessEqual(self.p["fenetre"]["debut"], AUJ.year + 1)
+
+    def test_services_de_phase_chaude(self):
+        self.assertIn("support 24/7", self.p["services"])
+
+    def test_opportunite_reflete_la_mobilisation(self):
+        texte = " ".join(self.p["opportunite"]["motifs"])
+        self.assertIn("mobilisation imminente", texte)
+
+    def test_repli_si_pas_de_phase_max(self):
+        """Les appelants qui construisent un projet a la main (shadow run)
+        n'ont pas toujours phase_max_atteinte."""
+        self.assertEqual(pj.phase_de_reference({"phase_courante": "FID"}), "FID")
+        self.assertEqual(pj.phase_de_reference({}), "")
+
+    def test_un_projet_dormant_reste_penalise(self):
+        """Le correctif ne doit pas ressusciter un projet muet depuis des ans."""
+        vieux = [{"titre": "Tanzania LNG construction begins", "date": "2021-01-05",
+                  "lien": "http://x", "phase": "CONSTRUCTION"}]
+        q = pj.construire_projets(vieux, aujourd=AUJ)[0]
+        self.assertEqual(q["alerte"], "aucune")
+        self.assertLess(q["maturite"], pj.PHASES["CONSTRUCTION"]["maturite"])
