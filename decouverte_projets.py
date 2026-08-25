@@ -1444,6 +1444,13 @@ def main():
     ecrire(candidats, [e["libelle"] for e in promus],
            os.environ.get("TED_SHEET_ID"),
            os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE"))
+    # MEMOIRE : on ne marque "vus" QUE les signaux reellement soumis au LLM.
+    # Le run du 24/08/2026 marquait les 1264 signaux prepares alors qu'il n'en
+    # avait analyse que 300 : les 964 ecartes par le plafond etaient perdus
+    # DEFINITIVEMENT, et le run suivant ne trouvait plus rien du tout. Comme
+    # `prioriser` a reassigne `signaux` aux seuls retenus, les ecartes restent
+    # inconnus de la memoire et reviendront au prochain run.
+    print("  memoire : {} signal(aux) analyse(s) memorise(s)".format(len(signaux)))
     radar_etat.sauver(curseur + len(fenetre), vus, [s["id"] for s in signaux],
                       chemin=CHEMIN_ETAT)
     if promus:
