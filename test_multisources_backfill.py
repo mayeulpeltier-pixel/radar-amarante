@@ -126,9 +126,11 @@ class TestPipelineUnifie(unittest.TestCase):
         self.assertEqual(len(cands), 1)
         self.assertTrue(cands[0]["sources_officielles"])
 
-    def test_source_officielle_unique_suffit_a_promouvoir(self):
-        """Le gain concret de P1 + P5 : un seul avis Banque Mondiale cree un
-        candidat solide, la ou il fallait trois articles de presse."""
+    def test_source_officielle_unique_cree_un_candidat_solide(self):
+        """Le gain de P1 + P5 : un avis DFI produit un candidat CREDIBLE (poids
+        de preuve eleve). Il ne le PROMEUT plus seul depuis le 24/08/2026 --
+        sinon le radar recopie le portefeuille de la Banque Mondiale -- mais il
+        pese lourd des qu'une source de presse le corrobore."""
         l = lead("Feasibility study for the Souapiti hydropower plant", src="BM")
         signaux = adfi.signaux_depuis_leads([l])
         signaux[0]["extraction"] = {
@@ -136,8 +138,11 @@ class TestPipelineUnifie(unittest.TestCase):
             "phase": "FEASIBILITY", "acteurs": ["cwe"], "montant_musd": 1400,
             "confiance": 85}
         cands = dp.regrouper(signaux, registre=[])
-        self.assertTrue(dp.promouvable(cands[0]),
-                        (cands[0]["confiance"], cands[0]["poids_sources"]))
+        self.assertTrue(cands[0]["sources_officielles"])
+        self.assertGreaterEqual(cands[0]["poids_sources"], 0.85)
+        self.assertGreaterEqual(cands[0]["confiance"], 60)
+        self.assertEqual(cands[0]["nb_sources_presse"], 0)
+        self.assertFalse(dp.promouvable(cands[0]))
 
     def test_dfi_et_presse_fusionnent_dans_un_meme_candidat(self):
         dfi = adfi.signaux_depuis_leads([lead("Kamoa smelter EPC contract",
