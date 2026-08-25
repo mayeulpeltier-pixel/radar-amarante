@@ -38,6 +38,7 @@ FLAG : RADAR_PROJETS=0 desactive entierement (defaut OFF le temps de la
 validation en production). Additif : ne touche aucun collecteur existant.
 """
 
+import collections
 import json
 import os
 import time
@@ -321,6 +322,48 @@ def ligne_depuis_projet(p):
     return [str(v.get(c, "")) for c in COLONNES]
 
 
+def fusionner_lignes(existantes, nouvelles):
+    """Fusionne les lignes deja presentes avec celles du run. Fonction PURE.
+
+    POURQUOI. Un projet est un ETAT COURANT, et l'ecriture etait donc un
+    remplacement complet (clear + update). Mais le collecteur ne traite que
+    RADAR_PROJETS_PAR_RUN projets par run (rotation) : chaque run effacait donc
+    les projets des runs precedents. Mesure du 24/08/2026 : le run 1 avait
+    ecrit INGA3, TANZLNG et MOZLNG ; le run 2 les a remplaces par CORALSUL,
+    SIMANDOU et LOBITO. Le cockpit n'aurait jamais affiche plus de 3 projets
+    sur 22 au registre.
+
+    On remplace donc par project_id (le run recalcule fait foi pour SES
+    projets) et on conserve les autres."""
+    par_id = collections.OrderedDict()
+    idx = COLONNES.index("project_id")
+    for ligne in existantes or []:
+        if len(ligne) > idx and str(ligne[idx]).strip():
+            par_id[str(ligne[idx]).strip()] = list(ligne)
+    for ligne in nouvelles or []:
+        if len(ligne) > idx and str(ligne[idx]).strip():
+            par_id[str(ligne[idx]).strip()] = list(ligne)
+    return list(par_id.values())
+
+
+def _lignes_existantes(feuille):
+    """Lignes de donnees deja dans l'onglet (sans l'entete). Best-effort."""
+    try:
+        valeurs = radar_resilience.avec_retry(
+            lambda: feuille.get_all_values(), "projets lecture")
+    except Exception as e:
+        print("  (info) lecture de l'existant impossible ({}) : "
+              "ecriture du run seul.".format(str(e)[:60]))
+        return []
+    if not valeurs or len(valeurs) < 2:
+        return []
+    entetes = [str(c).strip() for c in valeurs[0]]
+    if entetes != COLONNES:
+        print("  (info) entetes differents : l'onglet est reecrit a neuf.")
+        return []
+    return valeurs[1:]
+
+
 def ecrire(projets_calcules, sheet_id=None, fichier=None):
     """Ecrit l'onglet projets_radar (remplacement complet : un projet est un
     ETAT courant, pas un evenement) + miroir Postgres best-effort."""
@@ -343,11 +386,15 @@ def ecrire(projets_calcules, sheet_id=None, fichier=None):
             except Exception:
                 feuille = classeur.add_worksheet(title=NOM_ONGLET, rows=200,
                                                  cols=len(COLONNES))
+            # FUSION, pas remplacement : la rotation ne traite que quelques
+            # projets par run, un clear() effacerait tous les autres.
+            toutes = fusionner_lignes(_lignes_existantes(feuille), lignes)
             radar_resilience.avec_retry(lambda: feuille.clear(), "projets clear")
             radar_resilience.avec_retry(
-                lambda: feuille.update(values=[COLONNES] + lignes,
+                lambda: feuille.update(values=[COLONNES] + toutes,
                                        range_name="A1"), "projets update")
-            print("  ecrit : {} projet(s) dans '{}'.".format(len(lignes), NOM_ONGLET))
+            print("  ecrit : {} projet(s) de ce run, {} au total dans "
+                  "'{}'.".format(len(lignes), len(toutes), NOM_ONGLET))
         except Exception as e:
             print("  (info) ecriture Sheet impossible ({}).".format(str(e)[:80]))
     try:
