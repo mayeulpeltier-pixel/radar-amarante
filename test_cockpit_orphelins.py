@@ -194,5 +194,59 @@ class TestRetrocompatibilite(unittest.TestCase):
         self.assertIn("santeRun", ck.generer_cockpit([_lead()], geo=[]))
 
 
+class TestPipelineVsMarcheObserve(unittest.TestCase):
+    """SEPARATION DE DOCTRINE (25/08/2026).
+
+    Une attribution est un marche DEJA GAGNE par un tiers. L'additionner aux
+    avis faisait dire a la carte « Valeur du pipeline » un chiffre que personne
+    ne peut plus aller chercher, et ecrasait les proportions des graphes de la
+    Vue d'ensemble.
+
+    Ces tests verrouillent le CONTRAT du gabarit : ils verifient que les bonnes
+    populations sont utilisees aux bons endroits. Le calcul lui-meme vit en JS
+    (verifie par ailleurs via `node --check` sur la page generee).
+    """
+
+    def setUp(self):
+        self.html = ck.generer_cockpit([
+            _lead(pub="P1"),
+            _lead(pub="P2", src="PRIVÉ", valeur="500000 EUR"),
+            _lead(pub="P3", src="ATTRIB", action="surveiller",
+                  valeur="50000000 EUR", entreprise="X SA", origine="China")])
+
+    def test_deux_populations_declarees_a_la_source(self):
+        """Une seule definition de chaque population, pas de filtre recopie."""
+        self.assertIn('const opps=()=>actifs().filter(l=>l.src!=="ATTRIB")', self.html)
+        self.assertIn('const attribs=()=>actifs().filter(l=>l.src==="ATTRIB")', self.html)
+
+    def test_kpi_valeur_calcule_sur_les_opportunites(self):
+        self.assertIn("const act=opps();", self.html)
+        self.assertIn("marchés encore à saisir", self.html)
+
+    def test_montant_attribue_reste_visible_mais_a_part(self):
+        """Ne rien perdre : le marche observe est expose, hors du pipeline."""
+        self.assertIn('note:valAttrib?"hors "+fmtEur(valAttrib)+" déjà attribués"',
+                      self.html)
+
+    def test_graphes_vue_ensemble_sur_les_opportunites(self):
+        self.assertIn("const act=opps();", self.html)
+        self.assertIn("Marchés à saisir", self.html)
+        self.assertNotIn('const act=actifs();', self.html)
+
+    def test_tuiles_theatre_comptent_les_attributions_a_part(self):
+        self.assertIn("const byZone={};opps().forEach", self.html)
+        self.assertIn("attribs().forEach", self.html)
+        self.assertIn("à saisir</small>", self.html)
+
+    def test_funnel_conserve_les_attributions_avec_sa_composition(self):
+        """Nuance assumee : un titulaire se demarche vraiment. L'exclure du
+        funnel amputerait les etapes « en traitement » et « gagné »."""
+        self.assertIn('{l:"Signaux détectés",n:LEADS.length', self.html)
+        self.assertIn('" à saisir + "+nAt+" attribué"', self.html)
+
+    def test_titulaires_etrangers_toujours_derives_des_attributions(self):
+        self.assertIn("const etr=at.filter(l=>l.etranger).length;", self.html)
+
+
 if __name__ == "__main__":
     unittest.main()
