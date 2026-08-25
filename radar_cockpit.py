@@ -258,9 +258,70 @@ def charger_projets(sheet_id, fichier):
     return out
 
 
+# ===========================================================================
+# RAPATRIEMENT DES ORPHELINS DE SURFACE (25/08/2026)
+# ===========================================================================
+# Deux mecanismes valides, testes et en production etaient cables UNIQUEMENT
+# dans `radar_dashboard.generer_html`, c'est-a-dire sur l'ancien tableau
+# Cloudflare. Le cockpit -- la surface reellement servie par l'application --
+# ne les voyait pas :
+#
+#   1. `sante_run` : etat du dernier run par source. Sans lui, une source qui
+#      se tait ne se voit nulle part sur l'app. C'est le motif ADB, et le
+#      dispositif construit pour l'eviter etait lui-meme invisible.
+#   2. `appliquer_boost_geo` : un pays en aggravation recente rehausse ses
+#      avis. Sur l'app, les scores ne bougeaient pas, alors que l'onglet
+#      Geopolitique affichait l'alerte juste a cote. Deux onglets, deux
+#      lectures du meme pays.
+#
+# Les deux sont ici de simples DELEGATIONS au dashboard : aucune logique n'est
+# dupliquee, on rend juste le resultat au cockpit.
+
+SANTE_ON = os.environ.get("RADAR_COCKPIT_SANTE", "1") != "0"
+GEO_BOOST_ON = os.environ.get("RADAR_COCKPIT_GEO", "1") != "0"
+
+
+def etat_sante(leads):
+    """Etat du dernier run par source, pour le bandeau du cockpit. Delegue a
+    `dash.sante_run` (source de verite unique des seuils et des etats).
+
+    Best-effort : un moteur sans `sante_run` (ancienne version en cache) ou une
+    erreur de calcul renvoie {}, ce qui MASQUE le bandeau au lieu de casser la
+    page. RADAR_COCKPIT_SANTE=0 le desactive sans redeploiement."""
+    if not SANTE_ON:
+        return {}
+    try:
+        return dash.sante_run(leads or [])
+    except Exception as e:
+        print("(cockpit) etat de sante indisponible ({}) : bandeau masque.".format(
+            str(e)[:70]))
+        return {}
+
+
+def appliquer_geo(leads, alertes):
+    """Rehausse les avis des pays en aggravation recente, AVANT serialisation.
+
+    ATTENTION, POINT DE VIGILANCE : `dash.appliquer_boost_geo` n'est PAS
+    idempotente (elle preserve `final_base` mais ajoute le boost a `final` a
+    chaque appel). Elle ne doit donc etre appelee QU'UNE fois par rendu, et
+    JAMAIS avant `dash.generer_html`, qui l'appelle deja pour son compte. D'ou
+    l'appel ici, dans le chemin cockpit exclusivement.
+
+    Best-effort et sans effet si aucune alerte : renvoie `leads` inchange.
+    RADAR_COCKPIT_GEO=0 restitue le comportement d'avant."""
+    if not GEO_BOOST_ON or not alertes:
+        return leads
+    try:
+        return dash.appliquer_boost_geo(leads, alertes)
+    except Exception as e:
+        print("(cockpit) boost geo non applique ({}) : scores bruts.".format(
+            str(e)[:70]))
+        return leads
+
+
 def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
                     candidats=None, dossiers=None, projets=None,
-                    candidats_projets=None):
+                    candidats_projets=None, sante=None):
     """leads (schema dashboard) -> HTML autonome. Fonction PURE.
     dossiers : liste compacte (dossiers.serialiser) pour la vue Ecosysteme
                (projets BM suivis a travers leurs phases). Defaut [].
@@ -268,11 +329,19 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
                TOP 20. Defaut [] : sans projets, le cockpit s'affiche
                exactement comme avant (additif).
     candidats_projets : pistes issues de la DECOUVERTE, non encore promues.
-               Affichees a part, car elles demandent un arbitrage humain."""
+               Affichees a part, car elles demandent un arbitrage humain.
+    sante    : etat du dernier run par source (dash.sante_run). Defaut : calcule
+               ici depuis les leads. C'est le detecteur de source muette : il
+               existait depuis le 02/08 mais n'etait cable QUE sur le dashboard
+               legacy, donc invisible sur la surface reellement utilisee. Passer
+               {} le desactive (bandeau masque, page inchangee)."""
     risque = risque if risque is not None else getattr(dash, "RISQUE_ZONE", {})
     suivi = suivi or {}
+    if sante is None:
+        sante = etat_sante(leads)
     payload = enrichir(leads)
     return (GABARIT
+            .replace("__SANTE_JSON__", json.dumps(sante or {}, ensure_ascii=False))
             .replace("__LEADS_JSON__", json.dumps(payload, ensure_ascii=False))
             .replace("__PROJETS_JSON__", json.dumps(projets or [], ensure_ascii=False))
             .replace("__CANDPROJ_JSON__", json.dumps(candidats_projets or [], ensure_ascii=False))
@@ -302,7 +371,7 @@ def main():
     # (meme ordre que radar_dashboard : ... analyses_attrib, lignes_alertes ...).
     # preparer_geo ne garde que la semaine en cours. Best-effort : une structure
     # inattendue n'empeche pas la generation.
-    geo = []
+    geo, lignes_alertes = [], []
     try:
         lignes_alertes = onglets[12]
         geo = dash.preparer_geo(lignes_alertes)
@@ -319,8 +388,12 @@ def main():
     }
     projets = charger_projets(sheet_id, fichier)
     cand_proj = charger_candidats_projets(sheet_id, fichier)
+    # Meme traitement que l'application : le cockpit statique et le cockpit
+    # servi par Render doivent afficher le MEME score pour le meme avis.
+    leads = appliquer_geo(leads, lignes_alertes)
     html = generer_cockpit(leads, geo=geo, suivi=suivi, projets=projets,
-                           candidats_projets=cand_proj)
+                           candidats_projets=cand_proj,
+                           sante=etat_sante(leads))
     dossier = os.path.dirname(sortie)
     if dossier:
         os.makedirs(dossier, exist_ok=True)
@@ -596,6 +669,32 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .tl-row[onclick]:hover{background:var(--surface-2);border-radius:7px}
 .tl-go{margin-left:7px;color:var(--amarante);font-weight:700;opacity:0;transition:.12s}
 .tl-row[onclick]:hover .tl-go{opacity:1}
+/* Etat du dernier run par source : volume + fraicheur du plus recent lead.
+   Une source a 0, ou qui n'a plus rien produit depuis longtemps, se voit d'un
+   coup d'oeil. Ce n'est pas un diagnostic de panne, c'est un coup d'oeil. */
+.sante{margin-bottom:18px;background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--ink-3);border-radius:12px;padding:12px 16px;box-shadow:var(--sh)}
+.sante:empty{display:none}
+.sante.alerte{border-left-color:var(--amber)}
+.sante-tete{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.sante-titre{font-family:var(--display);font-size:14px;font-weight:700}
+.sante-sub{font-family:var(--mono);font-size:11px;color:var(--ink-3)}
+.sante-sub .warn{color:var(--amber);font-weight:600}
+.sante-grid{display:flex;flex-wrap:wrap;gap:6px}
+.sc{display:inline-flex;align-items:center;gap:7px;padding:4px 9px;border-radius:7px;border:1px solid var(--line);background:var(--surface-2);font-family:var(--mono);font-size:11px;color:var(--ink-2)}
+.sc .src{color:var(--ink);font-weight:700}
+.sc .ag{color:var(--ink-3)}
+.sc .dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--ink-3)}
+.sc.frais{border-color:rgba(35,122,87,.45)}.sc.frais .dot{background:var(--green)}
+.sc.ancien{border-color:rgba(176,116,25,.55)}.sc.ancien .dot{background:var(--amber)}
+.sc.absent{opacity:.5}.sc.absent .dot{background:var(--red)}
+/* Echeance de l'avis : le champ le plus operationnel d'un marche a saisir. */
+.jx{display:inline-block;font-family:var(--mono);font-size:11px;font-weight:700;padding:2px 7px;border-radius:5px}
+.jx.urgent{background:var(--red-soft);color:var(--red)}
+.jx.proche{background:var(--amber-soft);color:var(--amber)}
+.jx.large{background:var(--surface-2);color:var(--ink-2);border:1px solid var(--line)}
+.jx.clos{background:var(--line-2);color:var(--ink-3);text-decoration:line-through}
+.mb.geo{background:var(--red-soft);color:var(--red)}
+.sfbase{font-family:var(--mono);font-size:11px;color:var(--ink-3);text-decoration:line-through;margin-right:4px}
 @media(max-width:1100px){.kpis{grid-template-columns:repeat(2,1fr)}.grid-2{grid-template-columns:1fr}.map-view{grid-template-columns:1fr;height:auto}#map{height:60vh}}
 @media(max-width:720px){.app{grid-template-columns:1fr}.side{display:none}}
 </style>
@@ -627,6 +726,7 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
       <button class="btn pri" onclick="exportCSV()"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16"/></svg>Exporter</button>
     </div>
     <section class="view on" id="v-overview">
+      <div class="sante" id="santeRun"></div>
       <div class="theatres" id="theatres"></div>
       <div class="kpis" id="kpis"></div>
       <div class="grid-2">
@@ -738,6 +838,8 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 <div class="drawer" id="drawer"><div id="drawer-content"></div></div>
 <script>
 const RAW=__LEADS_JSON__, COORDS=__COORDS_JSON__, RISQUE=__RISQUE_JSON__, GEO=__GEO_JSON__, WATCHLIST=__WATCHLIST_JSON__, CANDIDATS=__CANDIDATS_JSON__, DOSSIERS=__DOSSIERS_JSON__, PROJETS_RAW=__PROJETS_JSON__, CANDPROJ_RAW=__CANDPROJ_JSON__;
+// Etat du dernier run par source, derive cote Python (dash.sante_run).
+const SANTE=__SANTE_JSON__;
 function candidatsPour(l){
   if(!CANDIDATS||!CANDIDATS.secteur_zone)return [];
   const sect=(l.secteur||"Autre"), zone=(l.zone||"Non classe");
@@ -777,6 +879,11 @@ const LEADS=RAW.map((l,i)=>({
   type_activite:l.grp||"",resume:l.justif||"",
   mois:l.mois_label||l.mois||"",moiscle:l.mois||"",nom:l.nom||"n.c.",email:l.email||"n.c.",tel:l.tel||"n.c.",win:l.win||"",pub:l.pub||"",
   proj:l.projet_id||"",deadline:l.deadline||"",datedet:l.date_det||"",
+  // Rehausse geopolitique (dash.appliquer_boost_geo) : score d'origine
+  // conserve pour que l'UI puisse montrer AVANT -> APRES, jamais un chiffre
+  // rehausse presente comme brut.
+  geoboost:+l.geo_boost||0,finalbase:(l.final_base==null?null:+l.final_base),
+  geomotif:l.geo_motif||"",geodate:l.geo_date||"",
   type:(l.src==="ATTRIB"?"attrib":(l.src==="PRIVÉ"?"prive":"avis"))
 }));
 // Date de detection -> timestamp triable (le "run" ou le lead est apparu).
@@ -799,9 +906,48 @@ function relDate(l){
   if(j<30)return "il y a "+Math.floor(j/7)+" sem.";
   const d=new Date(l.ts);return d.getUTCDate()+" "+["janv.","févr.","mars","avr.","mai","juin","juil.","août","sept.","oct.","nov.","déc."][d.getUTCMonth()];
 }
+// --- ECHEANCE DE L'AVIS ---------------------------------------------------
+// La date de cloture est ce qui rend un lead actionnable ou pas : un score de
+// 9 sur un avis clos hier ne vaut rien. Elle etait collectee, serialisee, et
+// affichee nulle part sur le cockpit.
+function joursRestants(s){
+  const t=parseDate(s);if(!t)return null;
+  const auj=new Date();auj.setHours(0,0,0,0);
+  return Math.round((t-auj.getTime())/86400000);
+}
+function badgeDeadline(l){
+  const jr=joursRestants(l.deadline);
+  if(jr===null)return "";
+  if(jr<0)return '<span class="jx clos" title="Avis clôturé">clôturé</span>';
+  if(jr===0)return '<span class="jx urgent">clôt. aujourd\'hui</span>';
+  return `<span class="jx ${jr<=7?"urgent":jr<=30?"proche":"large"}" title="Clôture le ${esc(l.deadline)}">J-${jr}</span>`;
+}
+// --- ETAT DU DERNIER RUN PAR SOURCE ---------------------------------------
+// Derive cote Python (dash.sante_run) : aucun calcul ici, on rend. Bandeau
+// masque si le calcul est absent -- pas de cadre vide sans information.
+function renderSante(){
+  const box=document.getElementById("santeRun");if(!box)return;
+  if(!SANTE||!SANTE.sources||!SANTE.sources.length){box.innerHTML="";box.classList.remove("alerte");return;}
+  const ageTxt=x=>{
+    if(x.etat==="absent"||!x.n)return "—";
+    if(x.age===null||x.age===undefined)return "n.c.";
+    if(x.age===0)return "aujourd'hui";
+    if(x.age===1)return "hier";
+    return "il y a "+x.age+" j";
+  };
+  const chips=SANTE.sources.map(x=>`<span class="sc ${esc(x.etat)}" title="${esc(x.src)} · ${x.n} lead(s) · plus récent : ${esc(ageTxt(x))}"><span class="dot"></span><span class="src">${esc(x.src)}</span><span>${x.n}</span><span class="ag">${esc(ageTxt(x))}</span></span>`).join("");
+  const av=SANTE.a_verifier>0?`<span class="warn">${SANTE.a_verifier} à vérifier</span>`:"toutes actives";
+  box.classList.toggle("alerte",SANTE.a_verifier>0);
+  box.innerHTML=`<div class="sante-tete"><span class="sante-titre">État du dernier run</span><span class="sante-sub">${esc(SANTE.date||"")} · ${SANTE.actives} source(s) active(s) · ${av}</span></div><div class="sante-grid">${chips}</div>`;
+}
 const SECT_COLORS={"Génie civil / BTP":"#8E2649","Eau / assainissement":"#33628F","Énergie":"#B07419","Santé":"#237A57","Sécurité / défense":"#C0392B","Logistique / transport":"#6B5B95","Extractif / mines":"#7A5230","Télécom / IT":"#3A8FA8"};
 const PRIO_COLOR={contacter:"#C0392B",surveiller:"#B07419",ignorer:"#8B93A2"};
 const PRIO_LBL={contacter:"À contacter",surveiller:"À surveiller",ignorer:"À écarter"};
+// Les collecteurs stockent des enums (« court_terme », « fort »). Elles
+// fuyaient telles quelles dans le tiroir : on les traduit a l'affichage, sans
+// jamais toucher a la donnee stockee.
+const WIN_LBL={immediate:"Immédiate",court_terme:"Court terme",moyen_terme:"Moyen terme",indetermine:"Indéterminée"};
+const BESOIN_LBL={fort:"Fort",moyen:"Moyen",faible:"Faible",inconnu:"Inconnu"};
 const fmtEur=v=>!v?"n.c.":v>=1?v.toFixed(v<10?1:0)+" M€":(v*1000).toFixed(0)+" k€";
 function cellMontant(l){
   if(l.valeur>0)return `<span class="t-val">${fmtEur(l.valeur)}</span>`;
@@ -892,6 +1038,8 @@ function renderTable(){
   const rows=filtered();
   document.getElementById("tbody").innerHTML=rows.map(l=>{
     const b=[];
+    const dl=badgeDeadline(l);if(dl)b.push(dl);
+    if(l.geoboost)b.push('<span class="mb geo" title="'+esc(l.geomotif||"Pays en aggravation récente")+' — score rehaussé de +'+(l.geoboost*0.5).toFixed(1)+'">▲ pays en aggravation</span>');
     if(estNouveau(l))b.push('<span class="mb neuf">✦ nouveau</span>');
     if(attribParue(l))b.push('<span class="mb attribp">🎯 attribution parue</span>');else if(estSurveille(l))b.push('<span class="mb surv">👁 surveillé</span>');
     if(l.renouv==="imminent")b.push('<span class="mb renouv">renouv. imminent</span>');else if(l.renouv==="a_venir")b.push('<span class="mb renouv">renouv. à venir</span>');
@@ -905,7 +1053,7 @@ function renderTable(){
       +`<td>${l.zone}<div class="t-sub">${l.pays}</div></td>`
       +`<td>${l.secteur}</td>`
       +`<td>${cellMontant(l)}</td>`
-      +`<td><span class="t-score" style="color:${scoreColor(l.score)}">${l.score.toFixed(1)}</span></td>`
+      +`<td>${l.geoboost&&l.finalbase!=null?`<span class="sfbase" title="Score avant rehausse géopolitique">${l.finalbase.toFixed(1)}</span>`:""}<span class="t-score" style="color:${scoreColor(l.score)}">${l.score.toFixed(1)}</span></td>`
       +`<td><span class="pill ${l.prio}">${PRIO_LBL[l.prio]||l.prio}</span></td></tr>`;
   }).join("")||'<tr><td colspan="7" class="empty">Aucun marché ne correspond à ces filtres. Essaie « Tout » ou réinitialise.</td></tr>';
   const val=rows.reduce((s,l)=>s+l.valeur,0);
@@ -958,16 +1106,17 @@ function drawMarkers(){
 function openDrawer(id){
   const l=LEADS.find(x=>x.id===id);if(!l)return;
   const natL={expatrie_significatif:"Expatrié significatif",mixte:"Encadrement international, main-d'œuvre locale",local_uniquement:"Personnel local",aucun_deploiement:"Aucun déploiement"}[l.nature]||(l.nature||"non analysé");
+  const besL=BESOIN_LBL[l.besoin]||l.besoin||"";
   const contact=(l.email!=="n.c."||l.nom!=="n.c.")?`<div class="dr-sec"><h5>Contact enrichi</h5><div class="dr-grid"><div class="dr-field"><div class="l">Nom</div><div class="v">${esc(l.nom)}</div></div><div class="dr-field"><div class="l">Email</div><div class="v" style="font-size:12px">${esc(l.email)}</div></div></div></div>`:"";
   document.getElementById("drawer-content").innerHTML=`
   <div class="dr-head"><button class="dr-close" onclick="closeDrawer()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
     <div class="dr-src">${l.src} · ${l.zone}</div><h3>${esc(l.titre)}</h3>
     <div style="display:flex;gap:8px;align-items:center"><span class="score-badge" style="width:34px;height:34px;font-size:14px;background:${scoreColor(l.score)}">${l.score.toFixed(1)}</span><span class="pill ${l.prio}">${PRIO_LBL[l.prio]||l.prio}</span><span class="t-val" style="margin-left:auto;font-size:15px">${fmtEur(l.valeur)}</span></div></div>
   <div class="dr-body">
-    <div class="dr-sec"><h5>Marché</h5><div class="dr-grid"><div class="dr-field"><div class="l">Pays</div><div class="v">${l.pays||"—"}</div></div><div class="dr-field"><div class="l">Secteur</div><div class="v">${l.secteur}</div></div><div class="dr-field"><div class="l">Acheteur / bailleur</div><div class="v" style="font-size:13px">${esc(l.acheteur)}</div></div><div class="dr-field"><div class="l">Fenêtre</div><div class="v">${l.win||"—"}</div></div>${l.enveloppe>0?`<div class="dr-field"><div class="l">Enveloppe projet</div><div class="v" style="color:var(--blue)">${fmtEur(l.enveloppe)} <span style="font-size:10px;color:var(--ink-3)">(coût total, pas le marché)</span></div></div>`:""}</div></div>
+    <div class="dr-sec"><h5>Marché</h5><div class="dr-grid"><div class="dr-field"><div class="l">Pays</div><div class="v">${l.pays||"—"}</div></div><div class="dr-field"><div class="l">Secteur</div><div class="v">${l.secteur}</div></div><div class="dr-field"><div class="l">Acheteur / bailleur</div><div class="v" style="font-size:13px">${esc(l.acheteur)}</div></div><div class="dr-field"><div class="l">Fenêtre</div><div class="v">${WIN_LBL[l.win]||l.win||"—"}</div></div>${l.deadline?`<div class="dr-field"><div class="l">Clôture</div><div class="v">${esc(l.deadline)} ${badgeDeadline(l)}</div></div>`:""}${l.geoboost?`<div class="dr-field"><div class="l">Contexte géo</div><div class="v" style="font-size:12px;color:var(--red)">▲ aggravation ${esc(l.geodate||"")} · score ${l.finalbase!=null?l.finalbase.toFixed(1):"?"} → ${l.score.toFixed(1)}</div></div>`:""}${l.enveloppe>0?`<div class="dr-field"><div class="l">Enveloppe projet</div><div class="v" style="color:var(--blue)">${fmtEur(l.enveloppe)} <span style="font-size:10px;color:var(--ink-3)">(coût total, pas le marché)</span></div></div>`:""}</div></div>
     ${l.titulaire||l.pays_tit?`<div class="dr-sec"><h5>Titulaire</h5><div class="dr-grid"><div class="dr-field"><div class="l">Entreprise</div><div class="v">${esc(l.titulaire||"—")}</div></div><div class="dr-field"><div class="l">Origine</div><div class="v">${l.pays_tit||"—"} ${l.etranger?'<span class="flag">étranger</span>':""}</div></div></div></div>`:""}
     ${(function(){const c=candidatsPour(l);return c.length?`<div class="dr-sec"><h5>Candidats probables${l.src==="ATTRIB"?" (autres du secteur)":""}</h5><div class="cand-list">${c.map(x=>`<div class="cand" onclick="rechercherEnt('${(x.entreprise||"").replace(/'/g,"\\'")}')"><div class="cand-n">${esc(x.entreprise)}</div><div class="cand-m">${x.nb} marché${x.nb>1?"s":""} similaire${x.nb>1?"s":""}${x.origine?" · "+esc(x.origine):""}${x.etranger?' <span class="cand-etr">étranger</span>':""}</div></div>`).join("")}</div><div class="cand-note">Inféré depuis l'historique des attributions du même secteur / théâtre.</div></div>`:"";})()}
-    <div class="dr-sec"><h5>Cible commerciale</h5><div class="dr-analyse">${esc(l.cible)||"—"}${l.interlocuteur?"<br><strong>Interlocuteur :</strong> "+esc(l.interlocuteur):""}${l.besoin?"<br><strong>Besoin de sûreté :</strong> "+l.besoin:""}${l.nature?"<br><strong>Déploiement :</strong> "+natL:""}</div></div>
+    <div class="dr-sec"><h5>Cible commerciale</h5><div class="dr-analyse">${esc(l.cible)||"—"}${l.interlocuteur?"<br><strong>Interlocuteur :</strong> "+esc(l.interlocuteur):""}${l.besoin?"<br><strong>Besoin de sûreté :</strong> "+esc(besL):""}${l.nature?"<br><strong>Déploiement :</strong> "+natL:""}</div></div>
     ${l.justif?`<div class="dr-sec"><h5>Analyse</h5><div class="dr-analyse">${esc(l.justif)}</div></div>`:""}
     ${contact}
     ${estSurveille(l)?`<div class="dr-sec"><h5>Surveillance</h5><div class="dr-analyse">${attribParue(l)?'<strong style="color:var(--green)">🎯 Attribution parue au dernier run.</strong>'+(l.motif?"<br>Titulaire détecté : <strong>"+esc(l.motif)+"</strong>":""):"👁 Ce marché est surveillé. Chaque run vérifie s\'il a été attribué (et par qui) ou s\'il évolue."}</div></div>`:""}
@@ -1286,7 +1435,7 @@ function go(v){
   document.querySelectorAll(".view").forEach(s=>s.classList.remove("on"));
   document.getElementById("v-"+v).classList.add("on");
   document.getElementById("top-title").textContent=TITLES[v][0];document.getElementById("top-crumb").textContent=TITLES[v][1];
-  if(v==="overview"){renderTheatres();renderKPIs();renderCharts();renderFunnel();renderHot();}
+  if(v==="overview"){renderSante();renderTheatres();renderKPIs();renderCharts();renderFunnel();renderHot();}
   if(v==="opps")renderTable();if(v==="attrib")renderAttrib();
   if(v==="firmo")renderFirmo();if(v==="geo")renderGeo();if(v==="doss")renderDoss();if(v==="proj")renderProj();
   if(v==="map")setTimeout(()=>{initMap();map.invalidateSize();},60);
@@ -1317,7 +1466,15 @@ function exportCSV(){
 document.getElementById("nav").addEventListener("click",e=>{const a=e.target.closest("a");if(a){go(a.dataset.view);}});
 document.getElementById("cnt-opps").textContent=LEADS.filter(l=>l.src!=="ATTRIB").length;
 document.getElementById("cnt-attrib").textContent=LEADS.filter(l=>l.src==="ATTRIB").length;
-document.getElementById("run-meta").textContent=LEADS.length+" leads";
+// Pied de page : ce que le point vert pretendait dire, mais en le disant. Date
+// du run et nombre de sources a verifier, pas seulement un volume.
+(function(){
+  const el=document.getElementById("run-meta");if(!el)return;
+  const d=(SANTE&&SANTE.date)?SANTE.date+" · ":"";
+  const av=(SANTE&&SANTE.a_verifier>0)?" · "+SANTE.a_verifier+" source(s) à vérifier":"";
+  el.textContent=d+LEADS.length+" leads"+av;
+  el.title=av?"Voir le détail dans « État du dernier run » (Vue d'ensemble)":"";
+})();
 document.getElementById("ff-tri").onchange=e=>{firmoState.tri=e.target.value;renderFirmo();};
 document.querySelectorAll("#ff-etr button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#ff-etr button").forEach(x=>x.classList.remove("on"));b.classList.add("on");firmoState.etr=b.dataset.e;renderFirmo();});
 document.getElementById("ff-q").oninput=e=>{firmoState.q=e.target.value;renderFirmo();};
