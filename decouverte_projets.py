@@ -1531,6 +1531,51 @@ def ligne_candidat(c, promu=False):
     return [str(v.get(col, "")) for col in COLONNES]
 
 
+MAX_CANDIDATS_ONGLET = int(os.environ.get("RADAR_CANDIDATS_MAX", "400"))
+
+
+def fusionner_candidats(existantes, nouvelles, plafond=None):
+    """Fusionne les candidats deja presents avec ceux du run. Fonction PURE.
+
+    MEME DEFAUT QUE LE COLLECTEUR (mesure du 24/08/2026) : l'onglet etait
+    efface a chaque run, alors qu'un run n'analyse que les signaux NOUVEAUX.
+    Une piste reperee la semaine derniere disparaissait donc, meme si elle
+    etait solide. On remplace par identifiant propose (le run recent fait foi)
+    et on conserve les autres, en gardant les mieux notes sous un plafond."""
+    plafond = MAX_CANDIDATS_ONGLET if plafond is None else plafond
+    idx_id = COLONNES.index("project_id_propose")
+    idx_conf = COLONNES.index("confiance")
+    par_id = collections.OrderedDict()
+    for ligne in list(existantes or []) + list(nouvelles or []):
+        if len(ligne) > idx_id and str(ligne[idx_id]).strip():
+            par_id[str(ligne[idx_id]).strip()] = list(ligne)
+
+    def _conf(ligne):
+        try:
+            return float(str(ligne[idx_conf]).replace(",", ".") or 0)
+        except (ValueError, IndexError):
+            return 0.0
+
+    toutes = sorted(par_id.values(), key=_conf, reverse=True)
+    return toutes[:plafond]
+
+
+def _lignes_existantes(feuille):
+    """Lignes de donnees deja dans l'onglet (sans l'entete). Best-effort."""
+    try:
+        valeurs = radar_resilience.avec_retry(
+            lambda: feuille.get_all_values(), "candidats lecture")
+    except Exception as e:
+        print("  (info) lecture de l'existant impossible ({}).".format(str(e)[:60]))
+        return []
+    if not valeurs or len(valeurs) < 2:
+        return []
+    if [str(c).strip() for c in valeurs[0]] != COLONNES:
+        print("  (info) entetes differents : l'onglet est reecrit a neuf.")
+        return []
+    return valeurs[1:]
+
+
 def ecrire(candidats, promus_noms=(), sheet_id=None, fichier=None):
     """Ecrit l'onglet des candidats (etat courant : remplacement complet)."""
     lignes = [ligne_candidat(c, c.get("nom") in set(promus_noms))
@@ -1553,11 +1598,13 @@ def ecrire(candidats, promus_noms=(), sheet_id=None, fichier=None):
             except Exception:
                 feuille = classeur.add_worksheet(title=NOM_ONGLET, rows=500,
                                                  cols=len(COLONNES))
+            toutes = fusionner_candidats(_lignes_existantes(feuille), lignes)
             radar_resilience.avec_retry(lambda: feuille.clear(), "candidats clear")
             radar_resilience.avec_retry(
-                lambda: feuille.update(values=[COLONNES] + lignes,
+                lambda: feuille.update(values=[COLONNES] + toutes,
                                        range_name="A1"), "candidats update")
-            print("  ecrit : {} candidat(s) dans '{}'.".format(len(lignes), NOM_ONGLET))
+            print("  ecrit : {} candidat(s) de ce run, {} au total dans "
+                  "'{}'.".format(len(lignes), len(toutes), NOM_ONGLET))
         except Exception as e:
             print("  (info) ecriture Sheet impossible ({}).".format(str(e)[:80]))
     try:
