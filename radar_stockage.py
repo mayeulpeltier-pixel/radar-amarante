@@ -69,6 +69,14 @@ from datetime import date, datetime
 ACTIVER = os.environ.get("RADAR_PG", "1") != "0"
 URL_ENV = "DATABASE_URL"
 
+# Restitution de la date de PREMIERE detection a la relecture (voir
+# `injecter_date_detection`). Par defaut ACTIF : c'est une correction de
+# donnee fausse, pas une fonctionnalite -- laisser OFF reviendrait a garder
+# « detecte aujourd'hui » sur des lignes vieilles de plusieurs mois. Poser
+# RADAR_DATE_DET_PG=0 dans l'environnement Render pour revenir a l'ancien
+# comportement sans redeploiement.
+DATE_DET_PG = os.environ.get("RADAR_DATE_DET_PG", "1") != "0"
+
 # Schema idempotent : rejouable a chaque demarrage sans jamais rien detruire.
 # L'index unique est PARTIEL : les lignes sans identifiant (rares, assumees
 # cote BM : "on prefere un doublon potentiel a une perte silencieuse de
@@ -281,6 +289,38 @@ def ajouter_lignes(conn, onglet, lignes):
     return ajoutees, mises_a_jour
 
 
+def injecter_date_detection(donnees, date_detection):
+    """Rend la date de PREMIERE detection a une ligne relue en base. Fonction
+    PURE (testable sans base).
+
+    Regles, dans cet ordre :
+      1. `donnees` n'est pas un dict (cas theorique) -> renvoye tel quel ;
+      2. `donnees["date_detection"]` deja renseigne -> INTACT. Les lignes du
+         rattrapage portent la date reelle du Sheet : elle fait autorite sur
+         la colonne, qui vaut la date de premiere ECRITURE EN BASE ;
+      3. sinon, la colonne est copiee en ISO (AAAA-MM-JJ), format attendu par
+         `radar_dashboard._age_jours` et `_mois_depuis_date` ;
+      4. colonne vide -> on ne fabrique rien (le lecteur retombera sur son
+         repli habituel, pas sur une date inventee).
+
+    Ne modifie JAMAIS le dict d'entree (copie a l'ecriture) : le miroir peut
+    relire la meme ligne plusieurs fois sans effet de bord.
+
+    RADAR_DATE_DET_PG=0 restitue exactement le comportement d'avant
+    (interrupteur de repli, sans redeploiement)."""
+    if not DATE_DET_PG or not isinstance(donnees, dict):
+        return donnees
+    if str(donnees.get("date_detection") or "").strip():
+        return donnees
+    if not date_detection:
+        return donnees
+    iso = (date_detection.isoformat()
+           if hasattr(date_detection, "isoformat") else str(date_detection))
+    copie = dict(donnees)
+    copie["date_detection"] = iso[:10]
+    return copie
+
+
 def publications_existantes(conn, onglet):
     """Identifiants deja en base pour un onglet : la meme memoire que
     `ted.numeros_publication_existants` cote Sheet."""
@@ -293,12 +333,28 @@ def publications_existantes(conn, onglet):
 
 def lire_onglet(conn, onglet):
     """Lignes d'un onglet, plus recentes d'abord, sous la forme exacte
-    qu'ecrivent les collecteurs (ce que lira le dashboard a l'etape 3)."""
+    qu'ecrivent les collecteurs (ce que lira le dashboard a l'etape 3).
+
+    DATE DE PREMIERE DETECTION (correctif 25/08/2026)
+    -------------------------------------------------
+    Le JSONB `donnees` est la ligne telle que l'ecrit le collecteur. Or les
+    collecteurs n'y mettent PAS `date_detection` : cette colonne est ajoutee
+    a part, cote Sheet (append) et cote base (colonne dediee, jamais
+    reecrite). Resultat, l'application relisait des lignes SANS
+    `date_detection` et retombait sur `date_maj` -- qui, elle, vaut la date
+    du RUN et est rafraichie a chaque miroir. Tout ce qui rentrait dans la
+    fenetre de collecte s'affichait donc « detecte aujourd'hui », faussait le
+    badge « nouveau », le graphe des detections par mois, le tri par
+    fraicheur et le coup d'oeil sante des sources.
+
+    On rend donc ici la colonne `date_detection` a la ligne, SANS jamais
+    ecraser une valeur deja presente dans le JSONB (lignes du rattrapage, qui
+    portent la vraie date du Sheet et font autorite)."""
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT donnees FROM radar_lignes WHERE onglet = %s"
+            "SELECT donnees, date_detection FROM radar_lignes WHERE onglet = %s"
             " ORDER BY id DESC", (onglet,))
-        return [r[0] for r in cur.fetchall()]
+        return [injecter_date_detection(r[0], r[1]) for r in cur.fetchall()]
 
 
 # ---------------------------------------------------------------------------
