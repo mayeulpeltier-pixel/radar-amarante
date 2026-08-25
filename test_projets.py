@@ -384,3 +384,69 @@ class TestPhaseDeReference(unittest.TestCase):
         q = pj.construire_projets(vieux, aujourd=AUJ)[0]
         self.assertEqual(q["alerte"], "aucune")
         self.assertLess(q["maturite"], pj.PHASES["CONSTRUCTION"]["maturite"])
+
+
+class TestPhaseMaxCorroboree(unittest.TestCase):
+    """GARDE-FOU SYMETRIQUE (24/08/2026). Depuis que l'avancement se juge sur
+    la phase maximale, un SEUL signal mal classe tire tout le projet vers le
+    haut. Mesure sur la reconstruction ukrainienne : 10 signaux "financement
+    approuve" et 1 signal "exploitation" affichaient une maturite de 100."""
+
+    @staticmethod
+    def _hist(*paires):
+        return [{"phase": ph, "date": "2026-0{}-01".format(i % 9 + 1)}
+                for i, ph in enumerate(
+                    [p for ph, n in paires for p in [ph] * n])]
+
+    def test_un_signal_isole_ne_fixe_pas_la_phase_max(self):
+        hist = self._hist(("FUNDING_APPROVED", 10), ("OPERATIONS", 1))
+        self.assertEqual(pj._phase_max_corroboree(hist), "FUNDING_APPROVED")
+
+    def test_deux_signaux_corroborent(self):
+        hist = self._hist(("MOU", 1), ("CONSTRUCTION", 2))
+        self.assertEqual(pj._phase_max_corroboree(hist), "CONSTRUCTION")
+
+    def test_repli_si_aucune_phase_corroboree(self):
+        """Projet jeune : une estimation vaut mieux que rien."""
+        hist = self._hist(("FEASIBILITY", 1))
+        self.assertEqual(pj._phase_max_corroboree(hist), "FEASIBILITY")
+
+    def test_historique_vide(self):
+        self.assertEqual(pj._phase_max_corroboree([]), "")
+
+    def test_effet_de_bout_en_bout(self):
+        signaux = ([{"titre": "Inga 3 funding approved", "date": "2026-0{}-01".format(i % 9 + 1),
+                     "lien": "http://x{}".format(i), "phase": "FUNDING_APPROVED"}
+                    for i in range(10)]
+                   + [{"titre": "Inga 3 plant in operation", "date": "2026-08-15",
+                       "lien": "http://op", "phase": "OPERATIONS"}])
+        p = pj.construire_projets(signaux, aujourd=AUJ)[0]
+        self.assertEqual(p["phase_max_atteinte"], "FUNDING_APPROVED")
+        self.assertLess(p["maturite"], 90)
+
+
+class TestNiveauxDAlerteComplets(unittest.TestCase):
+    """Aberration constatee le 24/08/2026 : un projet en "Exploitation" etait
+    classe "signal precoce", alors qu'un site en exploitation dans un pays a
+    risque represente un besoin de surete reel et durable."""
+
+    def test_toutes_les_phases_avancees_sont_couvertes(self):
+        for ph in ("FID", "EPC_AWARDED", "CONSTRUCTION", "COMMISSIONING",
+                   "FUNDING_APPROVED"):
+            self.assertIn(ph, pj.ALERTE_HAUTE, ph)
+        for ph in ("OPERATIONS", "MOU", "FEASIBILITY", "FEED"):
+            self.assertIn(ph, pj.ALERTE_MOYENNE, ph)
+
+    def test_exploitation_nest_plus_un_signal_precoce(self):
+        signaux = [{"titre": "Inga 3 in operation", "date": "2026-08-0{}".format(i + 1),
+                    "lien": "http://o{}".format(i), "phase": "OPERATIONS"}
+                   for i in range(2)]
+        p = pj.construire_projets(signaux, aujourd=AUJ)[0]
+        self.assertEqual(p["alerte"], "moyenne")
+
+    def test_seules_les_phases_amont_restent_precoces(self):
+        signaux = [{"titre": "Inga 3 idea floated", "date": "2026-08-0{}".format(i + 1),
+                    "lien": "http://i{}".format(i), "phase": "POLITICAL_ANNOUNCEMENT"}
+                   for i in range(2)]
+        p = pj.construire_projets(signaux, aujourd=AUJ)[0]
+        self.assertEqual(p["alerte"], "signal_precoce")
