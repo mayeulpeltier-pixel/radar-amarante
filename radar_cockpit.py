@@ -688,6 +688,8 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .sc.ancien{border-color:rgba(176,116,25,.55)}.sc.ancien .dot{background:var(--amber)}
 .sc.absent{opacity:.5}.sc.absent .dot{background:var(--red)}
 /* Echeance de l'avis : le champ le plus operationnel d'un marche a saisir. */
+.k-note{color:var(--ink-3);font-size:9.5px}
+.fn-d{font-size:10px;color:var(--ink-3);font-family:var(--mono);font-weight:400;margin-top:1px}
 .jx{display:inline-block;font-family:var(--mono);font-size:11px;font-weight:700;padding:2px 7px;border-radius:5px}
 .jx.urgent{background:var(--red-soft);color:var(--red)}
 .jx.proche{background:var(--amber-soft);color:var(--amber)}
@@ -730,8 +732,8 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
       <div class="theatres" id="theatres"></div>
       <div class="kpis" id="kpis"></div>
       <div class="grid-2">
-        <div class="panel"><div class="p-head"><h3>Marchés par théâtre</h3><span class="hint">volume · valeur M€</span></div><div class="p-body"><div class="chart-wrap"><canvas id="c-zone"></canvas></div></div></div>
-        <div class="panel"><div class="p-head"><h3>Secteurs</h3><span class="hint">part des marchés</span></div><div class="p-body"><div class="chart-wrap"><canvas id="c-sect"></canvas></div></div></div>
+        <div class="panel"><div class="p-head"><h3>Marchés par théâtre</h3><span class="hint">à saisir · valeur M€ (hors attributions)</span></div><div class="p-body"><div class="chart-wrap"><canvas id="c-zone"></canvas></div></div></div>
+        <div class="panel"><div class="p-head"><h3>Secteurs</h3><span class="hint">part des marchés à saisir</span></div><div class="p-body"><div class="chart-wrap"><canvas id="c-sect"></canvas></div></div></div>
       </div>
       <div class="grid-2">
         <div class="panel"><div class="p-head"><h3>Détections par mois</h3><span class="hint">avis vs attributions</span></div><div class="p-body"><div class="chart-wrap"><canvas id="c-time"></canvas></div></div></div>
@@ -956,40 +958,61 @@ function cellMontant(l){
 }
 const scoreColor=s=>s>=8?"#237A57":s>=6?"#B07419":s>=4?"#33628F":"#8B93A2";
 const actifs=()=>LEADS.filter(l=>l.statut!=="écarté"&&l.statut!=="perdu");
+// PIPELINE vs MARCHE OBSERVE (25/08/2026) -- distinction de doctrine.
+// Une ATTRIBUTION est un marche DEJA GAGNE par un tiers. Elle est precieuse
+// (le titulaire est un prospect a demarcher) mais elle n'est PAS du pipeline :
+// l'additionner aux avis gonflait la « Valeur du pipeline » avec des contrats
+// que personne ici ne peut plus remporter, et ecrasait les proportions des
+// graphes. On separe donc les deux populations a la SOURCE, une bonne fois :
+//   opps()    = ce qui reste a saisir (avis + signaux prives) ;
+//   attribs() = ce qui est deja attribue (registre de prospection).
+// Aucune donnee n'est perdue : les attributions gardent leurs propres KPI
+// (onglet dedie) et restent comptees a part sur les tuiles de theatre.
+const opps=()=>actifs().filter(l=>l.src!=="ATTRIB");
+const attribs=()=>actifs().filter(l=>l.src==="ATTRIB");
 let state={view:"overview",zone:"",sect:"",src:"",type:"",prio:"traiter",q:"",surv:false,neuf:false,sort:"score",dir:-1};
 
 function renderTheatres(){
-  const byZone={};actifs().forEach(l=>{(byZone[l.zone]=byZone[l.zone]||[]).push(l);});
-  const zones=Object.keys(byZone).sort((a,b)=>byZone[b].length-byZone[a].length).slice(0,6);
+  const byZone={};opps().forEach(l=>{(byZone[l.zone]=byZone[l.zone]||[]).push(l);});
+  // Attributions comptees SEPAREMENT : elles disent l'activite du theatre sans
+  // se faire passer pour des marches encore ouverts.
+  const atZone={};attribs().forEach(l=>{atZone[l.zone]=(atZone[l.zone]||0)+1;});
+  Object.keys(atZone).forEach(z=>{if(!byZone[z])byZone[z]=[];});
+  const zones=Object.keys(byZone).sort((a,b)=>(byZone[b].length+(atZone[b]||0))-(byZone[a].length+(atZone[a]||0))).slice(0,6);
   document.getElementById("theatres").innerHTML=zones.map(z=>{
     const it=byZone[z];const val=it.reduce((s,l)=>s+l.valeur,0);const hot=it.filter(l=>l.prio==="contacter").length;const p=posture(z);
-    return `<div class="th" onclick="goZone('${z.replace(/'/g,"\\'")}')"><div class="bar ${p[0]}"></div><div class="zone">${z}</div><div class="post ${p[0]}">${p[1]}</div><div class="big">${it.length}<small> marchés</small></div><div class="val">${val?fmtEur(val)+" · ":""}${hot} à contacter</div></div>`;
+    const nat=atZone[z]||0;
+    return `<div class="th" onclick="goZone('${z.replace(/'/g,"\\'")}')"><div class="bar ${p[0]}"></div><div class="zone">${z}</div><div class="post ${p[0]}">${p[1]}</div><div class="big">${it.length}<small> à saisir</small></div><div class="val">${val?fmtEur(val)+" · ":""}${hot} à contacter${nat?' · <span title="Marchés déjà attribués : prospects, pas du pipeline">'+nat+' attrib.</span>':""}</div></div>`;
   }).join("")||'<div class="empty">Aucun marché en zone couverte.</div>';
 }
 function renderKPIs(){
-  const act=actifs();const contacter=act.filter(l=>l.prio==="contacter").length;
+  const act=opps();const contacter=act.filter(l=>l.prio==="contacter").length;
+  // Valeur du PIPELINE : avis + signaux prives UNIQUEMENT. Les attributions
+  // ont leur propre ligne (« marché observé ») : deux echelles, deux lectures.
   const valeur=act.reduce((s,l)=>s+l.valeur,0);
-  const etr=LEADS.filter(l=>l.src==="ATTRIB"&&l.etranger).length;
+  const at=attribs();const valAttrib=at.reduce((s,l)=>s+l.valeur,0);
+  const etr=at.filter(l=>l.etranger).length;
   const renouv=LEADS.filter(l=>l.renouv).length;
   const cards=[
-    {lbl:"À contacter",val:contacter,sub:"leads chauds actifs",ico:'<path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>',c:"var(--red)",cs:"var(--red-soft)"},
-    {lbl:"Valeur du pipeline",val:fmtEur(valeur),sub:"montants chiffrés détectés",ico:'<path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/>',c:"var(--green)",cs:"var(--green-soft)"},
+    {lbl:"À contacter",val:contacter,sub:"avis et signaux, non traités",ico:'<path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>',c:"var(--red)",cs:"var(--red-soft)"},
+    {lbl:"Valeur du pipeline",val:fmtEur(valeur),sub:"marchés encore à saisir",ico:'<path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/>',c:"var(--green)",cs:"var(--green-soft)",
+     note:valAttrib?"hors "+fmtEur(valAttrib)+" déjà attribués":""},
     {lbl:"Titulaires étrangers",val:etr,sub:"déploiements à démarcher",ico:'<circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 010 20 15 15 0 010-20"/>',c:"var(--blue)",cs:"var(--blue-soft)"},
     {lbl:"Renouvellements",val:renouv,sub:"contrats à échéance suivie",ico:'<path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0114.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0020.5 15"/>',c:"var(--amber)",cs:"var(--amber-soft)"}
   ];
-  document.getElementById("kpis").innerHTML=cards.map(k=>`<div class="kpi"><div class="k-top"><span class="k-lbl">${k.lbl}</span><span class="k-ico" style="background:${k.cs}"><svg viewBox="0 0 24 24" fill="none" stroke="${k.c}">${k.ico}</svg></span></div><div class="k-val">${k.val}</div><div class="k-sub">${k.sub}</div></div>`).join("");
+  document.getElementById("kpis").innerHTML=cards.map(k=>`<div class="kpi"><div class="k-top"><span class="k-lbl">${k.lbl}</span><span class="k-ico" style="background:${k.cs}"><svg viewBox="0 0 24 24" fill="none" stroke="${k.c}">${k.ico}</svg></span></div><div class="k-val">${k.val}</div><div class="k-sub">${k.sub}${k.note?'<br><span class="k-note" title="Marchés déjà gagnés par des tiers : registre de prospection, pas du pipeline">'+k.note+'</span>':""}</div></div>`).join("");
 }
 let charts={};
 function renderCharts(){
   Object.values(charts).forEach(c=>c&&c.destroy());
   Chart.defaults.font.family="'Inter',sans-serif";Chart.defaults.font.size=11;Chart.defaults.color="#586173";
-  const act=actifs();
+  const act=opps();
   const byZone={};act.forEach(l=>{(byZone[l.zone]=byZone[l.zone]||[]).push(l);});
   const zones=Object.keys(byZone).sort((a,b)=>byZone[b].length-byZone[a].length).slice(0,7);
   charts.zone=new Chart(document.getElementById("c-zone"),{type:"bar",data:{labels:zones,datasets:[
-    {label:"Marchés",data:zones.map(z=>byZone[z].length),backgroundColor:"#8E2649",borderRadius:5,barPercentage:.62},
+    {label:"Marchés à saisir",data:zones.map(z=>byZone[z].length),backgroundColor:"#8E2649",borderRadius:5,barPercentage:.62},
     {label:"Valeur M€",data:zones.map(z=>byZone[z].reduce((s,l)=>s+l.valeur,0)),backgroundColor:"#E5C4CF",borderRadius:5,barPercentage:.62,yAxisID:"y1"}
-  ]},options:{maintainAspectRatio:false,plugins:{legend:{position:"bottom",labels:{boxWidth:10,boxHeight:10,padding:14,usePointStyle:true}}},scales:{y:{grid:{color:"#EEF1F5"},title:{display:true,text:"marchés"}},y1:{position:"right",grid:{display:false},title:{display:true,text:"M€"}},x:{grid:{display:false}}}}});
+  ]},options:{maintainAspectRatio:false,plugins:{legend:{position:"bottom",labels:{boxWidth:10,boxHeight:10,padding:14,usePointStyle:true}}},scales:{y:{grid:{color:"#EEF1F5"},title:{display:true,text:"à saisir"}},y1:{position:"right",grid:{display:false},title:{display:true,text:"M€"}},x:{grid:{display:false}}}}});
   const sects={};act.forEach(l=>sects[l.secteur]=(sects[l.secteur]||0)+1);
   const sl=Object.keys(sects).sort((a,b)=>sects[b]-sects[a]).slice(0,8);
   charts.sect=new Chart(document.getElementById("c-sect"),{type:"doughnut",data:{labels:sl,datasets:[{data:sl.map(s=>sects[s]),backgroundColor:sl.map((s,i)=>SECT_COLORS[s]||["#8E2649","#33628F","#B07419","#237A57","#C0392B","#6B5B95","#7A5230","#3A8FA8"][i%8]),borderWidth:2,borderColor:"#fff"}]},options:{maintainAspectRatio:false,cutout:"62%",plugins:{legend:{position:"right",labels:{boxWidth:9,boxHeight:9,padding:8,usePointStyle:true,font:{size:10}}}}}});
@@ -1001,15 +1024,23 @@ function renderCharts(){
   ]},options:{maintainAspectRatio:false,plugins:{legend:{position:"bottom",labels:{boxWidth:10,boxHeight:10,padding:14,usePointStyle:true}}},scales:{y:{grid:{color:"#EEF1F5"},ticks:{precision:0}},x:{grid:{display:false}}}}});
 }
 function renderFunnel(){
+  // NUANCE ASSUMEE : contrairement aux KPI de valeur, le funnel GARDE les
+  // attributions. Un titulaire se demarche, se marque « contacté », se gagne
+  // ou se perd : c'est du vrai travail de prospection, l'exclure amputerait
+  // les etapes 2 a 4. On affiche donc la COMPOSITION de l'etape 1 plutot que
+  // de masquer une population.
   const traite=l=>l.statut&&l.statut!=="nouveau";
+  const nOpp=LEADS.filter(l=>l.src!=="ATTRIB").length;
+  const nAt=LEADS.length-nOpp;
   const steps=[
-    {l:"Signaux détectés",n:LEADS.length,c:"#33628F"},
+    {l:"Signaux détectés",n:LEADS.length,c:"#33628F",
+     d:nAt?nOpp+" à saisir + "+nAt+" attribué"+(nAt>1?"s":""):""},
     {l:"À contacter",n:LEADS.filter(l=>l.prio==="contacter").length,c:"#8E2649"},
     {l:"En traitement",n:LEADS.filter(l=>traite(l)&&l.statut!=="gagné"&&l.statut!=="perdu"&&l.statut!=="écarté").length,c:"#B07419"},
     {l:"Gagné",n:LEADS.filter(l=>l.statut==="gagné").length,c:"#237A57"}
   ];
   const max=Math.max(steps[0].n,1);
-  document.getElementById("funnel").innerHTML=steps.map(s=>`<div class="fn-row"><div class="fn-lbl">${s.l}</div><div class="fn-track"><div class="fn-fill" style="width:${Math.max(6,s.n/max*100)}%;background:${s.c}">${s.n}</div></div><div class="fn-n">${(s.n/max*100).toFixed(0)}%</div></div>`).join("");
+  document.getElementById("funnel").innerHTML=steps.map(s=>`<div class="fn-row"><div class="fn-lbl">${s.l}${s.d?`<div class="fn-d">${s.d}</div>`:""}</div><div class="fn-track"><div class="fn-fill" style="width:${Math.max(6,s.n/max*100)}%;background:${s.c}">${s.n}</div></div><div class="fn-n">${(s.n/max*100).toFixed(0)}%</div></div>`).join("");
 }
 function renderHot(){
   const hot=LEADS.filter(l=>l.prio==="contacter"&&(l.statut==="nouveau"||!l.statut)).sort((a,b)=>b.score-a.score).slice(0,6);
