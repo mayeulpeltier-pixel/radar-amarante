@@ -275,7 +275,9 @@ class TestConfianceEtPromotion(unittest.TestCase):
                 "nb_signaux": 4, "nb_sources": 3, "confiance_llm": 85,
                 "phase": "FEASIBILITY", "acteurs_top": ["x"], "montant_musd": 900,
                 "poids_sources": 1.6, "meilleure_fiabilite": 0.65,
-                "sources_officielles": []}
+                "sources_officielles": [], "nb_sources_presse": 2,
+                "montant_musd": 2000,
+                "signaux": [{"titre": "LNG refinery project"}]}
         base.update(kw)
         base["confiance"] = dp.score_confiance(base)
         return base
@@ -283,12 +285,19 @@ class TestConfianceEtPromotion(unittest.TestCase):
     def test_candidat_solide_est_promouvable(self):
         self.assertTrue(dp.promouvable(self._cand()))
 
-    def test_voie_officielle_une_seule_source_suffit(self):
-        """P5 : une annonce de la Banque Mondiale n'a pas besoin d'etre reprise
-        par deux blogs pour etre vraie."""
-        officiel = self._cand(nb_signaux=1, nb_sources=1, poids_sources=0.95,
-                              sources_officielles=["Banque Mondiale"])
-        self.assertTrue(dp.promouvable(officiel))
+    def test_voie_officielle_exige_une_corroboration_de_presse(self):
+        """RESSERREE le 24/08/2026. Un avis DFI isole suffisait a promouvoir ;
+        comme bm_projets emet des CENTAINES d'avis, le radar recopiait le
+        portefeuille de la Banque Mondiale au lieu de decouvrir. Une source
+        officielle CORROBORE desormais la presse, elle ne cree plus seule."""
+        seul = self._cand(nb_signaux=1, nb_sources=1, poids_sources=0.95,
+                          sources_officielles=["Banque Mondiale"],
+                          nb_sources_presse=0)
+        self.assertFalse(dp.promouvable(seul))
+        corrobore = self._cand(nb_signaux=2, nb_sources=2, poids_sources=1.45,
+                               sources_officielles=["Banque Mondiale"],
+                               nb_sources_presse=1)
+        self.assertTrue(dp.promouvable(corrobore))
 
     def test_deux_agregateurs_ne_suffisent_pas(self):
         """L'inverse : deux sources faibles ne font pas une preuve."""
@@ -300,10 +309,10 @@ class TestConfianceEtPromotion(unittest.TestCase):
         """Le point de P5 n'est pas le score brut mais la DECISION : un signal
         officiel unique est promu, tandis qu'un candidat plus bavard mais
         adosse a des sources faibles reste en attente."""
-        officiel = self._cand(nb_signaux=1, nb_sources=1, poids_sources=0.95,
-                              sources_officielles=["AfDB"])
+        officiel = self._cand(nb_signaux=2, nb_sources=2, poids_sources=1.45,
+                              sources_officielles=["AfDB"], nb_sources_presse=1)
         bavard = self._cand(nb_signaux=6, nb_sources=2, poids_sources=0.80,
-                            meilleure_fiabilite=0.40)
+                            meilleure_fiabilite=0.40, nb_sources_presse=2)
         self.assertTrue(dp.promouvable(officiel))
         self.assertFalse(dp.promouvable(bavard))
 
