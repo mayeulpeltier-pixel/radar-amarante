@@ -574,3 +574,107 @@ class TestMotsEntiers(unittest.TestCase):
         pertinent, motif = dp.pertinent_pour_amarante(social)
         self.assertFalse(pertinent)
         self.assertNotIn("grand chantier", motif)
+
+
+class TestVerificationPresseCiblee(unittest.TestCase):
+    """Corrige l'asymetrie structurelle mesuree le 24/08/2026 : les leads DFI
+    couvrent 40 pays, les requetes presse 3 par run. Un projet DFI au Malawi ne
+    pouvait donc pas etre corrobore. Au lieu d'assouplir la regle, on VA
+    CHERCHER la corroboration sur le nom exact du projet."""
+
+    A = staticmethod(lambda t: {
+        "titre": t, "resume": "", "date": "Mon, 10 Aug 2026 10:00:00 +0000",
+        "lien": "https://news.google.com/rss/" + str(abs(hash(t)) % 9999)})
+
+    def _cand(self, nom="Mpatamanga Hydropower Storage Project", iso3="MWI", **kw):
+        base = {"nom": nom, "iso3": iso3, "secteur": "energie", "nb_signaux": 2,
+                "nb_sources": 1, "nb_sources_presse": 0, "poids_sources": 0.95,
+                "meilleure_fiabilite": 0.95, "confiance_llm": 75,
+                "phase": "FUNDING_APPROVED", "acteurs_top": [],
+                "sources_officielles": ["BM"], "montant_musd": 1500,
+                "sources": ["BMP"],
+                "signaux": [{"titre": nom, "lien": "", "date": "2026-07-01"}]}
+        base.update(kw)
+        base["confiance"] = dp.score_confiance(base)
+        return base
+
+    # --- Selection --------------------------------------------------------
+    def test_candidat_dfi_isole_et_pertinent_est_verifie(self):
+        self.assertEqual(len(dp.candidats_a_verifier([self._cand()])), 1)
+
+    def test_candidat_deja_corrobore_non_verifie(self):
+        self.assertEqual(dp.candidats_a_verifier(
+            [self._cand(nb_sources_presse=2)]), [])
+
+    def test_candidat_non_pertinent_non_verifie(self):
+        """Inutile de depenser une requete sur un programme d'assainissement."""
+        eau = self._cand(nom="Urban Water Supply Project", secteur="infrastructure",
+                         montant_musd=0,
+                         signaux=[{"titre": "urban water supply sanitation"}])
+        self.assertEqual(dp.candidats_a_verifier([eau]), [])
+
+    def test_candidat_sans_nom_non_verifie(self):
+        self.assertEqual(dp.candidats_a_verifier(
+            [self._cand(sans_nom=True)]), [])
+
+    def test_plafond_de_verifications(self):
+        cands = [self._cand(nom="Projet Alpha{} Hydropower".format(i))
+                 for i in range(20)]
+        self.assertEqual(len(dp.candidats_a_verifier(cands, plafond=5)), 5)
+
+    def test_requete_porte_le_nom_exact(self):
+        r = dp.requete_verification(self._cand())
+        self.assertIn('"Mpatamanga Hydropower Storage Project"', r)
+
+    # --- Appariement ------------------------------------------------------
+    def test_ancre_forte_tolere_un_nom_incomplet(self):
+        """"Mpatamanga hydropower project" doit matcher, sans le mot Storage."""
+        trouves = dp.articles_confirmants([
+            self.A("Mpatamanga hydropower project reaches financial close - Reuters"),
+            self.A("Mpatamanga scheme contractors shortlisted - African Energy"),
+            self.A("Unrelated football match - Sofascore")], self._cand())
+        self.assertEqual(len(trouves), 2)
+
+    def test_ancre_faible_exige_le_pays(self):
+        b = self._cand(nom="BRIDGE", iso3="NGA")
+        self.assertEqual(len(dp.articles_confirmants(
+            [self.A("New bridge opens in Lagos - Blog")], b)), 0)
+        self.assertEqual(len(dp.articles_confirmants(
+            [self.A("Nigeria BRIDGE programme launched - Blog")], b)), 1)
+
+    def test_source_officielle_ne_corrobore_pas(self):
+        """Une seconde source DFI n'est pas une corroboration independante."""
+        trouves = dp.articles_confirmants([{
+            "titre": "Mpatamanga hydropower approved",
+            "lien": "https://www.worldbank.org/p", "resume": ""}], self._cand())
+        self.assertEqual(trouves, [])
+
+    # --- Integration ------------------------------------------------------
+    def test_confirmation_debloque_la_promotion(self):
+        c = self._cand()
+        self.assertFalse(dp.promouvable(c))
+        c2 = dp.integrer_confirmations(c, [
+            self.A("Mpatamanga hydropower project financial close - Reuters"),
+            self.A("Mpatamanga contractors shortlisted - African Energy")])
+        self.assertEqual(c2["nb_sources_presse"], 2)
+        self.assertGreater(c2["poids_sources"], c["poids_sources"])
+        self.assertTrue(dp.promouvable(c2))
+
+    def test_absence_de_confirmation_laisse_en_attente(self):
+        c = self._cand()
+        self.assertEqual(dp.integrer_confirmations(c, []), c)
+        self.assertFalse(dp.promouvable(c))
+
+    def test_entree_non_mutee(self):
+        c = self._cand()
+        dp.integrer_confirmations(c, [self.A("Mpatamanga hydropower - Reuters")])
+        self.assertEqual(c["nb_sources_presse"], 0)
+
+    def test_requete_en_erreur_laisse_le_candidat_intact(self):
+        dp.PAUSE = 0.0
+
+        def fetch(url):
+            raise RuntimeError("503")
+
+        out, n = dp.verifier_par_la_presse([self._cand()], fetch=fetch)
+        self.assertFalse(dp.promouvable(out[0]))
