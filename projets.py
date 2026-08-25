@@ -102,6 +102,18 @@ def rang(phase):
     return PHASES.get(phase, {}).get("rang", 0)
 
 
+def phase_de_reference(projet):
+    """Phase servant a juger l'AVANCEMENT d'un projet : la plus avancee
+    atteinte, avec repli sur la phase courante. Fonction PURE.
+
+    Doctrine du 24/08/2026 : la phase COURANTE (chronologique) revele
+    l'enlisement, mais tout ce qui mesure le chemin parcouru -- maturite,
+    alerte, prochaine etape, fenetre de besoin -- se fonde sur le point le
+    plus avance. Un chantier acheve a 88 % ne redevient pas un protocole
+    d'accord parce qu'une depeche annexe le mentionne."""
+    return projet.get("phase_max_atteinte") or projet.get("phase_courante") or ""
+
+
 # ===========================================================================
 # 2. RATTACHEMENT (resolution d'entite PROJET)
 # ===========================================================================
@@ -269,12 +281,22 @@ def _finaliser(seau, aujourd):
 # 5. SCORE DE MATURITE (0-100) -- ou en est le PROJET
 # ===========================================================================
 def score_maturite(projet, aujourd=None):
-    """0-100. Base = phase courante. Ajustements : densite de signaux (un
-    projet tres commente avance vraiment) et obsolescence (un projet muet
-    depuis des annees n'est plus "en cours"). Fonction PURE."""
+    """0-100. Base = phase la PLUS AVANCEE atteinte. Ajustements : densite de
+    signaux et obsolescence. Fonction PURE.
+
+    POURQUOI LA PLUS AVANCEE, ET NON LA PLUS RECENTE (24/08/2026)
+    -------------------------------------------------------------
+    Un projet ne se "deconstruit" pas. Mesure sur EACOP, en construction
+    depuis 2023 : un article recent annoncant un protocole d'accord avec un
+    nouveau partenaire logistique faisait retomber sa phase courante a MOU, et
+    sa maturite de 95 a 48. Un commercial l'aurait lu comme un projet a peine
+    naissant, alors que le chantier est acheve a 88 %.
+
+    La phase COURANTE reste chronologique -- c'est elle qui revele
+    l'enlisement -- et le drapeau `recul` signale l'ecart. Mais la maturite,
+    elle, mesure le chemin PARCOURU."""
     aujourd = aujourd or datetime.date.today()
-    phase = projet.get("phase_courante") or ""
-    base = PHASES.get(phase, {}).get("maturite", 5)
+    base = PHASES.get(phase_de_reference(projet), {}).get("maturite", 5)
     if projet.get("nb_signaux", 0) >= 20:
         base += 4
     elif projet.get("nb_signaux", 0) >= 8:
@@ -381,8 +403,8 @@ def score_opportunite(projet, aujourd=None):
         projet.get("secteur", "n.c."),
         "lourd" if inten >= 0.9 else "modéré"))
 
-    # d) Phase : proximite du besoin reel.
-    phase = projet.get("phase_courante") or ""
+    # d) Phase : proximite du besoin reel, jugee sur l'avancement REEL.
+    phase = phase_de_reference(projet)
     if phase in PHASES_CHAUDES:
         pts += 20
         motifs.append("phase {} : mobilisation imminente".format(
@@ -438,7 +460,14 @@ def _phrase_opportunite(projet, score, motifs):
 # 7. ALERTE, PROCHAINE ETAPE, FENETRE, SERVICES
 # ===========================================================================
 def niveau_alerte(projet, aujourd=None):
-    """haute | moyenne | signal_precoce | aucune. Fonction PURE."""
+    """haute | moyenne | signal_precoce | aucune. Fonction PURE.
+
+    Fonde sur la phase la PLUS AVANCEE atteinte (24/08/2026). Un chantier en
+    construction reste une alerte haute meme si le dernier article parle d'un
+    protocole d'accord annexe : c'est la mobilisation d'equipes sur site qui
+    fait l'urgence commerciale, pas la nature de la derniere depeche.
+    La fraicheur continue de gouverner : un projet muet depuis plus de 18 mois
+    n'est plus actionnable, quel que soit son avancement."""
     aujourd = aujourd or datetime.date.today()
     hist = projet.get("historique") or []
     if not hist:
@@ -449,7 +478,7 @@ def niveau_alerte(projet, aujourd=None):
         mois = 999
     if mois > 18:
         return "aucune"                  # l'evenement n'est plus actionnable
-    ph = hist[-1]["phase"]
+    ph = phase_de_reference(projet) or hist[-1]["phase"]
     if ph in ALERTE_HAUTE:
         return "haute"
     if ph in ALERTE_MOYENNE:
@@ -459,7 +488,7 @@ def niveau_alerte(projet, aujourd=None):
 
 def prochaine_etape(projet):
     """Phase suivante attendue, en clair. Fonction PURE."""
-    ph = projet.get("phase_courante") or ""
+    ph = phase_de_reference(projet)
     noms = list(PHASES.keys())
     if ph not in PHASES:
         return "Phase à qualifier"
@@ -476,7 +505,7 @@ def fenetre_opportunite(projet, aujourd=None):
     adossee a des faits comptables (nombre de signaux, fraicheur), pas a un
     modele probabiliste qu'on n'a pas. Fonction PURE."""
     aujourd = aujourd or datetime.date.today()
-    ph = projet.get("phase_courante") or ""
+    ph = phase_de_reference(projet)
     if ph not in PHASES:
         return {"debut": "", "fin": "", "confiance": "faible",
                 "texte": "Phase inconnue : fenêtre non estimable"}
@@ -516,7 +545,7 @@ def services_probables(projet):
     """Services Amarante plausibles pour ce projet. Fonction PURE."""
     base = list(SERVICES_PAR_SECTEUR.get(projet.get("secteur"),
                                          SERVICES_PAR_SECTEUR["infrastructure"]))
-    if (projet.get("phase_courante") or "") in PHASES_CHAUDES:
+    if phase_de_reference(projet) in PHASES_CHAUDES:
         for s in ("support 24/7", "gestion de crise"):
             if s not in base:
                 base.append(s)
