@@ -138,6 +138,60 @@ def charger_watchlist(sheet_id, fichier, lignes_bitd=None):
     return list(ents.values())
 
 
+def _normaliser_projet(d):
+    """Ligne brute (Sheet ou miroir) -> projet exploitable par le front.
+    Les numeriques arrivent en TEXTE depuis gspread : repli 0 systematique,
+    sinon une cellule inattendue casse tout le rendu (piege connu du projet)."""
+    d = dict(d)
+    for champ in ("maturite", "opportunite", "nb_signaux", "valeur_musd"):
+        try:
+            d[champ] = float(str(d.get(champ, "")).replace(",", ".") or 0)
+        except ValueError:
+            d[champ] = 0
+    if not isinstance(d.get("timeline"), list):
+        try:
+            d["timeline"] = json.loads(d.get("timeline_json") or "[]")
+        except (TypeError, ValueError):
+            d["timeline"] = []
+    d.pop("timeline_json", None)
+    return d
+
+
+def _normaliser_candidat(d):
+    """Ligne brute (Sheet ou miroir) -> candidat exploitable par le front."""
+    d = dict(d)
+    for champ in ("confiance", "nb_signaux", "nb_sources", "montant_musd"):
+        try:
+            d[champ] = float(str(d.get(champ, "")).replace(",", ".") or 0)
+        except ValueError:
+            d[champ] = 0
+    if not isinstance(d.get("signaux"), list):
+        try:
+            d["signaux"] = json.loads(d.get("signaux_json") or "[]")
+        except (TypeError, ValueError):
+            d["signaux"] = []
+    d.pop("signaux_json", None)
+    return d
+
+
+def _lire_miroir_pg(onglet):
+    """Lignes du miroir Postgres d'un onglet, ou []. BEST-EFFORT.
+
+    Filet de securite constate utile au premier run de production : l'ecriture
+    Sheet avait echoue (portee OAuth) alors que le miroir Postgres, lui, etait
+    bien alimente. Sans ce repli, la vue restait vide malgre des donnees
+    disponibles."""
+    try:
+        import radar_stockage
+        lire = getattr(radar_stockage, "lire_miroir", None)
+        if not callable(lire):
+            return []
+        return lire(onglet) or []
+    except Exception as e:
+        print("(cockpit) miroir pg '{}' indisponible ({}).".format(onglet, str(e)[:60]))
+        return []
+
+
 def charger_candidats_projets(sheet_id, fichier):
     """Candidats de decouverte depuis l'onglet `projets_candidats` (ecrit par
     decouverte_projets). BEST-EFFORT comme charger_projets.
@@ -152,8 +206,12 @@ def charger_candidats_projets(sheet_id, fichier):
         classeur = sp._ouvrir_classeur(sheet_id, fichier)
         valeurs = classeur.worksheet("projets_candidats").get_all_values()
     except Exception as e:
-        print("(cockpit) onglet projets_candidats non lu ({}).".format(str(e)[:60]))
-        return []
+        print("(cockpit) onglet projets_candidats non lu ({}) : repli miroir.".format(
+            str(e)[:60]))
+        valeurs = None
+    if valeurs is None:
+        return [_normaliser_candidat(d) for d in _lire_miroir_pg("projets_candidats")
+                if d.get("nom")]
     if len(valeurs) < 2:
         return []
     entetes = [str(c).strip() for c in valeurs[0]]
@@ -163,17 +221,7 @@ def charger_candidats_projets(sheet_id, fichier):
              for i in range(len(entetes))}
         if not d.get("nom"):
             continue
-        for champ in ("confiance", "nb_signaux", "nb_sources", "montant_musd"):
-            try:
-                d[champ] = float(str(d.get(champ, "")).replace(",", ".") or 0)
-            except ValueError:
-                d[champ] = 0
-        try:
-            d["signaux"] = json.loads(d.get("signaux_json") or "[]")
-        except ValueError:
-            d["signaux"] = []
-        d.pop("signaux_json", None)
-        out.append(d)
+        out.append(_normaliser_candidat(d))
     return out
 
 
@@ -189,9 +237,14 @@ def charger_projets(sheet_id, fichier):
         classeur = sp._ouvrir_classeur(sheet_id, fichier)
         valeurs = classeur.worksheet("projets_radar").get_all_values()
     except Exception as e:
-        print("(cockpit) onglet projets_radar non lu ({}) : vue Projets vide.".format(
+        print("(cockpit) onglet projets_radar non lu ({}) : repli miroir.".format(
             str(e)[:70]))
-        return []
+        valeurs = None
+    if valeurs is None:
+        # Le miroir Postgres rend deja des dictionnaires : on court-circuite
+        # la conversion depuis les lignes du Sheet.
+        return [_normaliser_projet(d) for d in _lire_miroir_pg("projets_radar")
+                if d.get("project_id")]
     if len(valeurs) < 2:
         return []
     entetes = [str(c).strip() for c in valeurs[0]]
@@ -201,19 +254,7 @@ def charger_projets(sheet_id, fichier):
              for i in range(len(entetes))}
         if not d.get("project_id"):
             continue
-        # Numeriques : gspread renvoie du texte. String() + repli 0 (piege
-        # connu du projet : une valeur inattendue ne doit pas casser le JS).
-        for champ in ("maturite", "opportunite", "nb_signaux", "valeur_musd"):
-            try:
-                d[champ] = float(str(d.get(champ, "")).replace(",", ".") or 0)
-            except ValueError:
-                d[champ] = 0
-        try:
-            d["timeline"] = json.loads(d.get("timeline_json") or "[]")
-        except ValueError:
-            d["timeline"] = []
-        d.pop("timeline_json", None)
-        out.append(d)
+        out.append(_normaliser_projet(d))
     return out
 
 
