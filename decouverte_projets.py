@@ -59,6 +59,7 @@ from datetime import date
 import bitd_signaux as bitd
 import pays_projets_reference as pref
 import projets as pj
+import radar_resilience
 import projets_reference as ref
 import sources_reference as sref
 import ted_complet_v14 as ted
@@ -1187,9 +1188,17 @@ def ecrire(candidats, promus_noms=(), sheet_id=None, fichier=None):
               for c in candidats]
     if sheet_id and fichier:
         try:
-            import radar_resilience
-            import signaux_prives as sp
-            classeur = sp._ouvrir_classeur(sheet_id, fichier)
+            # ECRITURE : il faut la portee `spreadsheets` (lecture-ecriture).
+            # `sp._ouvrir_classeur` ouvre en spreadsheets.READONLY : l'employer
+            # ici renvoyait "403 insufficient authentication scopes" (constate
+            # au premier run de production du 24/08/2026).
+            import gspread
+            from google.oauth2.service_account import Credentials
+            creds = Credentials.from_service_account_file(
+                fichier, scopes=["https://www.googleapis.com/auth/spreadsheets"])
+            classeur = radar_resilience.avec_retry(
+                lambda: gspread.authorize(creds).open_by_key(sheet_id),
+                "ouverture classeur (ecriture)")
             try:
                 feuille = classeur.worksheet(NOM_ONGLET)
             except Exception:
