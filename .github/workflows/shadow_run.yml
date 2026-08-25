@@ -1,4 +1,8 @@
 name: Shadow run Project Intelligence (lecture seule)
+
+# Lecture seule : ce diagnostic n'ecrit rien dans le depot.
+permissions:
+  contents: read
 # EXECUTION REELLE de la chaine de decouverte sur Tanzanie, RDC et Guinee,
 # entierement instrumentee, pour produire le rapport d'observation.
 #
