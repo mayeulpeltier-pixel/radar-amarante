@@ -268,3 +268,54 @@ class TestApplicationIntegration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestCablageProjetsDansLAppRender(unittest.TestCase):
+    """TROISIEME chemin de generation du cockpit, decouvert le 24/08/2026.
+    `radar_dashboard` (Cloudflare) avait ete corrige, mais `radar_app` (Render)
+    appelait toujours generer_cockpit() SANS les projets : l'app affichait une
+    vue Projets vide alors que le miroir Postgres etait bien alimente."""
+
+    @staticmethod
+    def _source():
+        import os.path
+        chemin = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "radar_app.py")
+        with open(chemin, encoding="utf-8") as f:
+            return f.read()
+
+    def test_les_projets_sont_passes_au_cockpit(self):
+        src = self._source()
+        self.assertIn("projets=projets_suivis", src)
+        self.assertIn("candidats_projets=cand_projets", src)
+
+    def test_lecture_depuis_postgres_pas_le_sheet(self):
+        """L'app n'a pas de credentials Google : sa source est le miroir."""
+        src = self._source()
+        self.assertIn('_onglet(conn, "projets_radar")', src)
+        self.assertIn('_onglet(conn, "projets_candidats")', src)
+
+    def test_chargement_best_effort(self):
+        src = self._source()
+        self.assertIn("projets indisponibles", src)
+        self.assertIn("candidats projets indisponibles", src)
+
+    @unittest.skipUnless(PRET, "fastapi absent")
+    def test_normalisation_partagee_avec_le_cockpit(self):
+        """Une seule definition du format, quelle que soit la source."""
+        import radar_app
+        p = radar_app._normaliser_projet({"project_id": "X", "maturite": "65",
+                                          "timeline_json": '[{"annee":"2026"}]'})
+        self.assertEqual(p["maturite"], 65.0)
+        self.assertEqual(p["timeline"][0]["annee"], "2026")
+        c = radar_app._normaliser_candidat({"nom": "Y", "confiance": "42",
+                                            "signaux_json": "[]"})
+        self.assertEqual(c["confiance"], 42.0)
+
+    @unittest.skipUnless(PRET, "fastapi absent")
+    def test_valeurs_aberrantes_ne_cassent_pas(self):
+        import radar_app
+        p = radar_app._normaliser_projet({"project_id": "X", "maturite": "n/a",
+                                          "timeline_json": "{casse"})
+        self.assertEqual(p["maturite"], 0)
+        self.assertEqual(p["timeline"], [])
