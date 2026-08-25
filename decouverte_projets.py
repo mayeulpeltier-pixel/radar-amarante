@@ -1170,10 +1170,220 @@ def entree_registre(candidat):
     }
 
 
+# ===========================================================================
+# 7bis. VERIFICATION PRESSE CIBLEE
+# ===========================================================================
+# POURQUOI. La corroboration de presse exigee depuis le 24/08/2026 a un effet
+# de bord structurel : les leads DFI couvrent les 40 pays du radar, alors que
+# les requetes presse n'en couvrent que 3 par run. Un projet DFI au Malawi ne
+# peut donc PAS etre corrobore par une requete presse qui n'interroge que le
+# Sahel. Mesure du run du 24/08 : "Mpatamanga Hydropower Storage Project"
+# (~1,5 Md$) et "Transport Corridors for Economic Resilience Mozambique",
+# tous deux pertinents, bloques pour une raison etrangere a leur qualite.
+#
+# PLUTOT QUE D'ASSOUPLIR LA REGLE (on retomberait a recopier le portefeuille
+# de la Banque Mondiale), on VA CHERCHER la corroboration : une requete presse
+# sur le nom exact du projet. Soit la presse en parle et le projet est
+# confirme, soit personne n'en parle et il reste en attente a juste titre.
+
+# Noms communs qui ne peuvent pas servir d'ancre a eux seuls.
+MOTS_COMMUNS = {"bridge", "tunnel", "station", "plant", "centrale", "route",
+                "road", "barrage", "usine", "canal", "energie", "energy",
+                "power", "water", "solar", "wind", "gold", "copper", "iron",
+                "cement", "steel", "hub", "city", "ville", "nord", "sud",
+                "north", "south", "east", "west", "phase", "delta"}
+
+MAX_VERIFICATIONS = int(os.environ.get("RADAR_VERIF_PRESSE_MAX", "8"))
+SEUIL_VERIFICATION = float(os.environ.get("RADAR_VERIF_PRESSE_SEUIL", "60"))
+
+
+def candidats_a_verifier(candidats, plafond=None, seuil=None):
+    """Candidats meritant une verification presse ciblee. Fonction PURE.
+
+    On ne verifie QUE ceux qui en ont besoin et qui le meritent :
+      - deja credibles (confiance suffisante) ;
+      - pertinents pour Amarante (inutile de verifier un programme
+        d'assainissement urbain) ;
+      - adosses a une source officielle mais SANS aucune presse ;
+      - nommes (un candidat sans nom n'a pas de requete possible).
+    Tries par confiance decroissante, bornes par un plafond de cout."""
+    plafond = MAX_VERIFICATIONS if plafond is None else plafond
+    seuil = SEUIL_VERIFICATION if seuil is None else seuil
+    eligibles = []
+    for c in candidats or []:
+        if c.get("sans_nom") or not c.get("iso3"):
+            continue
+        if int(c.get("nb_sources_presse", 0) or 0) > 0:
+            continue
+        if not c.get("sources_officielles"):
+            continue
+        if float(c.get("confiance", 0) or 0) < seuil:
+            continue
+        if not pertinent_pour_amarante(c)[0]:
+            continue
+        eligibles.append(c)
+    eligibles.sort(key=lambda c: -float(c.get("confiance", 0) or 0))
+    return eligibles[:plafond]
+
+
+def requete_verification(candidat):
+    """Requete presse ciblee sur le NOM EXACT du projet. Fonction PURE.
+    Le pays est ajoute en desambiguisation, jamais en tete : ici c'est le nom
+    du projet qui doit primer."""
+    nom = str(candidat.get("nom") or "").strip()
+    if not nom:
+        return ""
+    pays = pref.pays_par_iso3(candidat.get("iso3"))
+    suffixe = ' "{}"'.format(pays["nom"]) if pays else ""
+    return '"{}"{}'.format(nom[:80], suffixe)
+
+
+def articles_confirmants(articles, candidat):
+    """Articles qui parlent VRAIMENT du projet, hors sources officielles.
+    Fonction PURE.
+
+    REGLE D'APPARIEMENT. Exiger TOUS les jetons du nom etait trop strict :
+    "Mpatamanga Hydropower Storage Project" ne reconnaissait pas un article
+    titre "Mpatamanga hydropower project reaches financial close", faute du
+    mot "Storage". On exige donc :
+      - l'ANCRE, c'est-a-dire le jeton distinctif le plus long (en pratique le
+        nom propre : "mpatamanga", "simandou", "tanga") ;
+      - plus la MOITIE des autres jetons distinctifs, pour qu'un nom compose
+        ne matche pas sur un seul mot banal.
+    Garde-fou : si l'ancre est courte (< 6 caracteres, ex. "BRIDGE"), on exige
+    TOUS les jetons -- un nom generique ramenerait n'importe quoi."""
+    distinctifs = sorted(
+        (j for j in jetons_projet(candidat.get("nom", ""))
+         if j not in MOTS_NON_DISTINCTIFS and len(j) >= 4),
+        key=len, reverse=True)
+    if not distinctifs:
+        return []
+    ancre = distinctifs[0]
+    autres = distinctifs[1:]
+    # Une ancre COURTE ou COMMUNE ("bridge", "tanga") ne prouve rien seule :
+    # on exige alors que le PAYS soit aussi cite dans l'article. Mesure :
+    # sans cette regle, un candidat nomme "BRIDGE" etait confirme par
+    # "New bridge opens in Lagos".
+    ancre_faible = len(ancre) < 7 or ancre in MOTS_COMMUNS
+    pays = pref.pays_par_iso3(candidat.get("iso3"))
+    jetons_pays = set()
+    if pays:
+        jetons_pays = {_norm(pays["nom"])} | {
+            _norm(v) for v in (pays.get("noms_locaux") or {}).values()}
+        jetons_pays = {j for j in jetons_pays if len(j) >= 4}
+
+    def _present(jeton, texte):
+        return bool(re.search(r"(?<![a-z0-9])" + re.escape(jeton), texte))
+
+    out = []
+    for a in articles or []:
+        texte = _norm("{} {}".format(a.get("titre", ""), a.get("resume", "")))
+        if not _present(ancre, texte):
+            continue
+        # Moitie des AUTRES jetons, arrondie au plancher : "Mpatamanga
+        # Hydropower Storage Project" doit reconnaitre un titre qui ecrit
+        # seulement "Mpatamanga hydropower project".
+        if sum(1 for j in autres if _present(j, texte)) < len(autres) // 2:
+            continue
+        if ancre_faible and jetons_pays and not any(
+                _present(j, texte) for j in jetons_pays):
+            continue
+        if sref.est_officielle({"titre": a.get("titre", ""),
+                                "lien": a.get("lien", "")}):
+            continue
+        out.append(a)
+    return out
+
+
+def integrer_confirmations(candidat, articles):
+    """Ajoute les articles confirmants au candidat et RECALCULE ses compteurs
+    de preuve. Fonction PURE (travaille sur une copie)."""
+    c = dict(candidat)
+    if not articles:
+        return c
+    signaux = list(c.get("signaux") or [])
+    sources = set(c.get("sources") or ())
+    presse = int(c.get("nb_sources_presse", 0) or 0)
+    poids = float(c.get("poids_sources", 0) or 0)
+    meilleure = float(c.get("meilleure_fiabilite", 0) or 0)
+    nouvelles = set()
+    for a in articles:
+        cle = sref.cle_source({"titre": a.get("titre", ""),
+                               "lien": a.get("lien", "")})
+        signaux.append({"titre": a.get("titre", ""), "date": _date_iso(a.get("date", "")),
+                        "lien": a.get("lien", ""), "phase": ""})
+        if not cle or cle in sources:
+            continue
+        sources.add(cle)
+        nouvelles.add(cle)
+        f = sref.fiabilite_du_signal({"titre": a.get("titre", ""),
+                                      "lien": a.get("lien", "")})
+        poids += f
+        meilleure = max(meilleure, f)
+    c["signaux"] = signaux
+    c["nb_signaux"] = len(signaux)
+    c["sources"] = sorted(sources)
+    c["nb_sources"] = len(sources)
+    c["nb_sources_presse"] = presse + len(nouvelles)
+    c["poids_sources"] = round(poids, 3)
+    c["meilleure_fiabilite"] = round(meilleure, 3)
+    c["verifie_presse"] = True
+    c["confirmations"] = len(nouvelles)
+    c["confiance"] = score_confiance(c)
+    return c
+
+
+def verifier_par_la_presse(candidats, fetch=None, session=None, plafond=None):
+    """Verifie les candidats DFI sans corroboration en interrogeant la presse
+    sur leur nom exact. Retour : (candidats mis a jour, nb verifies).
+    I/O tolerant : une requete qui echoue laisse le candidat inchange."""
+    a_verifier = candidats_a_verifier(candidats, plafond=plafond)
+    if not a_verifier:
+        return candidats, 0
+    if fetch is None:
+        sess = session or ted.session_robuste()
+
+        def fetch(url):
+            rep = sess.get(url, timeout=30)
+            rep.raise_for_status()
+            return rep.text
+
+    par_nom = {id(c): c for c in a_verifier}
+    resultats = {}
+    for c in a_verifier:
+        requete = requete_verification(c)
+        if not requete:
+            continue
+        hl, gl, ceid = pref.PARAMS_LANGUE["en"]
+        url = bitd.url_google_news("", requete_perso=requete,
+                                   hl=hl, gl=gl, ceid=ceid)
+        try:
+            articles = bitd.parser_rss(fetch(url))[:MAX_ARTICLES]
+        except Exception as e:
+            print("    (info) verification '{}' echouee ({}).".format(
+                (c.get("nom") or "?")[:40], str(e)[:50]))
+            continue
+        confirmants = articles_confirmants(articles, c)
+        resultats[id(c)] = confirmants
+        print("    verification : {:<40} {} article(s) confirmant(s)".format(
+            (c.get("nom") or "?")[:40], len(confirmants)))
+        time.sleep(PAUSE)
+
+    sortie = []
+    for c in candidats:
+        if id(c) in resultats:
+            sortie.append(integrer_confirmations(c, resultats[id(c)]))
+        else:
+            sortie.append(c)
+    sortie.sort(key=lambda c: -float(c.get("confiance", 0) or 0))
+    return sortie, len(resultats)
+
+
 def promouvoir(candidats, registre=None, seuil=None):
     """Candidats -> (entrees promues, candidats restes en attente).
     Ecarte au passage tout candidat devenu redondant avec le registre.
     Fonction PURE."""
+
     promus, attente = [], []
     connus = ref.charger_registre(registre)
     for c in candidats:
@@ -1442,6 +1652,13 @@ def main():
     print("  {} lot(s) LLM.".format(lots))
 
     candidats = regrouper(extraits)
+    # Verification presse ciblee : va CHERCHER la corroboration des candidats
+    # DFI pertinents mais isoles, au lieu d'attendre qu'elle tombe par hasard
+    # dans les 3 pays interroges ce run.
+    candidats, n_verifies = verifier_par_la_presse(candidats)
+    if n_verifies:
+        print("  {} candidat(s) verifie(s) par requete presse ciblee.".format(
+            n_verifies))
     promus, attente = promouvoir(candidats)
     print("  {} candidat(s) : {} promu(s), {} en attente.".format(
         len(candidats), len(promus), len(attente)))
