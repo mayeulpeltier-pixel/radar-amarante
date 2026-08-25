@@ -516,3 +516,31 @@ class TestCorrectifsDuRunDeProduction(unittest.TestCase):
         blog = {"titre": "Projet Y", "resume": "", "lien": "https://blog.example/1"}
         retenus, _ = dp.prioriser([blog, officiel], plafond=1)
         self.assertEqual(retenus[0]["lien"], officiel["lien"])
+
+
+class TestMemoireNeSacrifiePasLesEcartes(unittest.TestCase):
+    """RUN DU 24/08/2026, 2e occurrence. Le run marquait "vus" les 1264 signaux
+    prepares alors qu'il n'en avait analyse que 300 : les 964 ecartes par le
+    plafond etaient perdus DEFINITIVEMENT. Le run suivant a trouve 0 article
+    nouveau et 0 signal DFI -- tout etait deja "vu", sans avoir ete lu."""
+
+    def test_seuls_les_signaux_analyses_sont_memorises(self):
+        import inspect
+        src = inspect.getsource(dp.main)
+        i = src.find("signaux, ecartes = prioriser")
+        j = src.find("radar_etat.sauver")
+        self.assertGreater(i, 0, "la priorisation doit exister")
+        self.assertLess(i, j, "prioriser DOIT preceder la memorisation")
+        self.assertIn('[s["id"] for s in signaux]', src)
+
+    def test_prioriser_ne_renvoie_que_les_retenus(self):
+        signaux = [{"titre": "T{}".format(i), "resume": "",
+                    "lien": "http://x/{}".format(i)} for i in range(30)]
+        retenus, ecartes = dp.prioriser(signaux, plafond=10)
+        self.assertEqual(len(retenus), 10)
+        self.assertEqual(len(ecartes), 20)
+        # Aucun ecarte ne doit se retrouver parmi les retenus : sinon il serait
+        # memorise sans avoir ete analyse.
+        liens_retenus = {s["lien"] for s in retenus}
+        for e in ecartes:
+            self.assertNotIn(e["lien"], liens_retenus)
