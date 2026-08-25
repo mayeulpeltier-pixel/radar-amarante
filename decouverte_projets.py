@@ -615,6 +615,52 @@ def extraire_par_lots(signaux, appel=None, max_lots=None):
 # ===========================================================================
 # 5. REGROUPEMENT EN CANDIDATS
 # ===========================================================================
+def prioriser(signaux, plafond=None):
+    """Ordonne les signaux par PROMESSE avant de les soumettre au plafond LLM.
+
+    RUN DU 24/08/2026 : 1264 signaux disponibles, 300 analyses (30 lots x 10).
+    Les 964 restants -- tous des signaux DFI, concatenes en dernier -- ont ete
+    jetes SILENCIEUSEMENT. On ne choisissait donc pas ce qu'on analysait : on
+    prenait ce qui arrivait en premier.
+
+    Critere de promesse (aucun appel LLM, tout est deterministe) :
+      - vocabulaire de GRAND PROJET dans le titre (LNG, refinery, corridor,
+        hydropower, port, railway, mine...) ;
+      - montant significatif mentionne ;
+      - source officielle (DFI, gouvernement).
+    Retour : (retenus, ecartes). Fonction PURE."""
+    plafond = (MAX_LOTS * TAILLE_LOT) if plafond is None else plafond
+    notes = []
+    for s in signaux or []:
+        texte = _norm("{} {}".format(s.get("titre", ""), s.get("resume", "")))
+        note = 0
+        note += 3 * sum(1 for m in MOTS_GRAND_PROJET if m in texte)
+        if re.search(r"\d[\d ,.]*\s*(md|bn|billion|milliard)", texte):
+            note += 6
+        elif re.search(r"\d[\d ,.]*\s*(m|million)\b", texte):
+            note += 3
+        if sref.est_officielle(s):
+            note += 2
+        notes.append((note, s))
+    notes.sort(key=lambda t: -t[0])
+    retenus = [s for _, s in notes[:plafond]]
+    ecartes = [s for _, s in notes[plafond:]]
+    return retenus, ecartes
+
+
+# Vocabulaire qui distingue un GRAND projet d'un programme administratif. Sert
+# a la priorisation ET au filtre de pertinence Amarante.
+MOTS_GRAND_PROJET = (
+    "lng", "gnl", "refinery", "raffinerie", "pipeline", "gazoduc", "oleoduc",
+    "hydropower", "hydroelectric", "hydroelectrique", "barrage", "dam",
+    "power plant", "centrale", "smelter", "fonderie", "mine", "miniere",
+    "mining", "deepwater", "port en eau profonde", "railway", "chemin de fer",
+    "corridor", "terminal", "offshore", "petrochemical", "petrochimique",
+    "steel", "acierie", "cement", "cimenterie", "fertilizer", "engrais",
+    "transmission line", "ligne de transport", "epc", "megaproject",
+)
+
+
 def deja_connu(nom, registre=None):
     """PROJECT_ID du projet EXISTANT que ce nom designe, ou "".
 
@@ -754,6 +800,7 @@ def _finaliser_candidat(c):
     # (sinon une seule redaction prolixe simulerait une convergence).
     poids, officielles = 0.0, []
     meilleure = 0.0
+    presse = set()          # sources NON officielles : la corroboration reelle
     vus_sources = set()
     for s in c["signaux"]:
         # Identite de la source : l'EDITEUR derriere l'agregateur, sinon le
@@ -767,12 +814,17 @@ def _finaliser_candidat(c):
         meilleure = max(meilleure, f)
         if sref.est_officielle(s):
             officielles.append(sref.decrire_source(s))
+        else:
+            presse.add(cle)
     c["poids_sources"] = round(poids, 3)
     # La SOMME ne suffit pas : trois blogs inconnus (0.40 x 3 = 1.20) pesaient
     # plus que Bloomberg + un quotidien national (0.65 + 0.50 = 1.15). On
     # retient donc aussi la QUALITE de la meilleure source du faisceau.
     c["meilleure_fiabilite"] = round(meilleure, 3)
     c["sources_officielles"] = officielles
+    # Sources de PRESSE distinctes : un projet vu par la seule Banque Mondiale
+    # n'est pas une decouverte, c'est une ligne de portefeuille.
+    c["nb_sources_presse"] = len(presse)
     c["acteurs_top"] = [a for a, _ in c["acteurs"].most_common(10)]
     c["montant_musd"] = max(c["montants"]) if c["montants"] else 0
     c["confiance_llm"] = (sum(c["confiances"]) / len(c["confiances"])
@@ -925,6 +977,69 @@ SEUIL_POIDS = float(os.environ.get("RADAR_PROMO_POIDS", "1.00"))
 # sources ne doit JAMAIS racheter un rejet du modele : une information tres
 # relayee peut n'etre pas un projet du tout.
 SEUIL_CONFIANCE_LLM = float(os.environ.get("RADAR_PROMO_CONF_LLM", "40"))
+# Seuil de PERTINENCE COMMERCIALE (0-100). Voir pertinent_pour_amarante.
+SEUIL_PERTINENCE = float(os.environ.get("RADAR_PROMO_PERTINENCE", "60"))
+
+
+# Secteurs a fort deploiement expatrie. Un programme d'assainissement urbain
+# ou de resilience aux inondations mobilise des equipes locales sur des sites
+# urbains : peu d'escorte, peu de CPO. Un LNG, une mine ou un corridor isole,
+# l'inverse. C'est ce qui separe une opportunite Amarante d'un projet reel
+# mais sans valeur commerciale pour vous.
+SECTEURS_DEPLOIEMENT = {"energie": 1.0, "mines": 0.95, "transport": 0.75,
+                        "industrie": 0.7, "infrastructure": 0.45}
+
+# Intitules administratifs typiques des portefeuilles DFI. Ils ne disqualifient
+# pas a eux seuls, mais ils ne suffisent pas non plus a faire un grand chantier.
+MOTS_ADMINISTRATIFS = (
+    "sector improvement", "resilience project", "urban flood", "flood emergency",
+    "water supply", "sanitation", "irrigation scheme", "capacity building",
+    "institutional", "social safety", "safety net", "governance",
+    "landscape management", "inclusive cities", "mobility project",
+    "connectivity program", "development policy",
+)
+
+
+def pertinent_pour_amarante(candidat, seuil=None):
+    """Ce projet peut-il generer un besoin de surete pour Amarante ?
+
+    Filtre de PERTINENCE COMMERCIALE, applique avant promotion. Le run du
+    24/08/2026 promouvait de l'assainissement a Kinshasa et de la mobilite
+    urbaine a Karachi : des projets reels, mais a faible deploiement expatrie.
+    Retour : (bool, motif). Fonction PURE."""
+    seuil = SEUIL_PERTINENCE if seuil is None else seuil
+    secteur = candidat.get("secteur", "infrastructure")
+    intensite = SECTEURS_DEPLOIEMENT.get(secteur, 0.45)
+    texte = _norm("{} {}".format(candidat.get("nom", ""),
+                                 " ".join(s.get("titre", "")
+                                          for s in candidat.get("signaux", [])[:5])))
+    grand = any(m in texte for m in MOTS_GRAND_PROJET)
+    administratif = any(m in texte for m in MOTS_ADMINISTRATIFS)
+    montant = float(candidat.get("montant_musd") or 0)
+    try:
+        risque = pj._risque_pays(candidat.get("iso3"))
+    except Exception:
+        risque = 0.3
+
+    note = 0.0
+    note += 40 * intensite
+    if grand:
+        note += 25
+    if administratif and not grand:
+        note -= 20
+    note += 20 if montant >= 1000 else 12 if montant >= 200 else 0
+    note += 20 * risque
+
+    motifs = ["secteur {} ({})".format(secteur,
+              "déploiement lourd" if intensite >= 0.75 else "déploiement faible")]
+    if grand:
+        motifs.append("vocabulaire de grand chantier")
+    if administratif and not grand:
+        motifs.append("intitulé de programme administratif")
+    if montant:
+        motifs.append("{} M$".format(int(montant)))
+    motifs.append("risque pays {:.1f}".format(risque))
+    return note >= seuil, " · ".join(motifs)
 
 
 def promouvable(candidat, seuil=None, min_signaux=None, min_sources=None,
@@ -964,7 +1079,14 @@ def promouvable(candidat, seuil=None, min_signaux=None, min_sources=None,
         return False
     poids = float(candidat.get("poids_sources", 0) or 0)
     meilleure = float(candidat.get("meilleure_fiabilite", 0) or 0)
-    voie_officielle = bool(candidat.get("sources_officielles")) and poids >= 0.85
+    # VOIE OFFICIELLE, resserree apres le run du 24/08/2026. Un avis DFI isole
+    # suffisait a promouvoir : comme bm_projets emet des CENTAINES d'avis, le
+    # radar recopiait le portefeuille de la Banque Mondiale au lieu de
+    # decouvrir. Une source officielle CORROBORE desormais un signal de
+    # presse ; elle ne cree plus un projet a elle seule.
+    n_presse = int(candidat.get("nb_sources_presse", 0) or 0)
+    voie_officielle = (bool(candidat.get("sources_officielles"))
+                       and poids >= 0.85 and n_presse >= 1)
     # La convergence exige AUSSI qu'au moins une source soit identifiee et
     # credible (>= presse generaliste). Sans ce garde-fou, trois blogs inconnus
     # (0.40 x 3 = 1.20) l'emporteraient sur Bloomberg + un quotidien (1.15).
@@ -972,7 +1094,10 @@ def promouvable(candidat, seuil=None, min_signaux=None, min_sources=None,
                         and candidat.get("nb_sources", 0) >= min_sources
                         and poids >= seuil_poids
                         and meilleure >= 0.50)
-    return voie_officielle or voie_convergence
+    if not (voie_officielle or voie_convergence):
+        return False
+    # Dernier filtre : ce projet vaut-il quelque chose POUR AMARANTE ?
+    return pertinent_pour_amarante(candidat)[0]
 
 
 def generer_project_id(nom, iso3):
@@ -1286,6 +1411,19 @@ def main():
         print("  (info) signaux DFI indisponibles ({}) : presse seule.".format(
             str(e)[:70]))
 
+    # PRIORISATION avant le plafond LLM. Sans elle, on analysait simplement les
+    # 300 premiers signaux arrives, et les 964 suivants (tous DFI) etaient
+    # jetes en silence. On choisit desormais, et on DIT ce qu'on laisse.
+    avant = len(signaux)
+    signaux, ecartes = prioriser(signaux)
+    if ecartes:
+        print("  budget : {} signal(aux) analyse(s) sur {} ; {} ecarte(s) faute "
+              "de budget (les moins prometteurs).".format(
+                  len(signaux), avant, len(ecartes)))
+        apercu = [s.get("titre", "")[:60] for s in ecartes[:3]]
+        for t in apercu:
+            print("    ecarte : {}".format(t))
+
     extraits, lots = extraire_par_lots(signaux)
     print("  {} lot(s) LLM.".format(lots))
 
@@ -1297,9 +1435,11 @@ def main():
         print("    PROMU  [{}] {} ({}, {}) confiance {}".format(
             e["project_id"], e["libelle"], e["iso3"], e["secteur"], e["confiance"]))
     for c in attente[:8]:
-        print("    attente  {:<34} confiance {:>3} · {}".format(
+        pertinent, motif = pertinent_pour_amarante(c)
+        raison = ("" if pertinent else " · ECARTE (pertinence) : " + motif)
+        print("    attente  {:<34} confiance {:>3} · {}{}".format(
             (c.get("nom") or "?")[:34], c.get("confiance", 0),
-            " · ".join(motifs_confiance(c)[:3])))
+            " · ".join(motifs_confiance(c)[:2]), raison))
 
     ecrire(candidats, [e["libelle"] for e in promus],
            os.environ.get("TED_SHEET_ID"),
