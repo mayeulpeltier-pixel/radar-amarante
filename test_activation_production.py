@@ -146,3 +146,67 @@ class TestRepliMiroirPostgres(unittest.TestCase):
                                    "timeline_json": "{casse"})
         self.assertEqual(p["maturite"], 0)
         self.assertEqual(p["timeline"], [])
+
+
+class TestLaRotationNeDetruitPlus(unittest.TestCase):
+    """RUN DU 24/08/2026, defaut majeur. L'ecriture etait un REMPLACEMENT
+    complet (clear + update) alors que chaque run ne traite que quelques
+    projets (rotation). Le run 1 avait ecrit INGA3, TANZLNG et MOZLNG ; le
+    run 2 les a REMPLACES par CORALSUL, SIMANDOU et LOBITO. Le cockpit
+    n'aurait jamais affiche plus de 3 projets sur 22 au registre."""
+
+    @staticmethod
+    def _ligne(colonnes, cle, valeur, champ, val_champ):
+        l = [""] * len(colonnes)
+        l[colonnes.index(cle)] = valeur
+        l[colonnes.index(champ)] = str(val_champ)
+        return l
+
+    def test_projets_accumules_entre_runs(self):
+        L = lambda p, m: self._ligne(cp.COLONNES, "project_id", p, "maturite", m)
+        run1 = [L("INGA3_COD", 62), L("TANZLNG_TZA", 50), L("MOZLNG_MOZ", 85)]
+        run2 = [L("CORALSUL_MOZ", 73), L("SIMANDOU_GIN", 68), L("LOBITO_AGO", 52)]
+        fusion = cp.fusionner_lignes(run1, run2)
+        self.assertEqual(len(fusion), 6)
+        ids = [l[cp.COLONNES.index("project_id")] for l in fusion]
+        self.assertIn("INGA3_COD", ids)
+        self.assertIn("LOBITO_AGO", ids)
+
+    def test_reanalyse_met_a_jour_sans_dupliquer(self):
+        L = lambda p, m: self._ligne(cp.COLONNES, "project_id", p, "maturite", m)
+        fusion = cp.fusionner_lignes([L("INGA3_COD", 62)], [L("INGA3_COD", 70)])
+        self.assertEqual(len(fusion), 1)
+        self.assertEqual(fusion[0][cp.COLONNES.index("maturite")], "70")
+
+    def test_lignes_sans_identifiant_ignorees(self):
+        self.assertEqual(cp.fusionner_lignes([[""] * len(cp.COLONNES)], []), [])
+
+    def test_candidats_accumules_entre_runs(self):
+        L = lambda p, c: self._ligne(dp.COLONNES, "project_id_propose", p,
+                                     "confiance", c)
+        fusion = dp.fusionner_candidats([L("A_MLI", 90), L("B_NER", 50)],
+                                        [L("C_GIN", 80), L("A_MLI", 95)])
+        self.assertEqual(len(fusion), 3)
+        # Le run recent fait foi, et le tri met les mieux notes en tete.
+        self.assertEqual(fusion[0][dp.COLONNES.index("confiance")], "95")
+
+    def test_plafond_des_candidats(self):
+        L = lambda p, c: self._ligne(dp.COLONNES, "project_id_propose", p,
+                                     "confiance", c)
+        beaucoup = [L("P{}".format(i), i) for i in range(50)]
+        self.assertEqual(len(dp.fusionner_candidats([], beaucoup, plafond=10)), 10)
+
+    def test_lecture_de_l_existant_est_best_effort(self):
+        class FeuilleCassee:
+            def get_all_values(self):
+                raise RuntimeError("quota")
+
+        self.assertEqual(cp._lignes_existantes(FeuilleCassee()), [])
+        self.assertEqual(dp._lignes_existantes(FeuilleCassee()), [])
+
+    def test_entetes_differents_repartent_a_neuf(self):
+        class Feuille:
+            def get_all_values(self):
+                return [["colonne_inconnue"], ["x"]]
+
+        self.assertEqual(cp._lignes_existantes(Feuille()), [])
