@@ -374,6 +374,39 @@ def ecrire_miroir(onglet, lignes):
             onglet, str(e)[:120])
 
 
+def lire_miroir(onglet, limite=500):
+    """Lignes d'un onglet depuis le miroir, ou []. Ne leve JAMAIS.
+
+    SOURCE DE SECOURS. Constatee necessaire au premier run de production du
+    24/08/2026 : l'ecriture Sheet avait echoue (portee OAuth insuffisante)
+    alors que le miroir Postgres, lui, etait correctement alimente. Sans
+    lecture possible, des donnees disponibles restaient invisibles.
+
+    C'est aussi un premier pas vers le decouplage du Google Sheet, qui reste
+    aujourd'hui un point de defaillance unique (quota, panne, droits)."""
+    if not actif():
+        return []
+    try:
+        with connexion() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT donnees FROM radar_lignes WHERE onglet = %s"
+                    " ORDER BY maj DESC LIMIT %s", (onglet, int(limite)))
+                lignes = cur.fetchall()
+        out = []
+        for (donnees,) in lignes:
+            if isinstance(donnees, dict):
+                out.append(donnees)
+            elif donnees:
+                try:
+                    out.append(json.loads(donnees))
+                except (TypeError, ValueError):
+                    continue
+        return out
+    except Exception:
+        return []
+
+
 # ===========================================================================
 # MAIN : verification autonome (workflow "Stockage Postgres")
 # ===========================================================================
