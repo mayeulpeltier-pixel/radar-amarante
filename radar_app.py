@@ -181,6 +181,18 @@ def _onglet(conn, nom):
     return st.lire_onglet(conn, nom)
 
 
+def _normaliser_projet(donnees):
+    """Delegue au cockpit : une seule definition du format, quelle que soit la
+    source (Sheet cote Cloudflare, Postgres cote Render)."""
+    import radar_cockpit
+    return radar_cockpit._normaliser_projet(donnees)
+
+
+def _normaliser_candidat(donnees):
+    import radar_cockpit
+    return radar_cockpit._normaliser_candidat(donnees)
+
+
 def lire_onglets_pg(conn):
     """Les memes onglets que dash.lire_onglets (MIGA et IFC inclus), depuis
     radar_lignes.
@@ -313,9 +325,33 @@ def generer_page(conn):
             doss = _dossiers.serialiser(_dossiers.construire_dossiers(leads))
         except Exception:
             doss = []
+        # Project Intelligence. TROISIEME chemin de generation du cockpit, a
+        # cote de radar_dashboard (Cloudflare) et de radar_cockpit.main (jamais
+        # appele). Sans ces lignes, l'app Render affichait une vue Projets vide
+        # alors que le miroir Postgres etait correctement alimente (constate le
+        # 24/08/2026). Ici on lit Postgres, pas le Sheet : c'est la source de
+        # verite de l'app.
+        try:
+            projets_suivis = [_normaliser_projet(d)
+                              for d in _onglet(conn, "projets_radar")
+                              if isinstance(d, dict) and d.get("project_id")]
+        except Exception as e:
+            print("(app) projets indisponibles ({}).".format(str(e)[:80]))
+            projets_suivis = []
+        try:
+            cand_projets = [_normaliser_candidat(d)
+                            for d in _onglet(conn, "projets_candidats")
+                            if isinstance(d, dict) and d.get("nom")]
+        except Exception as e:
+            print("(app) candidats projets indisponibles ({}).".format(str(e)[:80]))
+            cand_projets = []
+        print("(app) Project Intelligence : {} projet(s), {} candidat(s).".format(
+            len(projets_suivis), len(cand_projets)))
         return radar_cockpit.generer_cockpit(leads, geo=geo, suivi=suivi,
                                              watchlist=watch, candidats=idx_cand,
-                                             dossiers=doss)
+                                             dossiers=doss,
+                                             projets=projets_suivis,
+                                             candidats_projets=cand_projets)
     except Exception as e:
         print("(app) cockpit indisponible ({}), repli dashboard.".format(str(e)[:100]))
         return dash.generer_html(leads, lignes_watchlist, api_statut=True,
