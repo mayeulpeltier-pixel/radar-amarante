@@ -1,4 +1,10 @@
 name: Project Discovery (decouverte de projets inconnus)
+
+# Le commit de la memoire inter-runs exige un droit d'ECRITURE sur le
+# depot. Sans ce bloc, le push echoue en 403 'Write access not granted'
+# (constate au premier run de production du 24/08/2026).
+permissions:
+  contents: write
 # Couche 2bis : detecte des GRANDS PROJETS ABSENTS de projets_reference.py, a
 # partir de signaux gouvernementaux, bancaires et de presse (pays x vocabulaire
 # de naissance de projet), puis produit des CANDIDATS scores.
