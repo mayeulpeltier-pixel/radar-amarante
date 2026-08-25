@@ -93,9 +93,16 @@ LIBELLE_PHASE = {
 PHASES_CHAUDES = {"FID", "EPC_PROCUREMENT", "EPC_AWARDED", "CONSTRUCTION"}
 
 # Niveaux d'alerte (early warning), section 13 du cahier des charges.
-ALERTE_HAUTE = {"FID", "EPC_AWARDED", "CONSTRUCTION", "FUNDING_APPROVED"}
+# COMMISSIONING rejoint les alertes hautes : la mise en service est le moment
+# ou les equipes internationales sont le plus presentes sur site.
+ALERTE_HAUTE = {"FID", "EPC_AWARDED", "CONSTRUCTION", "COMMISSIONING",
+                "FUNDING_APPROVED"}
+# OPERATIONS n'est plus un "signal precoce" (aberration constatee le
+# 24/08/2026) : un site en exploitation dans un pays a risque represente un
+# besoin de surete REEL et durable, meme si ce n'est plus une opportunite
+# naissante.
 ALERTE_MOYENNE = {"FEASIBILITY", "CONSULTANT_SELECTION", "GOVERNMENT_AGREEMENT",
-                  "EPC_PROCUREMENT", "FEED", "PRE_FID"}
+                  "EPC_PROCUREMENT", "FEED", "PRE_FID", "MOU", "OPERATIONS"}
 
 
 def rang(phase):
@@ -261,8 +268,7 @@ def _finaliser(seau, aujourd):
     # phase_max_atteinte = memoire du point le plus avance jamais observe.
     seau["phase_courante"] = hist[-1]["phase"] if hist else ""
     seau["libelle_phase"] = LIBELLE_PHASE.get(seau["phase_courante"], "Phase inconnue")
-    seau["phase_max_atteinte"] = (max((h["phase"] for h in hist), key=rang)
-                                  if hist else "")
+    seau["phase_max_atteinte"] = _phase_max_corroboree(hist)
     seau["recul"] = bool(hist and rang(seau["phase_courante"])
                          < rang(seau["phase_max_atteinte"]))
 
@@ -280,6 +286,27 @@ def _finaliser(seau, aujourd):
 # ===========================================================================
 # 5. SCORE DE MATURITE (0-100) -- ou en est le PROJET
 # ===========================================================================
+def _phase_max_corroboree(historique, minimum=2):
+    """Phase la plus avancee REELLEMENT atteinte. Fonction PURE.
+
+    GARDE-FOU SYMETRIQUE (24/08/2026). Depuis que l'avancement se juge sur la
+    phase maximale, un SEUL signal mal classe tire tout le projet vers le
+    haut. Mesure sur la reconstruction ukrainienne : 10 signaux
+    "financement approuve" et 1 signal "exploitation" suffisaient a afficher
+    une maturite de 100.
+
+    On exige donc `minimum` signaux pour qu'une phase compte comme atteinte.
+    A defaut (projet jeune, peu de signaux), on retombe sur la plus haute
+    observee : mieux vaut une estimation que rien."""
+    if not historique:
+        return ""
+    compte = collections.Counter(h["phase"] for h in historique if h.get("phase"))
+    corroborees = [ph for ph, n in compte.items() if n >= minimum]
+    if corroborees:
+        return max(corroborees, key=rang)
+    return max(compte, key=rang) if compte else ""
+
+
 def score_maturite(projet, aujourd=None):
     """0-100. Base = phase la PLUS AVANCEE atteinte. Ajustements : densite de
     signaux et obsolescence. Fonction PURE.
