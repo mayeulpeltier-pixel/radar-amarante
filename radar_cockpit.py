@@ -319,9 +319,76 @@ def appliquer_geo(leads, alertes):
         return leads
 
 
+def postures(leads, alertes, risque=None):
+    """Zone -> posture EFFECTIVE, contexte du moment inclus. Fonction PURE.
+
+    LE DEFAUT CORRIGE
+    -----------------
+    Les tuiles de theatre lisaient `RISQUE_ZONE`, une table CONSTANTE : la
+    posture d'un theatre ne bougeait jamais. L'application pouvait donc
+    afficher « Posture jaune » sur une zone dont l'onglet Geopolitique
+    signalait, deux clics plus loin, une aggravation severe. Depuis le
+    rapatriement du boost geo, les SCORES bougeaient mais pas la posture :
+    l'incoherence etait devenue interne a la meme page.
+
+    Regles :
+      - socle = `RISQUE_ZONE[zone]` (0-5), la doctrine de fond, inchangee ;
+      - rehausse = plus forte aggravation RECENTE d'un pays de la zone, via
+        `dash._boost_par_pays` (meme source, memes seuils, meme decroissance
+        dans le temps que la rehausse des scores : une seule verite) ;
+      - pas d'empilement : la plus forte aggravation gagne, on n'additionne
+        pas deux pays ;
+      - un allegement ne DESCEND jamais une posture. Baisser la garde sur un
+        signal d'amelioration serait le mauvais sens de l'erreur ;
+      - le niveau reste borne a 5, l'echelle de la table de fond.
+
+    Le rattachement pays -> zone vient des LEADS eux-memes (chaque lead porte
+    son pays et sa zone), donc aucun referentiel supplementaire a maintenir :
+    une alerte sur un pays ou le radar n'a jamais rien vu n'a pas de theatre a
+    rehausser, et c'est le comportement voulu.
+
+    Renvoie {zone: {base, boost, niveau, pays, motif, date}}. Sans alerte, ou
+    avec RADAR_COCKPIT_GEO=0, boost vaut 0 partout : les tuiles retrouvent
+    exactement leur affichage d'avant."""
+    risque = risque if risque is not None else getattr(dash, "RISQUE_ZONE", {})
+    zones = {}
+    zone_de = {}
+    for l in (leads or []):
+        z = (l.get("zone") or "").strip() or "Non classé"
+        zones[z] = float(risque.get(z, 1.5))
+        p = (l.get("pays") or "").strip()
+        if p:
+            zone_de[p] = z
+    for z in risque:
+        zones.setdefault(z, float(risque.get(z, 1.5)))
+
+    par_pays = {}
+    if GEO_BOOST_ON:
+        try:
+            par_pays = dash._boost_par_pays(alertes or [])
+        except Exception as e:
+            print("(cockpit) postures : rehausse non calculee ({}).".format(
+                str(e)[:60]))
+            par_pays = {}
+
+    out = {}
+    for z, base in zones.items():
+        out[z] = {"base": round(base, 2), "boost": 0.0,
+                  "niveau": round(base, 2), "pays": "", "motif": "", "date": ""}
+    for pays, (boost, motif, maj) in par_pays.items():
+        z = zone_de.get(pays)
+        if not z or z not in out or boost <= out[z]["boost"]:
+            continue
+        out[z].update(boost=round(float(boost), 2), pays=pays,
+                      motif=motif or "", date=maj or "")
+        out[z]["niveau"] = round(min(5.0, out[z]["base"] + float(boost)), 2)
+    return out
+
+
 def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
                     candidats=None, dossiers=None, projets=None,
-                    candidats_projets=None, sante=None):
+                    candidats_projets=None, sante=None, posture=None,
+                    geo_alertes=None):
     """leads (schema dashboard) -> HTML autonome. Fonction PURE.
     dossiers : liste compacte (dossiers.serialiser) pour la vue Ecosysteme
                (projets BM suivis a travers leurs phases). Defaut [].
@@ -330,6 +397,11 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
                exactement comme avant (additif).
     candidats_projets : pistes issues de la DECOUVERTE, non encore promues.
                Affichees a part, car elles demandent un arbitrage humain.
+    geo_alertes : lignes d'alertes BRUTES (schema collecteur), servant a
+               calculer la posture des theatres. Distinct de `geo`, qui est le
+               payload deja mis en forme pour l'onglet Geopolitique.
+    posture  : zone -> posture effective (voir `postures`). Defaut : calcule
+               ici. Passer {} fige les tuiles sur la table de risque constante.
     sante    : etat du dernier run par source (dash.sante_run). Defaut : calcule
                ici depuis les leads. C'est le detecteur de source muette : il
                existait depuis le 02/08 mais n'etait cable QUE sur le dashboard
@@ -339,8 +411,11 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
     suivi = suivi or {}
     if sante is None:
         sante = etat_sante(leads)
+    if posture is None:
+        posture = postures(leads, geo_alertes, risque)
     payload = enrichir(leads)
     return (GABARIT
+            .replace("__POSTURE_JSON__", json.dumps(posture or {}, ensure_ascii=False))
             .replace("__SANTE_JSON__", json.dumps(sante or {}, ensure_ascii=False))
             .replace("__LEADS_JSON__", json.dumps(payload, ensure_ascii=False))
             .replace("__PROJETS_JSON__", json.dumps(projets or [], ensure_ascii=False))
@@ -393,7 +468,8 @@ def main():
     leads = appliquer_geo(leads, lignes_alertes)
     html = generer_cockpit(leads, geo=geo, suivi=suivi, projets=projets,
                            candidats_projets=cand_proj,
-                           sante=etat_sante(leads))
+                           sante=etat_sante(leads),
+                           geo_alertes=lignes_alertes)
     dossier = os.path.dirname(sortie)
     if dossier:
         os.makedirs(dossier, exist_ok=True)
@@ -693,6 +769,7 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .sc.absent{opacity:.5}.sc.absent .dot{background:var(--red)}
 /* Echeance de l'avis : le champ le plus operationnel d'un marche a saisir. */
 .k-note{color:var(--ink-3);font-size:9.5px}
+.post-up{display:block;font-family:var(--mono);font-size:9.5px;font-weight:700;color:var(--red);text-transform:none;letter-spacing:0;margin-top:2px;cursor:help;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .fmeta-sect{color:var(--ink-2);font-weight:600}
 .fmeta-warn{color:var(--amber);font-weight:700;cursor:help}
 .ech{display:block;font-family:var(--mono);font-size:9px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.04em;margin-top:1px;cursor:help}
@@ -821,11 +898,11 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
     <section class="view" id="v-proj">
       <div class="opps-bar">
         <div class="opps-intro"><b>Grands projets suivis avant l'appel d'offres.</b> Un projet regroupe tous ses signaux (annonces, financements, consultants, EPC) sous une même entité, avec sa phase, sa trajectoire et les entreprises qui vont y déployer du personnel. <b>Maturité</b> = où en est le projet. <b>Opportunité</b> = ce qu'il vaut pour Amarante. Les deux sont indépendants.</div>
-        <button class="chip-toggle" id="p-top" onclick="toggleTop()">★ Top 20 opportunités</button>
+        <button class="chip-toggle" id="p-top" onclick="toggleTop()" style="display:none">★ Top 20 opportunités</button>
       </div>
       <div class="kpis" id="kpis-proj"></div>
       <div id="cand-proj"></div>
-      <div class="filters">
+      <div class="filters" id="p-filtres">
         <label class="search" style="max-width:220px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><input id="p-q" placeholder="Rechercher un projet..."></label>
         <div class="facet"><select id="p-pays"><option value="">Tous les pays</option></select></div>
         <div class="facet"><select id="p-sect"><option value="">Tous les secteurs</option></select></div>
@@ -857,6 +934,9 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 const RAW=__LEADS_JSON__, COORDS=__COORDS_JSON__, RISQUE=__RISQUE_JSON__, GEO=__GEO_JSON__, WATCHLIST=__WATCHLIST_JSON__, CANDIDATS=__CANDIDATS_JSON__, DOSSIERS=__DOSSIERS_JSON__, PROJETS_RAW=__PROJETS_JSON__, CANDPROJ_RAW=__CANDPROJ_JSON__;
 // Etat du dernier run par source, derive cote Python (dash.sante_run).
 const SANTE=__SANTE_JSON__;
+// Posture EFFECTIVE par theatre (socle de risque + aggravation recente),
+// derivee cote Python. Cf. radar_cockpit.postures.
+const POSTURE=__POSTURE_JSON__;
 function candidatsPour(l){
   if(!CANDIDATS||!CANDIDATS.secteur_zone)return [];
   const sect=(l.secteur||"Autre"), zone=(l.zone||"Non classe");
@@ -886,7 +966,22 @@ let SURV=new Set();try{SURV=new Set(JSON.parse(localStorage.getItem("ck_surveill
 function estSurveille(l){return l.statut==="surveille"||l.statut==="attribution_publiee"||SURV.has(leadId(l));}
 function attribParue(l){return l.statut==="attribution_publiee";}
 function surveiller(id){const l=LEADS.find(x=>x.id===id);if(!l)return;SURV.add(leadId(l));try{localStorage.setItem("ck_surveilles",JSON.stringify([...SURV]));}catch(e){}envoyerStatut(l,"surveille","");}
-function posture(z){const r=RISQUE[z]||1.5;return r>=4.5?["p-rouge","Posture rouge"]:r>=3?["p-orange","Posture orange"]:["p-jaune","Posture jaune"];}
+// Posture d'un theatre. Lit le niveau EFFECTIF calcule cote Python (socle de
+// risque + aggravation recente). Repli sur la table constante si POSTURE est
+// absent : la page d'un ancien cache ne casse pas, elle redevient statique.
+function posture(z){
+  const p=(POSTURE&&POSTURE[z])||null;
+  const r=p?p.niveau:(RISQUE[z]||1.5);
+  const cls=r>=4.5?["p-rouge","Posture rouge"]:r>=3?["p-orange","Posture orange"]:["p-jaune","Posture jaune"];
+  return [cls[0],cls[1],p&&p.boost>0?p:null];
+}
+// Mention affichee quand la posture est REHAUSSEE : dire d'ou vient la hausse,
+// jamais presenter un niveau rehausse comme s'il etait le socle.
+function postureNote(z){
+  const p=posture(z)[2];if(!p)return "";
+  const t=(p.pays||"")+(p.motif?" — "+p.motif:"")+(p.date?" ("+p.date+")":"");
+  return `<span class="post-up" title="${esc(t)} · socle ${p.base} → ${p.niveau}">▲ ${esc(p.pays||"aggravation")}</span>`;
+}
 const LEADS=RAW.map((l,i)=>({
   id:i,titre:l.titre||"(sans titre)",src:l.src||"?",zone:l.zone||"Non classé",pays:l.pays||"",
   secteur:l.sect||l.grp||"Autre",score:+l.final||0,prio:l.action||"surveiller",valeur:+l.valeur_meur||0,enveloppe:+l.enveloppe_meur||0,
@@ -1016,7 +1111,7 @@ function renderTheatres(){
   document.getElementById("theatres").innerHTML=zones.map(z=>{
     const it=byZone[z];const val=it.reduce((s,l)=>s+l.valeur,0);const hot=it.filter(l=>l.prio==="contacter").length;const p=posture(z);
     const nat=atZone[z]||0;
-    return `<div class="th" onclick="goZone('${z.replace(/'/g,"\\'")}')"><div class="bar ${p[0]}"></div><div class="zone">${z}</div><div class="post ${p[0]}">${p[1]}</div><div class="big">${it.length}<small> à saisir</small></div><div class="val">${val?fmtEur(val)+" · ":""}${hot} à contacter${nat?' · <span title="Marchés déjà attribués : prospects, pas du pipeline">'+nat+' attrib.</span>':""}</div></div>`;
+    return `<div class="th" onclick="goZone('${z.replace(/'/g,"\\'")}')"><div class="bar ${p[0]}"></div><div class="zone">${z}</div><div class="post ${p[0]}">${p[1]}${postureNote(z)}</div><div class="big">${it.length}<small> à saisir</small></div><div class="val">${val?fmtEur(val)+" · ":""}${hot} à contacter${nat?' · <span title="Marchés déjà attribués : prospects, pas du pipeline">'+nat+' attrib.</span>':""}</div></div>`;
   }).join("")||'<div class="empty">Aucun marché en zone couverte.</div>';
 }
 function renderKPIs(){
@@ -1430,6 +1525,21 @@ function projetsFiltres(){
 function renderProj(){
   try{
     renderCandProj();
+    // VUE NON ALIMENTEE : tant que les collecteurs Project Intelligence sont a
+    // l'arret, l'onglet affichait quatre KPI a zero, des facettes vides et un
+    // tableau vide. Le message existait, mais tout en bas, sous le bruit.
+    // On masque l'echafaudage et on ne garde que l'explication.
+    const vide=!PROJETS.length&&!CANDPROJ.length;
+    ["kpis-proj","p-filtres"].forEach(i=>{const el=document.getElementById(i);
+      if(el)el.style.display=vide?"none":"";});
+    if(vide){
+      document.getElementById("tbody-proj").innerHTML=`<tr><td colspan="8" class="empty" style="text-align:left;line-height:1.7;padding:34px 30px">
+        <strong style="color:var(--ink);font-family:var(--display);font-size:15px">Vue en attente d'alimentation</strong><br>
+        Les collecteurs Project Intelligence (<span class="mono-inline">collecteur_projets</span> et <span class="mono-inline">decouverte_projets</span>) sont à l'arrêt dans <span class="mono-inline">radar.yml</span>.<br>
+        Rien n'est cassé : cette vue se remplira dès leur activation, sans autre changement.</td></tr>`;
+      document.getElementById("proj-count").textContent="";
+      return;
+    }
     const ps=projetsFiltres();
     const hautes=PROJETS.filter(p=>p.alerte==="haute").length;
     const chauds=PROJETS.filter(p=>p.opportunite>=70).length;
@@ -1623,6 +1733,8 @@ document.getElementById("ff-q").oninput=e=>{firmoState.q=e.target.value;renderFi
 (function(){
   const badge=document.getElementById("cnt-proj");
   if(badge)badge.textContent=PROJETS.length||"";
+  const bt=document.getElementById("p-top");
+  if(bt&&PROJETS.length)bt.style.display="";
   const uniq=(k)=>[...new Set(PROJETS.map(p=>p[k]).filter(Boolean))].sort();
   const remplir=(id,vals,libelle)=>{const el=document.getElementById(id);if(!el)return;
     vals.forEach(v=>el.innerHTML+=`<option value="${v}">${libelle?libelle(v):v}</option>`);};
