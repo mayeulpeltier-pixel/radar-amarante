@@ -389,10 +389,18 @@ jobs:
           # DASHBOARD_OUTPUT=public/index.html et COCKPIT_OUTPUT=public/cockpit.html.
           DASHBOARD_OUTPUT: public/legacy.html
           COCKPIT_OUTPUT: public/index.html
-          # SUIVI_* : active le bouton "Je contacte" (POST vers le webapp Apps
-          # Script). Sans eux, le bouton ne s'affiche pas (dashboard intact).
-          SUIVI_WEBAPP_URL: ${{ secrets.SUIVI_WEBAPP_URL }}
-          SUIVI_TOKEN: ${{ secrets.SUIVI_TOKEN }}
+          # SUIVI_* RETIRES ICI VOLONTAIREMENT (P0.1, 26/08/2026).
+          # Ces pages sont publiees sur Cloudflare Pages. Le jeton y etait
+          # injecte comme constante JS, donc publie : dans l'artefact de build,
+          # dans l'historique des deploiements, et dans le cache de tout
+          # navigateur ayant ouvert la page. Il donne un acces en ECRITURE au
+          # webapp Apps Script, donc au Sheet.
+          # Consequence assumee : la page publiee est en LECTURE SEULE, les
+          # boutons d'action n'y apparaissent plus. Ils restent sur Render,
+          # derriere authentification. Le digest (etape 6) garde le jeton :
+          # il s'execute cote serveur et ne publie rien.
+          # Ne PAS remettre ces deux lignes : la generation echouerait de
+          # toute facon (garde-fou dash.verifier_absence_secret).
           # Persistance best-effort du snapshot sante par run (radar_runs) dans
           # 'runs_radar'. Sans DATABASE_URL, la generation est intacte, la stat
           # n'est simplement pas enregistree.
