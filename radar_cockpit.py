@@ -414,6 +414,11 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
     if posture is None:
         posture = postures(leads, geo_alertes, risque)
     payload = enrichir(leads)
+    # SECRETS : une page STATIQUE ne porte jamais le jeton de suivi. Elle est
+    # non authentifiee, donc en lecture seule. Voir dash.assainir_suivi.
+    _url, _token = dash.assainir_suivi(suivi.get("url", ""),
+                                       suivi.get("token", ""),
+                                       bool(suivi.get("api")))
     return (GABARIT
             .replace("__POSTURE_JSON__", json.dumps(posture or {}, ensure_ascii=False))
             .replace("__SANTE_JSON__", json.dumps(sante or {}, ensure_ascii=False))
@@ -428,8 +433,8 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
                  for w in (watchlist or [])], ensure_ascii=False))
             .replace("__CANDIDATS_JSON__", json.dumps(candidats or {}, ensure_ascii=False))
             .replace("__DOSSIERS_JSON__", json.dumps(dossiers or [], ensure_ascii=False))
-            .replace("__SUIVI_URL__", json.dumps(suivi.get("url", "")))
-            .replace("__SUIVI_TOKEN__", json.dumps(suivi.get("token", "")))
+            .replace("__SUIVI_URL__", json.dumps(_url))
+            .replace("__SUIVI_TOKEN__", json.dumps(_token))
             .replace("__API_STATUT__", "true" if suivi.get("api") else "false"))
 
 
@@ -453,9 +458,12 @@ def main():
     except Exception as e:
         print("(cockpit) flux geo indisponible ({}) -- vue Geo vide.".format(
             str(e)[:80]))
-    # Bouton de statut : meme mecanisme que le dashboard (POST Apps Script).
-    # api=False car cette page est servie en STATIQUE (Cloudflare) ; l'app
-    # Render passera api=True quand elle servira le cockpit (Lot 2b).
+    # Bouton de statut : api=False car cette page est servie en STATIQUE
+    # (Cloudflare). Consequence assumee depuis le 26/08 : `assainir_suivi`
+    # vide url et jeton, la page publiee est donc en LECTURE SEULE et les
+    # boutons d'action n'apparaissent pas. Ils restent sur Render (api=True),
+    # derriere authentification. On garde la lecture des variables ici pour
+    # que le garde-fou ait quelque chose a comparer si elles reapparaissent.
     suivi = {
         "url": os.environ.get("SUIVI_WEBAPP_URL", "") or "",
         "token": os.environ.get("SUIVI_TOKEN", "") or "",
@@ -470,6 +478,9 @@ def main():
                            candidats_projets=cand_proj,
                            sante=etat_sante(leads),
                            geo_alertes=lignes_alertes)
+    # GARDE-FOU : ce fichier part sur Cloudflare Pages. On refuse de l'ecrire
+    # s'il contient un secret. Faire echouer le run est preferable a publier.
+    dash.verifier_absence_secret(html, ou="le cockpit ({})".format(sortie))
     dossier = os.path.dirname(sortie)
     if dossier:
         os.makedirs(dossier, exist_ok=True)
