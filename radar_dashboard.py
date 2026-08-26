@@ -406,6 +406,75 @@ CATALOGUE_SOURCES = ("TED", "BM", "AFDB", "ADB", "EBRD", "UNGM", "RW",
                      "MIGA", "IFC", "PROPARCO", "DFC", "IDB", "BMP", "ATTRIB", "PRIVÉ")
 
 
+# ===========================================================================
+# SECRETS : NE JAMAIS PUBLIER UN JETON DANS UNE PAGE STATIQUE (P0.1, 26/08/2026)
+# ===========================================================================
+# Le defaut corrige : `SUIVI_TOKEN` etait passe en environnement a l'etape de
+# generation, injecte tel quel comme constante JS dans public/index.html et
+# public/legacy.html, puis ces fichiers etaient deployes sur Cloudflare Pages.
+#
+# Le probleme ne dependait PAS de savoir si le site est protege : le jeton se
+# retrouvait dans un artefact de build, dans l'historique des deploiements et
+# dans le cache de tout navigateur ayant ouvert la page une fois. Il donne un
+# acces en ECRITURE au webapp Apps Script, donc au Sheet.
+#
+# Deux lignes de defense, volontairement independantes :
+#   1. `assainir_suivi` : le jeton n'est jamais injecte dans une page STATIQUE.
+#      Une page statique est par definition non authentifiee, donc elle est en
+#      LECTURE SEULE. Les boutons d'action restent sur Render, derriere Basic.
+#   2. `verifier_absence_secret` : avant d'ecrire un fichier destine a la
+#      publication, on relit le HTML produit et on refuse d'ecrire si un secret
+#      non vide s'y trouve. C'est le filet qui rattrape une regression de la
+#      ligne 1 (quelqu'un qui recable la variable dans le workflow).
+
+SUIVI_STATIQUE = os.environ.get("RADAR_SUIVI_STATIQUE", "0") != "0"
+
+
+def assainir_suivi(url, token, api):
+    """(url, token) a injecter dans la page. Fonction PURE.
+
+    `api` vrai = page servie par l'application (Render, authentifiee) : elle
+    peut porter le jeton, il ne sort pas d'une session identifiee.
+    `api` faux = page STATIQUE destinee a la publication : on renvoie ("", "").
+    Sans URL ni jeton, le gabarit n'affiche simplement pas les boutons
+    d'action, ce qui est le comportement voulu pour une page publique.
+
+    RADAR_SUIVI_STATIQUE=1 restaure l'ancien comportement. A n'utiliser que
+    pour un diagnostic local, JAMAIS dans un workflow qui publie."""
+    if api or SUIVI_STATIQUE:
+        return (url or ""), (token or "")
+    return "", ""
+
+
+def verifier_absence_secret(html, secrets=None, ou="la page generee"):
+    """Leve RuntimeError si un secret non vide apparait dans `html`.
+
+    Appelee juste AVANT l'ecriture d'un fichier destine a la publication. On
+    prefere faire echouer le run plutot que publier : un build rouge se voit,
+    un jeton publie ne se voit pas.
+
+    Les valeurs tres courtes (< 8 caracteres) sont ignorees : un jeton de test
+    du type "x" declencherait sinon un faux positif sur n'importe quelle page.
+    Le message d'erreur ne contient JAMAIS la valeur du secret, seulement son
+    nom -- sinon on recree la fuite dans les logs du run."""
+    noms = secrets or ("SUIVI_TOKEN", "SUIVI_WEBAPP_URL",
+                       "ANTHROPIC_API_KEY", "DATABASE_URL",
+                       "HUNTER_API_KEY", "PAPPERS_API_KEY",
+                       "ADZUNA_APP_KEY")
+    trouves = []
+    for nom in noms:
+        val = (os.environ.get(nom) or "").strip()
+        if len(val) >= 8 and val in html:
+            trouves.append(nom)
+    if trouves:
+        raise RuntimeError(
+            "SECRET DANS {} : {}. Ecriture refusee. Retire ces variables de "
+            "l'environnement de l'etape de generation (elles n'ont rien a "
+            "faire dans une page publiee) et considere le secret comme "
+            "compromis : revoque-le.".format(ou, ", ".join(trouves)))
+    return True
+
+
 def sante_run(leads, aujourdhui=None):
     """Etat du dernier run par source, derive des leads deja construits.
 
@@ -1451,6 +1520,8 @@ def generer_html(leads, watchlist=None, api_statut=False, alertes=None):
             stok = stok or (getattr(suivi_config, "SUIVI_TOKEN", "") or "")
         except Exception:
             pass
+    # Page statique (api=False) -> aucun jeton injecte. Voir assainir_suivi.
+    surl, stok = assainir_suivi(surl, stok, api_statut)
     return (GABARIT_HTML
             .replace("__LEADS_JSON__", leads_json)
             .replace("__GEO_JSON__", geo_json)
@@ -1502,6 +1573,9 @@ def main():
               len(lignes_miga), len(lignes_ifc), len(lignes_idb), len(lignes_bmp), len(leads)))
 
     html = generer_html(leads, lignes_watchlist, alertes=lignes_alertes)
+    # GARDE-FOU : ce fichier part sur Cloudflare Pages. On refuse de l'ecrire
+    # s'il contient un secret. Faire echouer le run est preferable a publier.
+    verifier_absence_secret(html, ou="le dashboard legacy ({})".format(sortie))
     dossier = os.path.dirname(sortie)
     if dossier:
         os.makedirs(dossier, exist_ok=True)
