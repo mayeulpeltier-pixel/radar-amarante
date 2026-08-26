@@ -359,7 +359,8 @@ def generer_page(conn):
                                              dossiers=doss,
                                              projets=projets_suivis,
                                              candidats_projets=cand_projets,
-                                             sante=sante)
+                                             sante=sante,
+                                             geo_alertes=lignes_alertes)
     except Exception as e:
         print("(app) cockpit indisponible ({}), repli dashboard.".format(str(e)[:100]))
         return dash.generer_html(leads, lignes_watchlist, api_statut=True,
