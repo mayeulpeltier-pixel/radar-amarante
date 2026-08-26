@@ -79,12 +79,27 @@ class TestLot2(unittest.TestCase):
         self.assertIn("GEO=[]", h)
 
     def test_suivi_injecte(self):
+        """MODIFIE LE 26/08/2026 (P0.1). Ce test verifiait auparavant que l'URL
+        et le JETON etaient injectes meme avec api=False, c'est-a-dire dans une
+        page STATIQUE destinee a Cloudflare Pages. Il encodait donc exactement
+        la fuite : un secret publie. Il verifie desormais l'inverse.
+
+        Sur une page servie par l'application (api=True, authentifiee), le
+        jeton reste injecte : voir test_suivi_injecte_sur_page_authentifiee."""
         h = rc.generer_cockpit([lead()], suivi={"url": "https://x/exec",
                                                 "token": "TK", "api": False})
         self.assertNotIn("__SUIVI_URL__", h)
-        self.assertIn("https://x/exec", h)
-        self.assertIn("SUIVI_TOKEN=\"TK\"", h)
+        self.assertNotIn("https://x/exec", h)
+        self.assertIn('SUIVI_URL=""', h)
+        self.assertIn('SUIVI_TOKEN=""', h)
         self.assertIn("API_STATUT=false", h)
+
+    def test_suivi_injecte_sur_page_authentifiee(self):
+        h = rc.generer_cockpit([lead()], suivi={"url": "https://x/exec",
+                                                "token": "TK", "api": True})
+        self.assertIn("https://x/exec", h)
+        self.assertIn('SUIVI_TOKEN="TK"', h)
+        self.assertIn("API_STATUT=true", h)
 
     def test_suivi_absent_desactive(self):
         h = rc.generer_cockpit([lead()])
