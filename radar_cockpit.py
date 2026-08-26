@@ -507,7 +507,11 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .t-sub{font-size:11px;color:var(--ink-3);font-family:var(--mono);margin-top:2px}
 .t-val{font-family:var(--mono);font-weight:600;white-space:nowrap}.t-score{font-family:var(--display);font-weight:700;font-size:15px}
 .pill{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600;font-family:var(--mono);white-space:nowrap}
-.pill.contacter{background:var(--green-soft);color:var(--green)}.pill.surveiller{background:var(--amber-soft);color:var(--amber)}.pill.ignorer{background:var(--line-2);color:var(--ink-3)}
+/* Priorite : UNE seule semantique de couleur, partagee avec PRIO_COLOR (JS).
+   Amarante = a traiter en priorite. Le rouge reste reserve aux ALERTES
+   (echeance imminente, aggravation geopolitique), jamais a une priorite. */
+.pill.contacter{background:var(--amarante-soft);color:var(--amarante)}.pill.surveiller{background:var(--amber-soft);color:var(--amber)}.pill.ignorer{background:var(--line-2);color:var(--ink-3)}
+.pill.neutre{background:var(--surface-2);color:var(--ink-2);border:1px solid var(--line)}
 .tag-src{font-family:var(--mono);font-size:10.5px;font-weight:600;padding:2px 7px;border-radius:5px;background:var(--blue-soft);color:var(--blue)}
 .tag-src.ATTRIB{background:var(--amarante-soft);color:var(--amarante)}.tag-src.PRIVÉ{background:var(--amber-soft);color:var(--amber)}
 .flag{font-size:11px;font-weight:600;font-family:var(--mono);color:var(--red)}
@@ -689,6 +693,9 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .sc.absent{opacity:.5}.sc.absent .dot{background:var(--red)}
 /* Echeance de l'avis : le champ le plus operationnel d'un marche a saisir. */
 .k-note{color:var(--ink-3);font-size:9.5px}
+.fmeta-sect{color:var(--ink-2);font-weight:600}
+.fmeta-warn{color:var(--amber);font-weight:700;cursor:help}
+.ech{display:block;font-family:var(--mono);font-size:9px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.04em;margin-top:1px;cursor:help}
 .fn-d{font-size:10px;color:var(--ink-3);font-family:var(--mono);font-weight:400;margin-top:1px}
 .jx{display:inline-block;font-family:var(--mono);font-size:11px;font-weight:700;padding:2px 7px;border-radius:5px}
 .jx.urgent{background:var(--red-soft);color:var(--red)}
@@ -761,7 +768,7 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
         <th data-sort="zone">Théâtre<span class="ar">↕</span></th>
         <th data-sort="secteur">Secteur<span class="ar">↕</span></th>
         <th data-sort="valeur">Montant<span class="ar">↕</span></th>
-        <th data-sort="score" title="Score = risque zone + secteur + montant. Avis : potentiel marché. Signal privé : intensité du signal.">Score<span class="ar">↕</span></th>
+        <th data-sort="score" title="Trois échelles distinctes selon l'origine de la ligne. Survole un score pour savoir laquelle s'applique.">Score<span class="ar">↕</span></th>
         <th data-sort="prio">Action<span class="ar">↕</span></th>
       </tr></thead><tbody id="tbody"></tbody></table></div>
       <div style="padding:12px 4px;font-family:var(--mono);font-size:12px;color:var(--ink-3)" id="tbl-count"></div>
@@ -770,7 +777,7 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
       <div class="map-view">
         <div class="map-side">
           <h4>Priorité</h4>
-          <div class="leg"><span class="sw" style="background:#C0392B"></span>À contacter</div>
+          <div class="leg"><span class="sw" style="background:#8E2649"></span>À contacter</div>
           <div class="leg"><span class="sw" style="background:#B07419"></span>À surveiller</div>
           <div class="leg"><span class="sw" style="background:#8B93A2"></span>À écarter</div>
           <h4>Théâtres</h4><div id="map-zones"></div>
@@ -782,7 +789,15 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
     <section class="view" id="v-attrib">
       <div class="kpis" id="kpis-attrib"></div>
       <div class="opps-bar"><div class="opps-intro">Qui a gagné quoi en zone à risque. Un titulaire étranger = un déploiement à démarcher. Trié du plus récent au plus ancien.</div></div>
-      <div class="tbl-wrap"><table><thead><tr><th>Titulaire</th><th>Marché gagné</th><th>Détecté</th><th>Théâtre</th><th>Origine</th><th>Montant</th><th>Statut</th></tr></thead><tbody id="tbody-attrib"></tbody></table></div>
+      <div class="filters">
+        <div class="facet"><select id="af-zone"><option value="">Tous les théâtres</option></select></div>
+        <div class="facet"><select id="af-sect"><option value="">Tous les secteurs</option></select></div>
+        <div class="facet"><select id="af-orig"><option value="">Toutes les origines</option></select></div>
+        <div class="seg" id="af-etr"><button data-e="" class="on">Tous</button><button data-e="1">Étrangers</button><button data-e="renouv">Renouvellement</button></div>
+        <button class="chip-clear" onclick="resetAttrib()">Réinitialiser</button>
+      </div>
+      <div class="tbl-wrap"><table><thead><tr><th data-asort="titulaire">Titulaire<span class="ar">↕</span></th><th>Marché gagné</th><th data-asort="ts">Détecté<span class="ar">↕</span></th><th data-asort="zone">Théâtre<span class="ar">↕</span></th><th data-asort="pays_tit">Origine<span class="ar">↕</span></th><th data-asort="valeur">Montant<span class="ar">↕</span></th><th>Statut</th></tr></thead><tbody id="tbody-attrib"></tbody></table></div>
+      <div style="padding:12px 4px;font-family:var(--mono);font-size:12px;color:var(--ink-3)" id="attrib-count"></div>
     </section>
     <section class="view" id="v-firmo">
       <div class="opps-bar"><div class="opps-intro">Chaque entreprise, dédupliquée par entité (une même société regroupée quelles que soient ses variantes de nom) : marchés gagnés, signaux de déploiement et comptes suivis, réunis. Clique une fiche pour son historique 360.</div></div>
@@ -943,7 +958,10 @@ function renderSante(){
   box.innerHTML=`<div class="sante-tete"><span class="sante-titre">État du dernier run</span><span class="sante-sub">${esc(SANTE.date||"")} · ${SANTE.actives} source(s) active(s) · ${av}</span></div><div class="sante-grid">${chips}</div>`;
 }
 const SECT_COLORS={"Génie civil / BTP":"#8E2649","Eau / assainissement":"#33628F","Énergie":"#B07419","Santé":"#237A57","Sécurité / défense":"#C0392B","Logistique / transport":"#6B5B95","Extractif / mines":"#7A5230","Télécom / IT":"#3A8FA8"};
-const PRIO_COLOR={contacter:"#C0392B",surveiller:"#B07419",ignorer:"#8B93A2"};
+// SOURCE DE VERITE des couleurs de priorite (marqueurs carte + KPI). Les
+// classes .pill du CSS en sont le miroir exact : une priorite ne doit pas
+// etre verte dans un tableau et rouge sur la carte, comme c'etait le cas.
+const PRIO_COLOR={contacter:"#8E2649",surveiller:"#B07419",ignorer:"#8B93A2"};
 const PRIO_LBL={contacter:"À contacter",surveiller:"À surveiller",ignorer:"À écarter"};
 // Les collecteurs stockent des enums (« court_terme », « fort »). Elles
 // fuyaient telles quelles dans le tiroir : on les traduit a l'affichage, sans
@@ -957,6 +975,22 @@ function cellMontant(l){
   return `<span class="t-nc">n.c.</span>`;
 }
 const scoreColor=s=>s>=8?"#237A57":s>=6?"#B07419":s>=4?"#33628F":"#8B93A2";
+// TROIS ECHELLES DE SCORE, JAMAIS INTERCHANGEABLES (feuille de route, pt 3).
+// Elles sortent de moteurs differents et ne se comparent pas entre elles :
+//   avis   -> analyse LLM (sûreté x commercial), ted.calculer_scores ;
+//   privé  -> intensité du signal de déploiement, scoring signaux privés ;
+//   attrib -> formule DETERMINISTE zone + secteur + valeur, sans LLM.
+// L'en-tete affichait la formule des attributions pour TOUTES les lignes.
+const ECHELLE={
+  avis:["avis","Analyse sûreté × potentiel commercial du marché (modèle). Ne se compare pas au score d'une attribution."],
+  prive:["signal","Intensité du signal de déploiement détecté (offre d'emploi, presse). Ne se compare pas au score d'un avis de marché."],
+  attrib:["titulaire","Calcul déterministe : risque de la zone + secteur + valeur du marché. Indicatif, ce n'est PAS une analyse sûreté."]};
+function celluleScore(l){
+  const e=ECHELLE[l.type]||ECHELLE.avis;
+  const base=l.geoboost&&l.finalbase!=null
+    ? `<span class="sfbase" title="Score avant rehausse géopolitique">${l.finalbase.toFixed(1)}</span>`:"";
+  return `${base}<span class="t-score" style="color:${scoreColor(l.score)}" title="${esc(e[1])}">${l.score.toFixed(1)}</span><span class="ech" title="${esc(e[1])}">${e[0]}</span>`;
+}
 const actifs=()=>LEADS.filter(l=>l.statut!=="écarté"&&l.statut!=="perdu");
 // PIPELINE vs MARCHE OBSERVE (25/08/2026) -- distinction de doctrine.
 // Une ATTRIBUTION est un marche DEJA GAGNE par un tiers. Elle est precieuse
@@ -994,7 +1028,7 @@ function renderKPIs(){
   const etr=at.filter(l=>l.etranger).length;
   const renouv=LEADS.filter(l=>l.renouv).length;
   const cards=[
-    {lbl:"À contacter",val:contacter,sub:"avis et signaux, non traités",ico:'<path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>',c:"var(--red)",cs:"var(--red-soft)"},
+    {lbl:"À contacter",val:contacter,sub:"avis et signaux, non traités",ico:'<path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>',c:"var(--amarante)",cs:"var(--amarante-soft)"},
     {lbl:"Valeur du pipeline",val:fmtEur(valeur),sub:"marchés encore à saisir",ico:'<path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/>',c:"var(--green)",cs:"var(--green-soft)",
      note:valAttrib?"hors "+fmtEur(valAttrib)+" déjà attribués":""},
     {lbl:"Titulaires étrangers",val:etr,sub:"déploiements à démarcher",ico:'<circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 010 20 15 15 0 010-20"/>',c:"var(--blue)",cs:"var(--blue-soft)"},
@@ -1084,7 +1118,7 @@ function renderTable(){
       +`<td>${l.zone}<div class="t-sub">${l.pays}</div></td>`
       +`<td>${l.secteur}</td>`
       +`<td>${cellMontant(l)}</td>`
-      +`<td>${l.geoboost&&l.finalbase!=null?`<span class="sfbase" title="Score avant rehausse géopolitique">${l.finalbase.toFixed(1)}</span>`:""}<span class="t-score" style="color:${scoreColor(l.score)}">${l.score.toFixed(1)}</span></td>`
+      +`<td>${celluleScore(l)}</td>`
       +`<td><span class="pill ${l.prio}">${PRIO_LBL[l.prio]||l.prio}</span></td></tr>`;
   }).join("")||'<tr><td colspan="7" class="empty">Aucun marché ne correspond à ces filtres. Essaie « Tout » ou réinitialise.</td></tr>';
   const val=rows.reduce((s,l)=>s+l.valeur,0);
@@ -1097,18 +1131,76 @@ function ouvrirDossier(pid){
   go("doss");
   setTimeout(()=>{const el=document.getElementById("doss-"+pid);if(el){el.scrollIntoView({behavior:"smooth",block:"center"});el.classList.add("doss-hl");setTimeout(()=>el.classList.remove("doss-hl"),1900);}},90);
 }
+// --- ATTRIBUTIONS : registre des titulaires, filtrable ---------------------
+// L'onglet n'avait AUCUNE facette alors que les Opportunites en ont cinq : sur
+// 40 pays et une douzaine de sources, la liste etait a peine exploitable. Les
+// KPI se calculent sur la selection COURANTE (avec le total rappele a cote),
+// sinon un chiffre filtre et un chiffre global cohabiteraient sans le dire.
+let attribState={zone:"",sect:"",orig:"",etr:"",sort:"ts",dir:-1};
+function attribFiltres(){
+  return LEADS.filter(l=>{
+    if(l.src!=="ATTRIB")return false;
+    if(attribState.zone&&l.zone!==attribState.zone)return false;
+    if(attribState.sect&&l.secteur!==attribState.sect)return false;
+    if(attribState.orig&&l.pays_tit!==attribState.orig)return false;
+    if(attribState.etr==="1"&&!l.etranger)return false;
+    if(attribState.etr==="renouv"&&!l.renouv)return false;
+    if(state.q){const q=state.q.toLowerCase();
+      if(!((l.titulaire+l.titre+l.acheteur+l.pays+l.pays_tit).toLowerCase().includes(q)))return false;}
+    return true;
+  }).sort((a,b)=>{
+    let va=a[attribState.sort],vb=b[attribState.sort];
+    if(typeof va==="string"){va=va.toLowerCase();vb=String(vb||"").toLowerCase();
+      return va<vb?-attribState.dir:va>vb?attribState.dir:0;}
+    return (((va||0)-(vb||0))*attribState.dir)||(b.score-a.score);
+  });
+}
 function renderAttrib(){
-  const at=LEADS.filter(l=>l.src==="ATTRIB").slice().sort((a,b)=>(b.ts-a.ts)||(b.score-a.score));
-  const cnt={};at.forEach(l=>{const k=(l.titulaire||"").toLowerCase();if(k)cnt[k]=(cnt[k]||0)+1;});
-  const kp=[{lbl:"Attributions suivies",val:at.length,c:"var(--amarante)"},{lbl:"Titulaires étrangers",val:at.filter(l=>l.etranger).length,c:"var(--blue)"},{lbl:"Renouvellements",val:at.filter(l=>l.renouv).length,c:"var(--amber)"},{lbl:"Montant cumulé",val:fmtEur(at.reduce((s,l)=>s+l.valeur,0)),c:"var(--green)"}];
-  document.getElementById("kpis-attrib").innerHTML=kp.map(k=>`<div class="kpi"><div class="k-lbl" style="margin-bottom:8px">${k.lbl}</div><div class="k-val" style="color:${k.c}">${k.val}</div></div>`).join("");
+  const tous=LEADS.filter(l=>l.src==="ATTRIB");
+  const at=attribFiltres();
+  // Recurrence calculee sur TOUT le corpus : « 4 marchés gagnés » doit rester
+  // vrai meme quand un filtre n'en montre qu'un seul.
+  const cnt={};tous.forEach(l=>{const k=l.entcle||(l.titulaire||"").toLowerCase();if(k)cnt[k]=(cnt[k]||0)+1;});
+  const kp=[{lbl:"Attributions",val:at.length,c:"var(--amarante)",sub:at.length!==tous.length?"sur "+tous.length+" au total":"registre complet"},
+            {lbl:"Titulaires étrangers",val:at.filter(l=>l.etranger).length,c:"var(--blue)",sub:"déploiements à démarcher"},
+            {lbl:"Renouvellements",val:at.filter(l=>l.renouv).length,c:"var(--amber)",sub:"contrats à échéance suivie"},
+            {lbl:"Montant cumulé",val:fmtEur(at.reduce((s,l)=>s+l.valeur,0)),c:"var(--green)",sub:"marchés déjà attribués"}];
+  document.getElementById("kpis-attrib").innerHTML=kp.map(k=>`<div class="kpi"><div class="k-lbl" style="margin-bottom:8px">${k.lbl}</div><div class="k-val" style="color:${k.c}">${k.val}</div><div class="k-sub">${k.sub}</div></div>`).join("");
   document.getElementById("tbody-attrib").innerHTML=at.map(l=>{
-    const n=cnt[(l.titulaire||"").toLowerCase()]||0;
+    const n=cnt[l.entcle||(l.titulaire||"").toLowerCase()]||0;
     const inc=n>=2?` <span class="mb inc" title="Titulaire récurrent en zone à risque">⚔ ${n} gagnés</span>`:"";
     const neuf=estNouveau(l)?'<span class="mb neuf">✦ nouveau</span> ':'';
-    const st=l.renouv==="imminent"?'<span class="mb renouv">renouv. imminent</span>':l.renouv==="a_venir"?'<span class="mb renouv">renouv. à venir</span>':'<span class="pill contacter">attribué</span>';
+    // « attribué » n'est pas une priorite : pastille NEUTRE. Elle etait rendue
+    // avec la classe « contacter », qui porte la couleur d'un lead a traiter.
+    const st=l.renouv==="imminent"?'<span class="mb renouv">renouv. imminent</span>':l.renouv==="a_venir"?'<span class="mb renouv">renouv. à venir</span>':'<span class="pill neutre">attribué</span>';
     return `<tr onclick="openDrawer(${l.id})"><td><strong>${esc(l.titulaire||"—")}</strong>${inc}</td><td><div class="t-title" style="max-width:240px">${esc(l.titre)}</div></td><td class="t-date">${relDate(l)}</td><td>${l.zone}<div class="t-sub">${l.pays}</div></td><td>${l.pays_tit?`<span class="tag-orig">${esc(l.pays_tit)}</span>${l.etranger?' <span class="flag">étr.</span>':""}`:'<span class="t-sub">origine n.c.</span>'}</td><td class="t-val">${fmtEur(l.valeur)}</td><td>${neuf}${st}</td></tr>`;
-  }).join("")||'<tr><td colspan="7" class="empty">Aucune attribution.</td></tr>';
+  }).join("")||`<tr><td colspan="7" class="empty">${tous.length?"Aucune attribution ne correspond à ces filtres.":"Aucune attribution collectée pour l'instant."}</td></tr>`;
+  const sansOrig=at.filter(l=>!l.pays_tit).length;
+  document.getElementById("attrib-count").textContent=at.length+" attribution"+(at.length>1?"s":"")
+    +(sansOrig?" · "+sansOrig+" sans origine identifiée":"");
+}
+function resetAttrib(){
+  attribState.zone=attribState.sect=attribState.orig=attribState.etr="";
+  ["af-zone","af-sect","af-orig"].forEach(i=>{const el=document.getElementById(i);if(el)el.value="";});
+  document.querySelectorAll("#af-etr button").forEach((x,i)=>x.classList.toggle("on",i===0));
+  renderAttrib();
+}
+function initAttribFiltres(){
+  const at=LEADS.filter(l=>l.src==="ATTRIB");
+  const remplir=(id,vals)=>{const el=document.getElementById(id);if(!el)return;
+    [...new Set(vals.filter(Boolean))].sort().forEach(v=>el.innerHTML+=`<option>${esc(v)}</option>`);};
+  remplir("af-zone",at.map(l=>l.zone));
+  remplir("af-sect",at.map(l=>l.secteur));
+  remplir("af-orig",at.map(l=>l.pays_tit));
+  const on=(id,champ)=>{const el=document.getElementById(id);
+    if(el)el.onchange=e=>{attribState[champ]=e.target.value;renderAttrib();};};
+  on("af-zone","zone");on("af-sect","sect");on("af-orig","orig");
+  document.querySelectorAll("#af-etr button").forEach(b=>b.onclick=()=>{
+    document.querySelectorAll("#af-etr button").forEach(x=>x.classList.remove("on"));
+    b.classList.add("on");attribState.etr=b.dataset.e;renderAttrib();});
+  document.querySelectorAll("thead th[data-asort]").forEach(th=>th.onclick=()=>{
+    const k=th.dataset.asort;attribState.dir=(attribState.sort===k)?-attribState.dir:-1;
+    attribState.sort=k;renderAttrib();});
 }
 let map,markers=[];
 function initMap(){
@@ -1171,12 +1263,16 @@ function entreprises(){
   LEADS.forEach(l=>{
     const nom=(l.titulaire||"").trim();if(!nom)return;
     const k=cleEnt(nom,l.entcle);if(!k)return;
-    if(!by[k])by[k]={cle:k,noms:{},marches:[],signaux:[],zones:new Set(),secteurs:new Set(),valeur:0,origine:"",etranger:false,contact:null,suivi:WL_CLES.has(k),secteurSuivi:WL_SECT[k]||"",lastTs:0};
+    if(!by[k])by[k]={cle:k,noms:{},marches:[],signaux:[],zones:new Set(),secteurs:new Set(),valeur:0,origines:{},origine:"",etranger:false,contact:null,suivi:WL_CLES.has(k),secteurSuivi:WL_SECT[k]||"",lastTs:0};
     const e=by[k];
     e.noms[nom]=(e.noms[nom]||0)+1;
     if(l.src==="ATTRIB"){e.marches.push(l);e.valeur+=l.valeur||0;}else{e.signaux.push(l);}
     if(l.zone)e.zones.add(l.zone);if(l.secteur)e.secteurs.add(l.secteur);
-    if(l.pays_tit&&!e.origine)e.origine=l.pays_tit;
+    // ORIGINE ARBITREE, pas « la premiere rencontree ». Une entreprise avec
+    // deux attributions donnant deux pays affichait silencieusement celui
+    // qui sortait en tete du tri. On compte les variantes et on tranche a
+    // la majorite, en gardant la trace du desaccord.
+    if(l.pays_tit)e.origines[l.pays_tit]=(e.origines[l.pays_tit]||0)+1;
     if(l.etranger)e.etranger=true;
     if((l.ts||0)>e.lastTs)e.lastTs=l.ts||0;
     if(l.email&&l.email!=="n.c."&&!e.contact)e.contact={nom:l.nom,email:l.email};
@@ -1185,12 +1281,15 @@ function entreprises(){
   WATCHLIST.forEach(w=>{
     const nom=(w.entreprise||"").trim();if(!nom)return;
     const k=cleEnt(nom,w.ent_cle);if(!k||by[k])return;
-    by[k]={cle:k,noms:{[nom]:1},marches:[],signaux:[],zones:new Set(),secteurs:new Set(),valeur:0,origine:"",etranger:false,contact:null,suivi:true,secteurSuivi:w.secteur||"Autre",lastTs:0};
+    by[k]={cle:k,noms:{[nom]:1},marches:[],signaux:[],zones:new Set(),secteurs:new Set(),valeur:0,origines:{},origine:"",etranger:false,contact:null,suivi:true,secteurSuivi:w.secteur||"Autre",lastTs:0};
   });
   // Nom d'affichage : la variante la plus frequente (repli : la plus longue).
   return Object.values(by).map(e=>{
     const noms=Object.keys(e.noms);
     e.nom=noms.sort((a,b)=>(e.noms[b]-e.noms[a])||(b.length-a.length))[0]||"?";
+    const og=Object.keys(e.origines).sort((a,b)=>e.origines[b]-e.origines[a]);
+    e.origine=og[0]||"";
+    e.originesAutres=og.slice(1);          // desaccord de sources, a signaler
     e.activite=e.marches.length+e.signaux.length;
     return e;
   });
@@ -1210,7 +1309,7 @@ function renderFirmo(){
     const z=[...e.zones];const s=[...e.secteurs];
     const b=(e.suivi?'<span class="fbadge suivi">👁 suivi</span>':"")+(e.etranger?'<span class="fbadge etr">étranger</span>':"")+(e.signaux.length?'<span class="fbadge sig">'+e.signaux.length+' signal'+(e.signaux.length>1?'aux':'')+'</span>':"");
     return `<div class="fcard" onclick="openFiche('${e.cle.replace(/'/g,"\\'")}')">
-      <div class="fcard-top"><div class="fmono">${ini}</div><div style="min-width:0"><div class="fname">${esc(e.nom)}</div><div class="fmeta">${e.origine||e.secteurSuivi||"origine n.c."}</div></div></div>
+      <div class="fcard-top"><div class="fmono">${ini}</div><div style="min-width:0"><div class="fname">${esc(e.nom)}</div><div class="fmeta">${e.origine?esc(e.origine)+(e.originesAutres.length?'<span class="fmeta-warn" title="Sources divergentes : '+esc(e.originesAutres.join(", "))+'"> ?</span>':""):"origine n.c."}${e.secteurSuivi?' · <span class="fmeta-sect">'+esc(e.secteurSuivi)+'</span>':""}</div></div></div>
       <div class="fbadges">${b||'<span class="fbadge zero">à qualifier</span>'}</div>
       <div class="fstats"><div class="fstat"><div class="n">${e.marches.length}</div><div class="l">gagnés</div></div><div class="fstat"><div class="n">${e.signaux.length}</div><div class="l">signaux</div></div><div class="fstat"><div class="n">${z.length}</div><div class="l">théâtres</div></div><div class="fstat"><div class="n">${e.valeur?fmtEur(e.valeur):"—"}</div><div class="l">valeur</div></div></div>
       <div class="fchips">${z.slice(0,3).map(x=>`<span class="fchip">${x}</span>`).join("")}${s.slice(0,2).map(x=>`<span class="fchip">${x}</span>`).join("")}${e.contact?'<span class="fchip" style="color:var(--green)">contact ✓</span>':""}</div>
@@ -1233,7 +1332,7 @@ function openFiche(cle){
   document.getElementById("drawer-content").innerHTML=`
   <div class="dr-head"><button class="dr-close" onclick="closeDrawer()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
     <div class="dr-src">Fiche entreprise 360°</div>
-    <div style="display:flex;gap:12px;align-items:center"><div class="fmono" style="width:44px;height:44px;font-size:15px">${ini}</div><div style="min-width:0"><h3 style="margin:0">${esc(e.nom)}</h3><div class="fmeta">${e.origine||"origine n.c."}${e.etranger?' · <span style="color:var(--blue)">étranger</span>':""}${e.suivi?' · <span style="color:var(--amarante)">👁 suivi</span>':""}</div></div></div></div>
+    <div style="display:flex;gap:12px;align-items:center"><div class="fmono" style="width:44px;height:44px;font-size:15px">${ini}</div><div style="min-width:0"><h3 style="margin:0">${esc(e.nom)}</h3><div class="fmeta">${e.origine?esc(e.origine):"origine n.c."}${e.originesAutres.length?' <span class="fmeta-warn" title="Sources divergentes">(aussi '+esc(e.originesAutres.join(", "))+')</span>':""}${e.secteurSuivi?' · <span class="fmeta-sect">'+esc(e.secteurSuivi)+'</span>':""}${e.etranger?' · <span style="color:var(--blue)">étranger</span>':""}${e.suivi?' · <span style="color:var(--amarante)">👁 suivi</span>':""}</div></div></div></div>
   <div class="dr-body">
     <div class="fi-stats"><div class="fi-stat"><div class="n">${e.marches.length}</div><div class="l">marchés gagnés</div></div><div class="fi-stat"><div class="n">${e.signaux.length}</div><div class="l">signaux</div></div><div class="fi-stat"><div class="n">${z.length}</div><div class="l">théâtres</div></div><div class="fi-stat"><div class="n">${e.valeur?fmtEur(e.valeur):"—"}</div><div class="l">valeur cumulée</div></div></div>
     ${(z.length||s.length)?`<div class="dr-sec"><h5>Présence</h5><div class="fchips">${z.map(x=>`<span class="fchip">${x}</span>`).join("")}${s.map(x=>`<span class="fchip alt">${x}</span>`).join("")}</div></div>`:""}
@@ -1468,6 +1567,10 @@ function go(v){
   document.getElementById("top-title").textContent=TITLES[v][0];document.getElementById("top-crumb").textContent=TITLES[v][1];
   if(v==="overview"){renderSante();renderTheatres();renderKPIs();renderCharts();renderFunnel();renderHot();}
   if(v==="opps")renderTable();if(v==="attrib")renderAttrib();
+  const rc=document.getElementById("search");
+  if(rc){const actif=(v==="opps"||v==="attrib");rc.disabled=!actif;
+    rc.placeholder=v==="attrib"?"Rechercher un titulaire, marché, acheteur..."
+      :actif?"Rechercher un marché, pays, titulaire...":"Recherche : onglets Opportunités et Attributions";}
   if(v==="firmo")renderFirmo();if(v==="geo")renderGeo();if(v==="doss")renderDoss();if(v==="proj")renderProj();
   if(v==="map")setTimeout(()=>{initMap();map.invalidateSize();},60);
 }
@@ -1483,13 +1586,19 @@ function initFilters(){
   const ft=document.getElementById("f-type");if(ft)ft.onchange=e=>{state.type=e.target.value;renderTable();};
   document.querySelectorAll("#f-prio button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#f-prio button").forEach(x=>x.classList.remove("on"));b.classList.add("on");state.prio=b.dataset.p;renderTable();});
   document.querySelectorAll("thead th[data-sort]").forEach(th=>th.onclick=()=>{const k=th.dataset.sort;state.dir=(state.sort===k)?-state.dir:-1;state.sort=k;renderTable();});
-  document.getElementById("search").oninput=e=>{state.q=e.target.value;if(state.view==="opps")renderTable();};
+  const rech=document.getElementById("search");
+  // La barre du haut reste visible sur tous les onglets : elle ne doit pas
+  // etre un controle mort. Elle pilote les Opportunites ET le registre des
+  // attributions, selon la vue ouverte.
+  rech.oninput=e=>{state.q=e.target.value;
+    if(state.view==="opps")renderTable();else if(state.view==="attrib")renderAttrib();};
 }
 function toggleSurv(){state.surv=!state.surv;document.getElementById("f-surv").classList.toggle("on",state.surv);renderTable();}
 function toggleNeuf(){state.neuf=!state.neuf;document.getElementById("f-neuf").classList.toggle("on",state.neuf);renderTable();}
 function resetFilters(){state.zone=state.sect=state.src=state.type="";state.prio="traiter";state.surv=false;state.neuf=false;document.getElementById("f-surv").classList.remove("on");const fn=document.getElementById("f-neuf");if(fn)fn.classList.remove("on");["f-zone","f-sect","f-type","f-src"].forEach(i=>{const el=document.getElementById(i);if(el)el.value="";});document.querySelectorAll("#f-prio button").forEach((x,i)=>x.classList.toggle("on",i===0));renderTable();}
 function exportCSV(){
-  const rows=state.view==="opps"?filtered():LEADS;
+  const rows=state.view==="opps"?filtered()
+    :state.view==="attrib"?attribFiltres():LEADS;
   const head=["titre","zone","pays","secteur","valeur_meur","score","source","priorite","titulaire","origine"];
   const csv=[head.join(";")].concat(rows.map(l=>[l.titre,l.zone,l.pays,l.secteur,l.valeur,l.score,l.src,l.prio,l.titulaire,l.pays_tit].map(v=>`"${(""+v).replace(/"/g,'""')}"`).join(";"))).join("\n");
   const a=document.createElement("a");a.href="data:text/csv;charset=utf-8,"+encodeURIComponent(csv);a.download="radar_cockpit.csv";a.click();
@@ -1536,7 +1645,7 @@ document.getElementById("ff-q").oninput=e=>{firmoState.q=e.target.value;renderFi
     projState.sort=k;renderProj();});
 })();
 (function(){document.getElementById("cnt-doss").textContent=DOSSIERS.filter(d=>d.n_phases>=2).length;document.querySelectorAll("#d-mp button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#d-mp button").forEach(x=>x.classList.remove("on"));b.classList.add("on");dossState.mp=b.dataset.m;renderDoss();});})();
-initFilters();go("overview");
+initFilters();initAttribFiltres();go("overview");
 </script>
 </body>
 </html>"""
