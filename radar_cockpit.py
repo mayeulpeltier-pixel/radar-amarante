@@ -784,6 +784,16 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .fmeta-sect{color:var(--ink-2);font-weight:600}
 .fmeta-warn{color:var(--amber);font-weight:700;cursor:help}
 .ech{display:block;font-family:var(--mono);font-size:9px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.04em;margin-top:1px;cursor:help}
+.mb.montee{background:var(--green-soft);color:var(--green)}
+.mb.montee.critique{background:var(--red-soft);color:var(--red)}
+.mb.montee.haute{background:var(--amber-soft);color:var(--amber)}
+.mt{border-radius:10px;padding:12px 14px;border-left:3px solid var(--ink-3);background:var(--surface-2)}
+.mt.critique{border-left-color:var(--red)}.mt.haute{border-left-color:var(--amber)}
+.mt.moyenne{border-left-color:var(--blue)}
+.mt:not(.recente){opacity:.62}
+.mt-h{font-family:var(--display);font-weight:600;font-size:14px;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.mt-d{font-family:var(--mono);font-size:11px;color:var(--ink-3);font-weight:400;margin-left:auto}
+.mt-m{font-size:12.5px;color:var(--ink-2);margin-top:6px;line-height:1.5}
 .dc{background:var(--surface-2);border:1px solid var(--line-2);border-radius:10px;padding:12px 14px}
 .dc-tete{font-size:12px;color:var(--ink-2);font-family:var(--mono);padding-bottom:8px;margin-bottom:6px;border-bottom:1px solid var(--line)}
 .dc-tete b{color:var(--ink);font-size:13px}
@@ -1741,6 +1751,10 @@ const PROJETS=(PROJETS_RAW||[]).map((p,i)=>({
   // Motifs du score : construits depuis toujours par score_opportunite, jamais
   // affiches. « | » comme separateur car les motifs contiennent des virgules.
   motifs:String(p.opportunite_motifs||"").split("|").map(x=>x.trim()).filter(Boolean),
+  // Transition MONTANTE (P1.4) : le pendant du recul, cote signal d'action.
+  mVers:String(p.montee_vers||""),mDate:String(p.montee_date||""),
+  mImp:String(p.montee_importance||""),mMsg:String(p.montee_message||""),
+  mRecente:String(p.montee_recente||"")==="oui",
   alerte:String(p.alerte||"aucune"),nbSignaux:+p.nb_signaux||0,
   premiere:String(p.premiere_detection||""),derniere:String(p.derniere_maj||""),
   suite:String(p.prochaine_etape||""),
@@ -1808,6 +1822,10 @@ function renderProj(){
     document.getElementById("tbody-proj").innerHTML=ps.map(p=>{
       const b=[];
       if(p.recul)b.push('<span class="mb recul">↓ recul de phase</span>');
+      // Une montee ANCIENNE est de l'historique, pas une alerte : seule une
+      // montee recente porte un badge. Sinon tout projet arrive a maturite
+      // resterait signale indefiniment et le badge ne voudrait plus rien.
+      if(p.mRecente&&p.mVers)b.push('<span class="mb montee '+esc(p.mImp)+'" title="'+esc(p.mMsg)+'">↑ '+esc(p.mVers)+'</span>');
       if(p.prospects.length)b.push('<span class="mb prosp">'+p.prospects.length+' prospect'+(p.prospects.length>1?'s':'')+'</span>');
       return `<tr onclick="openProjet(${p.i})">`
         +`<td><div class="t-title">${esc(p.libelle)}</div><div class="t-sub">${esc(p.secteur)} · ${p.nbSignaux} signal${p.nbSignaux>1?"aux":""}</div>${b.length?`<div class="mini-badges">${b.join("")}</div>`:""}</td>`
@@ -1854,6 +1872,11 @@ function openProjet(i){
       <div class="dr-field"><div class="l">Dernier signal</div><div class="v">${esc(p.derniere)||"—"}</div></div>
       ${p.recul?`<div class="dr-field"><div class="l">Alerte trajectoire</div><div class="v" style="color:var(--red)">Recul depuis ${esc(p.phaseMax)}</div></div>`:""}
     </div></div>
+    ${p.mVers?`<div class="dr-sec"><h5>Franchissement d'étape</h5>
+      <div class="mt ${esc(p.mImp)}${p.mRecente?" recente":""}">
+        <div class="mt-h">↑ ${esc(p.mVers)}<span class="mt-d">${esc(p.mDate)}${p.mRecente?" · récent":" · historique"}</span></div>
+        ${p.mMsg?`<div class="mt-m">${esc(p.mMsg)}</div>`:""}
+      </div>${p.mRecente?"":'<div class="issue-note">Franchissement ancien : conservé pour la trajectoire, ce n\'est plus un signal d\'action.</div>'}</div>`:""}
     <div class="dr-sec"><h5>Services Amarante probables</h5><div class="fchips">${p.services.map(s=>`<span class="fchip">${esc(s)}</span>`).join("")||"—"}</div></div>
     <div class="dr-sec"><h5>Prospects issus du projet</h5><div class="cand-list">${prosp}</div><div class="cand-note">Acteurs internationaux du projet : ce sont eux qui déploieront du personnel, donc les comptes à ouvrir avant l'appel d'offres.</div></div>
     <div class="dr-sec"><h5>Chronologie</h5>${tl}</div>
