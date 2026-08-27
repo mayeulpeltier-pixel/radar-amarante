@@ -784,6 +784,23 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .fmeta-sect{color:var(--ink-2);font-weight:600}
 .fmeta-warn{color:var(--amber);font-weight:700;cursor:help}
 .ech{display:block;font-family:var(--mono);font-size:9px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.04em;margin-top:1px;cursor:help}
+.issue-g{color:var(--green);border-color:rgba(35,122,87,.45)}.issue-g:hover{background:var(--green-soft);border-color:var(--green)}
+.issue-p{color:var(--red);border-color:rgba(192,57,43,.4)}.issue-p:hover{background:var(--red-soft);border-color:var(--red)}
+.issue-note{font-size:11px;color:var(--ink-3);font-family:var(--mono);margin-top:9px;line-height:1.5}
+.issue-close{padding:12px 14px;border-radius:10px;font-weight:700;font-size:14px}
+.issue-close.gagne{background:var(--green-soft);color:var(--green)}
+.issue-close.perdu{background:var(--line-2);color:var(--ink-2)}
+.issue-close .issue-sub{font-size:11px;font-weight:400;font-family:var(--mono);color:var(--ink-3);margin-top:4px}
+.mp-ov{position:fixed;inset:0;background:rgba(20,24,31,.45);z-index:120;display:grid;place-items:center;padding:20px}
+.mp-box{background:var(--surface);border-radius:14px;box-shadow:var(--sh-2);padding:24px;width:min(430px,100%)}
+.mp-t{font-family:var(--display);font-size:17px;font-weight:600}
+.mp-s{font-size:12px;color:var(--ink-3);font-family:var(--mono);margin:4px 0 16px}
+.mp-list{display:flex;flex-direction:column;gap:2px}
+.mp-opt{display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:8px;font-size:13.5px;cursor:pointer;transition:.1s}
+.mp-opt:hover{background:var(--surface-2)}.mp-opt input{accent-color:var(--amarante);width:16px;height:16px}
+.mp-note{font-size:11px;color:var(--ink-3);font-family:var(--mono);margin:14px 0 4px;line-height:1.5}
+.mp-btns{display:flex;gap:10px;margin-top:14px}.mp-btns .btn{flex:1;justify-content:center}
+.pill.gagne{background:var(--green-soft);color:var(--green)}.pill.perdu{background:var(--line-2);color:var(--ink-3)}
 .fn-d{font-size:10px;color:var(--ink-3);font-family:var(--mono);font-weight:400;margin-top:1px}
 .jx{display:inline-block;font-family:var(--mono);font-size:11px;font-weight:700;padding:2px 7px;border-radius:5px}
 .jx.urgent{background:var(--red-soft);color:var(--red)}
@@ -987,7 +1004,7 @@ function leadId(l){return l.pub||l.lien||(l.src+"|"+l.pays+"|"+l.acheteur+"|"+l.
 // navigateur. Elle est attendue, sa reponse est lue, et l'affichage est
 // annule si elle echoue. La replication vers le Sheet se fait cote SERVEUR,
 // ou la reponse est lisible et l'echec journalise.
-async function envoyerStatut(l,statut,motif){
+async function envoyerStatut(l,statut,motif,valeur){
   const avant=l.statut;                      // pour pouvoir revenir en arriere
   if(!API_STATUT){
     toast("Page en lecture seule : action non enregistrée.",true);return false;
@@ -998,11 +1015,18 @@ async function envoyerStatut(l,statut,motif){
     const r=await fetch("/api/statut",{method:"POST",credentials:"same-origin",
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({onglet:ONGLET_SRC[l.src]||"",publication_number:l.pub||"",
-        statut:statut,motif:motif||"",contexte:contexteLead(l)})});
+        statut:statut,motif:motif||"",valeur_estimee:(valeur==null?null:+valeur),
+        contexte:contexteLead(l)})});
+    if(r.status===409||r.status===422){
+      // Refus METIER (garde de vocabulaire ou d'enchainement), pas une panne :
+      // le message du serveur explique quoi faire, on le montre tel quel.
+      let d={};try{d=await r.json();}catch(e){}
+      throw new Error(d.detail||("refus "+r.status));
+    }
     if(!r.ok)throw new Error("HTTP "+r.status);
     const j=await r.json();
     if(!j||j.ok!==true)throw new Error((j&&j.error)||"réponse inattendue");
-    toast(statut==="non_pertinent"?"Marché écarté":statut==="surveille"?"Ajouté à la surveillance":"Marqué à contacter");
+    toast(TOAST_STATUT[statut]||("Statut « "+statut+" » enregistré"));
     return true;
   }catch(err){
     // ROLLBACK : ne jamais laisser l'ecran affirmer ce que la base ignore.
@@ -1139,6 +1163,23 @@ const PRIO_LBL={contacter:"À contacter",surveiller:"À surveiller",ignorer:"À 
 // jamais toucher a la donnee stockee.
 const WIN_LBL={immediate:"Immédiate",court_terme:"Court terme",moyen_terme:"Moyen terme",indetermine:"Indéterminée"};
 const BESOIN_LBL={fort:"Fort",moyen:"Moyen",faible:"Faible",inconnu:"Inconnu"};
+// ISSUES COMMERCIALES (P1.1) -- ce qui manquait pour que le radar apprenne.
+// L'interface ne pouvait emettre que contacte / surveille / non_pertinent :
+// la boucle bayesienne apprenait donc a predire si un humain avait clique,
+// pas si Amarante avait gagne.
+const TOAST_STATUT={contacte:"Marqué à contacter",surveille:"Ajouté à la surveillance",
+  non_pertinent:"Marché écarté",gagne:"🏆 Marché gagné, enregistré",perdu:"Marché perdu, enregistré"};
+// Motifs de perte : liste FERMEE, miroir exact de radar_stockage.MOTIFS_PERTE.
+// Un champ libre produit vingt formulations de la meme raison et zero
+// statistique exploitable. C'est la difference entre une note et une donnee.
+const MOTIFS_PERTE={prix:"Prix trop élevé",incumbent:"Titulaire en place reconduit",
+  hors_perimetre:"Hors périmètre Amarante",pas_de_reponse:"Aucune réponse du prospect",
+  projet_annule:"Projet annulé ou reporté",concurrent:"Perdu face à un concurrent",autre:"Autre"};
+// Une issue suppose que le lead a ete TRAVAILLE : on ne perd pas ce qu'on n'a
+// jamais approche. Les boutons n'apparaissent donc qu'a partir de ces etats.
+const ETATS_TRAVAILLES=["contacte","surveille","attribution_publiee"];
+function estTravaille(l){return ETATS_TRAVAILLES.includes(l.statut);}
+function estClos(l){return l.statut==="gagne"||l.statut==="perdu";}
 const fmtEur=v=>!v?"n.c.":v>=1?v.toFixed(v<10?1:0)+" M€":(v*1000).toFixed(0)+" k€";
 function cellMontant(l){
   if(l.valeur>0)return `<span class="t-val">${fmtEur(l.valeur)}</span>`;
@@ -1162,7 +1203,7 @@ function celluleScore(l){
     ? `<span class="sfbase" title="Score avant rehausse géopolitique">${l.finalbase.toFixed(1)}</span>`:"";
   return `${base}<span class="t-score" style="color:${scoreColor(l.score)}" title="${esc(e[1])}">${l.score.toFixed(1)}</span><span class="ech" title="${esc(e[1])}">${e[0]}</span>`;
 }
-const actifs=()=>LEADS.filter(l=>l.statut!=="écarté"&&l.statut!=="perdu");
+const actifs=()=>LEADS.filter(l=>l.statut!=="écarté"&&l.statut!=="non_pertinent"&&l.statut!=="perdu");
 // PIPELINE vs MARCHE OBSERVE (25/08/2026) -- distinction de doctrine.
 // Une ATTRIBUTION est un marche DEJA GAGNE par un tiers. Elle est precieuse
 // (le titulaire est un prospect a demarcher) mais elle n'est PAS du pipeline :
@@ -1241,8 +1282,11 @@ function renderFunnel(){
     {l:"Signaux détectés",n:LEADS.length,c:"#33628F",
      d:nAt?nOpp+" à saisir + "+nAt+" attribué"+(nAt>1?"s":""):""},
     {l:"À contacter",n:LEADS.filter(l=>l.prio==="contacter").length,c:"#8E2649"},
-    {l:"En traitement",n:LEADS.filter(l=>traite(l)&&l.statut!=="gagné"&&l.statut!=="perdu"&&l.statut!=="écarté").length,c:"#B07419"},
-    {l:"Gagné",n:LEADS.filter(l=>l.statut==="gagné").length,c:"#237A57"}
+    {l:"En traitement",n:LEADS.filter(l=>traite(l)&&!estClos(l)&&l.statut!=="écarté"&&l.statut!=="non_pertinent").length,c:"#B07419"},
+    // Le vocabulaire de la base est « gagne » / « perdu » SANS accent : ce
+    // filtre cherchait « gagné », il ne pouvait donc jamais rien compter --
+    // second etage du meme defaut que P1.1.
+    {l:"Gagné",n:LEADS.filter(l=>l.statut==="gagne").length,c:"#237A57"}
   ];
   const max=Math.max(steps[0].n,1);
   document.getElementById("funnel").innerHTML=steps.map(s=>`<div class="fn-row"><div class="fn-lbl">${s.l}${s.d?`<div class="fn-d">${s.d}</div>`:""}</div><div class="fn-track"><div class="fn-fill" style="width:${Math.max(6,s.n/max*100)}%;background:${s.c}">${s.n}</div></div><div class="fn-n">${(s.n/max*100).toFixed(0)}%</div></div>`).join("");
@@ -1414,12 +1458,89 @@ function openDrawer(id){
     ${l.justif?`<div class="dr-sec"><h5>Analyse</h5><div class="dr-analyse">${esc(l.justif)}</div></div>`:""}
     ${contact}
     ${estSurveille(l)?`<div class="dr-sec"><h5>Surveillance</h5><div class="dr-analyse">${attribParue(l)?'<strong style="color:var(--green)">🎯 Attribution parue au dernier run.</strong>'+(l.motif?"<br>Titulaire détecté : <strong>"+esc(l.motif)+"</strong>":""):"👁 Ce marché est surveillé. Chaque run vérifie s\'il a été attribué (et par qui) ou s\'il évolue."}</div></div>`:""}
-    <div class="dr-sec"><h5>Action</h5>${SUIVI_ON?`<div class="dr-actions"><button class="btn pri" onclick="envoyerStatut(LEADS[${l.id}],'contacte')">À contacter</button><button class="btn${estSurveille(l)?' on-watch':''}" onclick="surveiller(${l.id})">${estSurveille(l)?"Surveillé ✓":"Surveiller"}</button><button class="btn" onclick="ecarter(${l.id})">Écarter</button></div>`:'<div style="font-size:12px;color:var(--ink-3);font-family:var(--mono)">Suivi non configuré sur cette page (lecture seule).</div>'}${l.lien?`<div style="margin-top:10px"><a class="btn" style="width:100%;justify-content:center" href="${l.lien}" target="_blank">Ouvrir l'avis source</a></div>`:""}</div>
+    <div class="dr-sec"><h5>Action</h5>${SUIVI_ON?blocActions(l):'<div style="font-size:12px;color:var(--ink-3);font-family:var(--mono)">Suivi non configuré sur cette page (lecture seule).</div>'}${l.lien?`<div style="margin-top:10px"><a class="btn" style="width:100%;justify-content:center" href="${l.lien}" target="_blank">Ouvrir l'avis source</a></div>`:""}</div>
   </div>`;
   document.getElementById("drawer").classList.add("on");document.getElementById("drawer-ov").classList.add("on");
 }
+// Les boutons dependent de l'ETAT du lead : on ne propose « gagné » que sur un
+// lead deja travaille, et on ne repropose rien sur un lead clos. Afficher les
+// six boutons en permanence inviterait a marquer perdu un lead jamais contacte,
+// ce que l'API refuse de toute facon (409).
+function blocActions(l){
+  if(estClos(l)){
+    const lbl=l.statut==="gagne"?"🏆 Marché gagné":"Marché perdu";
+    const m=l.motif&&MOTIFS_PERTE[l.motif]?" · "+esc(MOTIFS_PERTE[l.motif]):"";
+    return `<div class="issue-close ${l.statut}">${lbl}${m}<div class="issue-sub">Dossier clos. Rouvre-le en le remettant à contacter.</div></div>
+      <div class="dr-actions" style="margin-top:10px"><button class="btn" onclick="marquerContacte(${l.id})">Rouvrir (à contacter)</button></div>`;
+  }
+  const issue=estTravaille(l)?`<div class="dr-actions" style="margin-top:10px">
+      <button class="btn issue-g" onclick="marquerGagne(${l.id})">🏆 Gagné</button>
+      <button class="btn issue-p" onclick="marquerPerdu(${l.id})">Perdu</button></div>
+    <div class="issue-note">Enregistrer l'issue est ce qui permet au radar d'apprendre ce qu'Amarante gagne réellement.</div>`
+    :`<div class="issue-note">L'issue (gagné / perdu) se renseigne une fois le marché contacté ou surveillé.</div>`;
+  return `<div class="dr-actions">
+      <button class="btn pri" onclick="marquerContacte(${l.id})">${l.statut==="contacte"?"Contacté ✓":"À contacter"}</button>
+      <button class="btn${estSurveille(l)?' on-watch':''}" onclick="surveiller(${l.id})">${estSurveille(l)?"Surveillé ✓":"Surveiller"}</button>
+      <button class="btn" onclick="ecarter(${l.id})">Écarter</button></div>${issue}`;
+}
 function closeDrawer(){document.getElementById("drawer").classList.remove("on");document.getElementById("drawer-ov").classList.remove("on");}
 function ecarter(id){const l=LEADS.find(x=>x.id===id);if(!l)return;const motif=prompt("Motif pour écarter ce marché (facultatif) :","")||"";envoyerStatut(l,"non_pertinent",motif);}
+// --- ISSUES COMMERCIALES (P1.1) -------------------------------------------
+// Le verrou de tout le reste : sans « gagné » / « perdu » enregistrables,
+// aucune boucle d'apprentissage ne peut se calibrer sur la realite d'Amarante.
+function marquerContacte(id){
+  const l=LEADS.find(x=>x.id===id);if(!l)return;
+  // La valeur estimee se saisit ICI, au moment ou on la connait. La demander
+  // au moment de gagner serait trop tard : on la reconstruirait de memoire.
+  const brut=prompt("Valeur estimée du marché en k€ (facultatif, laisse vide si inconnue) :",
+    l.valeur?Math.round(l.valeur*1000):"");
+  if(brut===null)return;                       // annulation : on ne fait rien
+  const v=parseValeurK(brut);
+  if(brut.trim()&&v===null){toast("Montant illisible : saisis un nombre en k€.",true);return;}
+  envoyerStatut(l,"contacte","",v);
+}
+// Accepte « 250 », « 250k », « 1 200 », « 1.2 » -> renvoie des MILLIONS d'euros
+// (l'unite du reste de l'application). null si illisible.
+function parseValeurK(brut){
+  const t=String(brut||"").replace(/[\s\u00A0]/g,"").replace(/[k€kK]/g,"").replace(",",".");
+  if(!t)return null;
+  const n=parseFloat(t);
+  return (isNaN(n)||n<0)?null:Math.round(n)/1000;
+}
+function marquerGagne(id){
+  const l=LEADS.find(x=>x.id===id);if(!l)return;
+  if(!confirm("Confirmer : Amarante a GAGNÉ ce marché ?\n\n"+l.titre))return;
+  envoyerStatut(l,"gagne","");
+}
+function marquerPerdu(id){
+  const l=LEADS.find(x=>x.id===id);if(!l)return;
+  ouvrirMotifPerte(l);
+}
+// Le motif de perte se choisit dans une liste FERMEE. Un prompt libre
+// produirait « trop cher », « prix », « budget » pour la meme raison, et la
+// statistique deviendrait inexploitable -- exactement ce qu'on veut eviter.
+function ouvrirMotifPerte(l){
+  const opts=Object.keys(MOTIFS_PERTE).map(k=>
+    `<label class="mp-opt"><input type="radio" name="mp" value="${k}"> ${esc(MOTIFS_PERTE[k])}</label>`).join("");
+  const ov=document.createElement("div");
+  ov.className="mp-ov";
+  ov.innerHTML=`<div class="mp-box">
+    <div class="mp-t">Pourquoi ce marché est-il perdu ?</div>
+    <div class="mp-s">${esc(l.titre).slice(0,90)}</div>
+    <div class="mp-list">${opts}</div>
+    <div class="mp-note">Le motif alimente l'apprentissage du radar. Liste fermée : c'est ce qui rend les pertes comparables entre elles.</div>
+    <div class="mp-btns"><button class="btn" data-mp="annuler">Annuler</button><button class="btn pri" data-mp="ok">Enregistrer la perte</button></div>
+  </div>`;
+  document.body.appendChild(ov);
+  ov.addEventListener("click",e=>{
+    const b=e.target.closest("[data-mp]");
+    if(!b&&e.target!==ov)return;
+    if(!b||b.dataset.mp==="annuler"){ov.remove();return;}
+    const sel=ov.querySelector('input[name="mp"]:checked');
+    if(!sel){toast("Choisis un motif.",true);return;}
+    ov.remove();envoyerStatut(l,"perdu",sel.value);
+  });
+}
 function rechercherEnt(nom){closeDrawer();state.q=nom;document.getElementById("search").value=nom;go("opps");renderTable();}
 // --- ENTREPRISES 360 : dedup transverse par entite (ent_cle), toutes sources ---
 const TACT_LBL={delegation_mission:"délégation / mission",recrutement_local:"recrutement",contrat_export:"contrat export",implantation:"implantation",livraison_mise_en_service:"mise en service",formation_mco:"formation / MCO",essais_demonstration:"essais",incident:"incident",autre:"signal"};
