@@ -293,5 +293,123 @@ class TestIntegration(unittest.TestCase):
             self.assertIn(attendu, self.html)
 
 
+class TestConvergence(unittest.TestCase):
+    """P2.3 — La convergence se mesure en AXES INDEPENDANTS, pas en volume."""
+
+    def test_les_sept_axes_sont_toujours_rendus(self):
+        """Un axe NON atteint est une information : il dit ce qui manque pour
+        se décider. Les masquer donnerait une liste flatteuse et inutile."""
+        c = op.convergence([_lead()])
+        self.assertEqual(c["total"], 7)
+        self.assertEqual(len(c["axes"]), 7)
+        for a in c["axes"]:
+            self.assertTrue(a["detail"], a["cle"])
+
+    def test_histoire_complete_atteint_tous_les_axes(self):
+        c = op.convergence(HISTOIRE, {"Mali"})
+        self.assertEqual(c["n"], 7)
+
+    def test_LE_PIEGE_du_volume(self):
+        """L'audit externe comptait « 32 recruitment signals » comme une
+        corroboration. C'est UNE seule : l'entreprise recrute. Trente-deux
+        annonces du même employeur se répètent, elles ne se confirment pas."""
+        spam = [_lead(src="PRIVÉ", ent_cle="stecol",
+                      lien="https://news.google.com/%d" % i)
+                for i in range(32)]
+        c = op.convergence(spam)
+        self.assertLessEqual(c["n"], 3)
+        self.assertEqual(op.sources_distinctes(spam), 1)
+
+    def test_une_vraie_convergence_bat_un_gros_volume(self):
+        """Le test qui valide toute la doctrine du chantier."""
+        spam = [_lead(src="PRIVÉ", ent_cle="s",
+                      lien="https://news.google.com/%d" % i)
+                for i in range(32)]
+        self.assertGreater(op.confiance(HISTOIRE, {"Mali"})[0],
+                           op.confiance(spam)[0])
+
+    def test_les_axes_alimentent_la_dimension_existante(self):
+        """La convergence n'est pas un score parallèle : deux chiffres à
+        réconcilier, c'est deux vérités."""
+        note, motifs = op.confiance(HISTOIRE, {"Mali"})
+        self.assertTrue(any("axes de corroboration" in m for m in motifs))
+
+    def test_axe_contexte_alimente_par_la_posture(self):
+        sans = op.convergence(HISTOIRE, set())["n"]
+        avec = op.convergence(HISTOIRE, {"Mali"})["n"]
+        self.assertEqual(avec, sans + 1)
+
+    def test_corpus_vide_sans_erreur(self):
+        c = op.convergence([], None)
+        self.assertEqual(c["n"], 0)
+        self.assertEqual(c["total"], 7)
+
+
+class TestMontantsTolerants(unittest.TestCase):
+    """BUG RÉEL trouvé le 26/08 par le contrôle de rendu, pas par un test.
+
+    Selon l'endroit de la chaîne, un lead porte `valeur` en CHAÎNE brute
+    (« 180000000 EUR ») ou `valeur_meur` déjà convertie. Un `float()` sec
+    levait sur les leads non enrichis, et le best-effort transformait
+    l'exception en « aucune opportunité » : une dégradation SILENCIEUSE, page
+    normale et zéro dossier commercial."""
+
+    def test_chaine_brute_lue(self):
+        self.assertEqual(op._val([{"enveloppe": "180000000 EUR"}],
+                                 "enveloppe"), 180.0)
+
+    def test_variante_meur_prioritaire(self):
+        """Seule `_meur` garantit l'unité : elle doit primer sur le brut."""
+        self.assertEqual(op._val([{"enveloppe": "zzz", "enveloppe_meur": 180.0}],
+                                 "enveloppe"), 180.0)
+
+    def test_euros_convertis_en_millions(self):
+        """Sans cette correction, un marché de 4 M€ deviendrait 4 000 000 M€."""
+        self.assertEqual(op._val([{"valeur": "4000000"}], "valeur"), 4.0)
+
+    def test_petit_nombre_deja_en_millions(self):
+        self.assertEqual(op._val([{"valeur": 4.0}], "valeur"), 4.0)
+
+    def test_illisible_vaut_zero_sans_lever(self):
+        for faux in ("n.c.", "", None, "abc", {}):
+            self.assertEqual(op._nombre(faux), 0.0)
+
+    def test_aucun_float_sec_ne_subsiste(self):
+        """Deux points de conversion existaient ; le second (axe financement)
+        est tombé au premier correctif et n'a été vu qu'au second contrôle."""
+        with open("opportunites.py", encoding="utf-8") as f:
+            src = f.read()
+        self.assertNotIn('float(l.get("enveloppe") or 0)', src)
+        self.assertNotIn('float(l.get("final") or 0)', src)
+
+    def test_la_degradation_est_bruyante(self):
+        """Un best-effort muet a masqué ce bug. Il doit crier maintenant."""
+        with open("radar_cockpit.py", encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("ATTENTION : opportunites NON calculees", src)
+
+
+class TestAffichageConvergence(unittest.TestCase):
+
+    def setUp(self):
+        self.html = ck.generer_cockpit(HISTOIRE, suivi={"api": True})
+
+    def test_checklist_rendue(self):
+        self.assertIn("axes de corroboration", self.html)
+        self.assertIn('class="cv-r', self.html)
+
+    def test_le_piege_est_explique_a_l_ecran(self):
+        """Le lecteur doit comprendre pourquoi 32 signaux ne font pas 32
+        preuves, sinon il trouvera le compteur trop sévère."""
+        self.assertIn("pas trente-deux", self.html)
+
+    def test_pays_aggraves_derives_de_la_posture(self):
+        """Une seule source de vérité sur « ce pays se dégrade-t-il »."""
+        with open("radar_cockpit.py", encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn('aggraves = {v.get("pays") for v in (posture or {}).values()',
+                      src)
+
+
 if __name__ == "__main__":
     unittest.main()
