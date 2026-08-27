@@ -179,6 +179,36 @@ CREATE TABLE IF NOT EXISTS radar_entreprises (
 CREATE INDEX IF NOT EXISTS radar_entreprises_activite
     ON radar_entreprises (derniere_vue DESC);
 
+-- L'OPPORTUNITE (P2.2) : l'unite de travail qui survit a ses sources. Un
+-- projet detecte en mars, un signal de recrutement en juin et un avis en aout
+-- sont TROIS lignes de trois onglets, et UNE seule opportunite.
+-- Les cinq dimensions remplacent le chiffre unique. `motifs` les justifie :
+-- une note sans justification n'est pas auditable (cf. P1.3).
+CREATE TABLE IF NOT EXISTS radar_opportunites (
+    opportunity_id TEXT        PRIMARY KEY,
+    titre          TEXT        NOT NULL DEFAULT '',
+    pays           TEXT        NOT NULL DEFAULT '',
+    zone           TEXT        NOT NULL DEFAULT '',
+    secteur        TEXT        NOT NULL DEFAULT '',
+    ent_cle        TEXT        NOT NULL DEFAULT '',
+    projet_id      TEXT        NOT NULL DEFAULT '',
+    sources        TEXT        NOT NULL DEFAULT '',
+    n_leads        INTEGER     NOT NULL DEFAULT 0,
+    attractivite   INTEGER     NOT NULL DEFAULT 0,
+    timing         INTEGER     NOT NULL DEFAULT 0,
+    winability     INTEGER     NOT NULL DEFAULT 0,
+    fit            INTEGER     NOT NULL DEFAULT 0,
+    confiance      INTEGER     NOT NULL DEFAULT 0,
+    priorite       INTEGER     NOT NULL DEFAULT 0,
+    motifs         TEXT        NOT NULL DEFAULT '',
+    dormante       BOOLEAN     NOT NULL DEFAULT false,
+    premiere_vue   DATE,
+    derniere_vue   DATE,
+    maj            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS radar_opportunites_priorite
+    ON radar_opportunites (priorite DESC) WHERE NOT dormante;
+
 CREATE TABLE IF NOT EXISTS radar_projets (
     projet_id    TEXT        PRIMARY KEY,
     titre        TEXT        NOT NULL DEFAULT '',
@@ -679,6 +709,52 @@ def enregistrer_entites(conn, entreprises, projets, aujourd=None):
                  p.get("premiere_vue") or auj, p.get("derniere_vue") or auj))
             n_proj += 1
     return (n_ent, n_proj)
+
+
+def enregistrer_opportunites(conn, lignes):
+    """Upsert des opportunites serialisees. Renvoie le nombre traite.
+
+    `premiere_vue` suit la meme regle que partout ailleurs depuis le 25/08 :
+    elle ne recule JAMAIS vers le present. Une opportunite connue depuis mars
+    ne doit pas se remettre a dater d'aujourd'hui parce que le corpus a
+    tourne."""
+    n = 0
+    with conn.cursor() as cur:
+        for o in (lignes or []):
+            if not o.get("opportunity_id"):
+                continue
+            cur.execute(
+                "INSERT INTO radar_opportunites (opportunity_id, titre, pays,"
+                " zone, secteur, ent_cle, projet_id, sources, n_leads,"
+                " attractivite, timing, winability, fit, confiance, priorite,"
+                " motifs, dormante, premiere_vue, derniere_vue)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+                " ON CONFLICT (opportunity_id) DO UPDATE SET"
+                "   titre = EXCLUDED.titre, pays = EXCLUDED.pays,"
+                "   zone = EXCLUDED.zone, secteur = EXCLUDED.secteur,"
+                "   ent_cle = EXCLUDED.ent_cle, projet_id = EXCLUDED.projet_id,"
+                "   sources = EXCLUDED.sources, n_leads = EXCLUDED.n_leads,"
+                "   attractivite = EXCLUDED.attractivite,"
+                "   timing = EXCLUDED.timing, winability = EXCLUDED.winability,"
+                "   fit = EXCLUDED.fit, confiance = EXCLUDED.confiance,"
+                "   priorite = EXCLUDED.priorite, motifs = EXCLUDED.motifs,"
+                "   dormante = EXCLUDED.dormante,"
+                "   premiere_vue = LEAST(radar_opportunites.premiere_vue,"
+                "                        EXCLUDED.premiere_vue),"
+                "   derniere_vue = GREATEST(radar_opportunites.derniere_vue,"
+                "                           EXCLUDED.derniere_vue),"
+                "   maj = now()",
+                (o["opportunity_id"], o.get("titre", ""), o.get("pays", ""),
+                 o.get("zone", ""), o.get("secteur", ""), o.get("ent_cle", ""),
+                 o.get("projet_id", ""), o.get("sources", ""),
+                 int(o.get("n_leads", 0)), int(o.get("attractivite", 0)),
+                 int(o.get("timing", 0)), int(o.get("winability", 0)),
+                 int(o.get("fit", 0)), int(o.get("confiance", 0)),
+                 int(o.get("priorite", 0)), o.get("motifs", ""),
+                 o.get("dormante") == "oui",
+                 o.get("premiere_vue") or None, o.get("derniere_vue") or None))
+            n += 1
+    return n
 
 
 def lire_entreprises(conn):
