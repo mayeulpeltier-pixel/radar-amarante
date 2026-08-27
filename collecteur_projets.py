@@ -282,6 +282,8 @@ COLONNES = [
     "phase_courante", "libelle_phase", "phase_max_atteinte", "recul",
     "maturite", "palier_maturite", "opportunite", "opportunite_phrase",
     "opportunite_motifs",
+    "montee_vers", "montee_date", "montee_importance", "montee_message",
+    "montee_recente",
     "alerte", "nb_signaux", "premiere_detection", "derniere_maj",
     "prochaine_etape", "fenetre_debut", "fenetre_fin", "fenetre_confiance",
     "valeur_musd", "acteurs", "services", "prospects", "timeline_json",
@@ -313,6 +315,16 @@ def ligne_depuis_projet(p):
         # par « | » car les motifs contiennent deja des virgules.
         "opportunite_motifs": " | ".join(
             (p.get("opportunite") or {}).get("motifs", []) or []),
+        # TRANSITION MONTANTE (P1.4). Le recul etait deja expose ; la montee,
+        # qui est le signal d'ACTION, ne l'etait pas. On serialise la derniere
+        # montee corroboree et sa fraicheur : c'est elle qui dit « ce projet
+        # vient de franchir une etape », pas la phase du jour.
+        "montee_vers": (p.get("montee") or {}).get("libelle_vers", ""),
+        "montee_date": (p.get("montee") or {}).get("date", ""),
+        "montee_importance": (p.get("montee") or {}).get("importance", ""),
+        "montee_message": (p.get("montee") or {}).get("message", ""),
+        "montee_recente": ("oui" if (p.get("montee") or {}).get("recente")
+                           else "non"),
         "alerte": p.get("alerte", ""),
         "nb_signaux": p.get("nb_signaux", 0),
         "premiere_detection": p.get("premiere_detection", ""),
