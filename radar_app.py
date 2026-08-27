@@ -407,6 +407,116 @@ class Statut(BaseModel):
     publication_number: str
     statut: str
     motif: str = ""
+    # Champs d'AFFICHAGE, utilises UNIQUEMENT pour la replication vers le Sheet
+    # (le script Apps Script refuse un envoi sans titre). Ils n'entrent jamais
+    # dans l'ecriture en base, qui reste indexee sur (onglet, publication_number).
+    contexte: dict = {}
+
+
+# ===========================================================================
+# REPLICATION VERS LE SHEET (P0.2, 26/08/2026)
+# ===========================================================================
+# AVANT : le NAVIGATEUR postait lui-meme vers l'Apps Script, en mode no-cors.
+# Ce mode rend la reponse illisible par construction. Consequence : personne
+# n'a jamais vu que le payload ne portait pas de `titre` et que le script
+# repondait `missing_fields` a CHAQUE clic. Le bouton n'ecrivait rien dans le
+# Sheet depuis le cockpit, et affichait un succes.
+#
+# MAINTENANT : Postgres est la seule ecriture faite par le navigateur, et elle
+# rend des comptes. La replication vers le Sheet part d'ICI, cote serveur :
+#   - pas de CORS, donc la reponse EST lisible ;
+#   - un refus du script est journalise et compte, plus jamais avale ;
+#   - elle tourne dans un fil separe : une replication lente ou en panne ne
+#     retarde pas la reponse a l'utilisateur, et ne peut pas faire echouer
+#     l'ecriture en base, qui fait autorite.
+# Si SUIVI_WEBAPP_URL / SUIVI_TOKEN ne sont pas configures, la fonction ne fait
+# rien : c'est l'etat par defaut sur Render et il est parfaitement valable
+# (Postgres suffit). RADAR_REPLIQUER=0 la desactive explicitement.
+
+REPLIQUER = os.environ.get("RADAR_REPLIQUER", "1") != "0"
+
+# Journal des dernieres replications, expose par /sante. Un echec doit etre
+# CONSULTABLE, sinon on a juste deplace le silence.
+REPLICATION = {"tentees": 0, "ok": 0, "echecs": 0, "derniere_erreur": ""}
+_verrou_repl = threading.Lock()
+
+
+def _payload_apps_script(s, token):
+    """Construit le corps attendu par le script Apps Script. Fonction PURE.
+
+    `titre` est OBLIGATOIRE cote script (`if (!id || !d.titre)`). On refuse donc
+    de partir sans lui plutot que d'envoyer un appel voue a `missing_fields`,
+    ce qui etait exactement le defaut precedent."""
+    ctx = s.contexte or {}
+    ident = str(ctx.get("id") or "").strip() or s.publication_number.strip()
+    titre = str(ctx.get("titre") or "").strip()
+    if not (ident and titre):
+        return None
+    return {
+        "token": token, "id": ident, "titre": titre,
+        "statut": s.statut.strip(), "motif": s.motif.strip(),
+        "source": ctx.get("source", ""), "pays": ctx.get("pays", ""),
+        "zone": ctx.get("zone", ""), "agence": ctx.get("agence", ""),
+        "lien": ctx.get("lien", ""), "date_det": ctx.get("date_det", ""),
+        "score": ctx.get("score"), "surete": ctx.get("surete"),
+        "comm": ctx.get("comm"), "action": ctx.get("action", ""),
+        "fenetre": ctx.get("fenetre", ""), "priorite": ctx.get("action", ""),
+        "contact": ctx.get("contact", ""), "email": ctx.get("email", ""),
+        "valeur": ctx.get("valeur", ""),
+    }
+
+
+def _noter_replication(ok, erreur=""):
+    with _verrou_repl:
+        REPLICATION["tentees"] += 1
+        if ok:
+            REPLICATION["ok"] += 1
+        else:
+            REPLICATION["echecs"] += 1
+            REPLICATION["derniere_erreur"] = erreur[:200]
+    if not ok:
+        print("(replication Sheet) ECHEC : {}".format(erreur[:200]))
+
+
+def repliquer_vers_sheet(s):
+    """Rejoue le statut vers le Sheet. Best-effort, non bloquant, JOURNALISE.
+
+    N'est jamais appelee dans le chemin critique : l'ecriture en base a deja
+    reussi quand on arrive ici. Un echec ne remonte donc pas a l'utilisateur,
+    mais il est compte et lisible sur /sante -- la difference exacte avec
+    l'ancien `.catch(function(){})`."""
+    url = (os.environ.get("SUIVI_WEBAPP_URL") or "").strip()
+    token = (os.environ.get("SUIVI_TOKEN") or "").strip()
+    if not (REPLIQUER and url and token):
+        return False
+    payload = _payload_apps_script(s, token)
+    if payload is None:
+        _noter_replication(False, "contexte incomplet (id ou titre manquant)")
+        return False
+    try:
+        import json as _json
+        import urllib.request
+        req = urllib.request.Request(
+            url, data=_json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=15) as rep:
+            corps = rep.read().decode("utf-8", "replace")[:400]
+        # Le script repond TOUJOURS 200, y compris pour un refus : c'est le
+        # champ `ok` du JSON qui fait foi. Se fier au code HTTP recreerait le
+        # silence qu'on vient de supprimer.
+        try:
+            data = _json.loads(corps)
+        except Exception:
+            _noter_replication(False, "reponse illisible : " + corps)
+            return False
+        if data.get("ok") is True:
+            _noter_replication(True)
+            return True
+        _noter_replication(False, "refus du script : " + str(data.get("error")))
+        return False
+    except Exception as e:
+        _noter_replication(False, "{}: {}".format(type(e).__name__, str(e)[:150]))
+        return False
 
 
 _basic = HTTPBasic()
@@ -460,10 +570,20 @@ def creer_application():
     def sante():
         """Diagnostic sans authentification NI donnees : juste l'etat des
         branchements, pour Render et pour le depannage."""
+        # `replication` : compteurs de la replication vers le Sheet. C'est ce
+        # qui rend un echec CONSULTABLE. Aucune donnee commerciale ici, donc
+        # cet endpoint peut rester ouvert : uniquement des compteurs et le
+        # libelle de la derniere erreur.
+        with _verrou_repl:
+            repl = dict(REPLICATION)
+        repl["configuree"] = bool(REPLIQUER
+                                  and os.environ.get("SUIVI_WEBAPP_URL")
+                                  and os.environ.get("SUIVI_TOKEN"))
         return {"miroir": st.actif(),
                 "mot_de_passe_configure": bool(os.environ.get("RADAR_APP_MOT_DE_PASSE")),
                 "cache_secondes": CACHE_S,
-                "page_en_cache": bool(_cache["html"])}
+                "page_en_cache": bool(_cache["html"]),
+                "replication": repl}
 
     @app.get("/")
     def accueil(frais: int = 0, _: None = Depends(_verifier)):
@@ -487,6 +607,11 @@ def creer_application():
                               s.statut.strip(), s.motif.strip())
         # L'utilisateur doit VOIR son action au rafraichissement suivant.
         invalider_cache()
+        # Replication vers le Sheet dans un fil separe : l'ecriture qui FAIT
+        # AUTORITE a deja reussi, la reponse ne l'attend pas. Un echec de
+        # replication est journalise et visible sur /sante, jamais avale.
+        threading.Thread(target=repliquer_vers_sheet, args=(s,),
+                         daemon=True).start()
         return JSONResponse({"ok": True}, headers=EN_TETES_PRIVES)
 
     return app
