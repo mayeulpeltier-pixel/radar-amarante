@@ -407,6 +407,10 @@ class Statut(BaseModel):
     publication_number: str
     statut: str
     motif: str = ""
+    # Valeur estimee du marche, saisie a la main au passage en « contacte »
+    # (P1.1). None = non renseignee, ce qui n'est PAS zero : un montant absent
+    # ne doit pas etre compris comme un marche sans valeur.
+    valeur_estimee: float | None = None
     # Champs d'AFFICHAGE, utilises UNIQUEMENT pour la replication vers le Sheet
     # (le script Apps Script refuse un envoi sans titre). Ils n'entrent jamais
     # dans l'ecriture en base, qui reste indexee sur (onglet, publication_number).
@@ -601,10 +605,32 @@ def creer_application():
             raise HTTPException(503, "DATABASE_URL absent ou pilote manquant.")
         if not s.publication_number.strip():
             raise HTTPException(422, "publication_number requis.")
+        # VOCABULAIRE FERME (P1.1). Un statut hors liste serait ecrit en base
+        # et polluerait durablement l'apprentissage : mieux vaut refuser.
+        statut = s.statut.strip().lower()
+        if not st.statut_valide(statut):
+            raise HTTPException(422, "Statut inconnu : {}. Attendus : {}.".format(
+                statut, ", ".join(st.STATUTS_VALIDES)))
+        # Motif de perte : liste fermee aussi. Un champ libre produit vingt
+        # formulations de la meme raison et zero statistique exploitable.
+        if statut == "perdu" and not st.motif_perte_valide(s.motif):
+            raise HTTPException(422, "Motif de perte inconnu : {}. Attendus : {}.".format(
+                s.motif.strip(), ", ".join(st.MOTIFS_PERTE)))
         with st.connexion() as conn:
             _initialiser_une_fois(conn)
+            # Une issue suppose que le lead a ete TRAVAILLE. Sans cette garde,
+            # le journal se remplirait de « perdu » qui ne sont en fait que des
+            # desinteressements -- lesquels ont deja leur statut : non_pertinent.
+            if statut in st.STATUTS_ISSUE:
+                courant = st.lire_statuts(conn).get(
+                    (s.onglet.strip(), s.publication_number.strip()), "")
+                if courant not in st.STATUTS_AVANT_ISSUE:
+                    raise HTTPException(409, (
+                        "Un lead doit avoir été contacté ou surveillé avant "
+                        "d'être marqué {}. Statut actuel : « {} »."
+                    ).format(statut, courant or "nouveau"))
             st.definir_statut(conn, s.onglet.strip(), s.publication_number.strip(),
-                              s.statut.strip(), s.motif.strip())
+                              statut, s.motif.strip(), s.valeur_estimee)
         # L'utilisateur doit VOIR son action au rafraichissement suivant.
         invalider_cache()
         # Replication vers le Sheet dans un fil separe : l'ecriture qui FAIT
