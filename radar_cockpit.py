@@ -82,6 +82,19 @@ COORDS = {
 }
 
 
+def _cle_opp(lead):
+    """Cle d'opportunite du lead, calculee UNE SEULE FOIS, cote Python.
+
+    Meme discipline que `ent_cle` : le JS ne recalcule pas la cle, il la lit.
+    Deux implementations produiraient deux regroupements divergents, donc deux
+    verites sur « de quel dossier parle-t-on »."""
+    try:
+        import opportunites as opp
+        return opp.cle_opportunite(lead)
+    except Exception:
+        return ""
+
+
 def enrichir(leads):
     """Ajoute `valeur_meur` (montant marche) et `enveloppe_meur` (enveloppe
     projet BM, champ distinct) a chaque lead, via le convertisseur du dashboard.
@@ -99,6 +112,9 @@ def enrichir(leads):
             d["enveloppe_meur"] = round(dash._valeur_en_millions(env), 2) if env else 0.0
         except Exception:
             d["enveloppe_meur"] = 0.0
+        # Cle d'opportunite (P2.2), precalculee ici : le JS la LIT, il ne la
+        # recalcule pas. Meme regle que `ent_cle`.
+        d["opp_cle"] = _cle_opp(l)
         out.append(d)
     return out
 
@@ -388,7 +404,7 @@ def postures(leads, alertes, risque=None):
 def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
                     candidats=None, dossiers=None, projets=None,
                     candidats_projets=None, sante=None, posture=None,
-                    geo_alertes=None):
+                    geo_alertes=None, opportunites=None):
     """leads (schema dashboard) -> HTML autonome. Fonction PURE.
     dossiers : liste compacte (dossiers.serialiser) pour la vue Ecosysteme
                (projets BM suivis a travers leurs phases). Defaut [].
@@ -419,7 +435,15 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
     _url, _token = dash.assainir_suivi(suivi.get("url", ""),
                                        suivi.get("token", ""),
                                        bool(suivi.get("api")))
+    if opportunites is None:
+        try:
+            import opportunites as _opp
+            opportunites = _opp.construire(leads)
+        except Exception as e:
+            print("(cockpit) opportunites indisponibles ({}).".format(str(e)[:70]))
+            opportunites = []
     return (GABARIT
+            .replace("__OPPS_JSON__", json.dumps(opportunites or [], ensure_ascii=False))
             .replace("__POSTURE_JSON__", json.dumps(posture or {}, ensure_ascii=False))
             .replace("__SANTE_JSON__", json.dumps(sante or {}, ensure_ascii=False))
             .replace("__LEADS_JSON__", json.dumps(payload, ensure_ascii=False))
@@ -794,6 +818,15 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .mt-h{font-family:var(--display);font-weight:600;font-size:14px;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
 .mt-d{font-family:var(--mono);font-size:11px;color:var(--ink-3);font-weight:400;margin-left:auto}
 .mt-m{font-size:12.5px;color:var(--ink-2);margin-top:6px;line-height:1.5}
+.od{background:var(--surface-2);border:1px solid var(--line-2);border-radius:10px;padding:12px 14px}
+.od-tete{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding-bottom:9px;margin-bottom:8px;border-bottom:1px solid var(--line)}
+.od-tete b{font-family:var(--display);font-size:14px}
+.od-src{font-family:var(--mono);font-size:11px;color:var(--ink-3);margin-left:auto}
+.od-row{display:flex;align-items:center;gap:10px;padding:3px 0;cursor:help}
+.od-l{font-size:12px;color:var(--ink-2);min-width:88px;flex:none}
+.od-bar{flex:1;height:6px;border-radius:3px;background:var(--line-2);overflow:hidden}
+.od-bar span{display:block;height:100%;border-radius:3px}
+.od-n{font-family:var(--mono);font-size:12px;font-weight:700;min-width:26px;text-align:right;flex:none}
 .dc{background:var(--surface-2);border:1px solid var(--line-2);border-radius:10px;padding:12px 14px}
 .dc-tete{font-size:12px;color:var(--ink-2);font-family:var(--mono);padding-bottom:8px;margin-bottom:6px;border-bottom:1px solid var(--line)}
 .dc-tete b{color:var(--ink);font-size:13px}
@@ -983,6 +1016,12 @@ const SANTE=__SANTE_JSON__;
 // Posture EFFECTIVE par theatre (socle de risque + aggravation recente),
 // derivee cote Python. Cf. radar_cockpit.postures.
 const POSTURE=__POSTURE_JSON__;
+// Opportunites (P2.2) : l'unite de travail qui survit a ses sources. Un lead
+// porte `opp` ; on retrouve ici son dossier complet.
+const OPPS=__OPPS_JSON__;
+const OPP_PAR_CLE={};OPPS.forEach(o=>{OPP_PAR_CLE[o.opportunity_id]=o;});
+const DIM_LBL={attractivite:"Attractivité",timing:"Timing",winability:"Winability",
+  fit:"Fit Amarante",confiance:"Confiance"};
 function candidatsPour(l){
   if(!CANDIDATS||!CANDIDATS.secteur_zone)return [];
   const sect=(l.secteur||"Autre"), zone=(l.zone||"Non classe");
@@ -1111,7 +1150,7 @@ const LEADS=RAW.map((l,i)=>({
   proj:l.projet_id||"",deadline:l.deadline||"",datedet:l.date_det||"",
   // Composantes du score (P1.2) : deja calculees et ponderees a la collecte,
   // jamais affichees. Transportees telles quelles, aucun recalcul ici.
-  acces:l.acces||"",duree:l.duree||"",client:l.client||"",conf:l.confiance||l.conf||"",
+  acces:l.acces||"",duree:l.duree||"",client:l.client||"",conf:l.confiance||l.conf||"",opp:l.opp_cle||"",
   // Rehausse geopolitique (dash.appliquer_boost_geo) : score d'origine
   // conserve pour que l'UI puisse montrer AVANT -> APRES, jamais un chiffre
   // rehausse presente comme brut.
@@ -1246,6 +1285,29 @@ function composantes(l){
   if(l.duree&&POIDS_DUREE[l.duree]!==undefined&&POIDS_DUREE[l.duree]>0)out.push([DUREE_LBL[l.duree],POIDS_DUREE[l.duree]]);
   if(l.secu)out.push(["Sûreté déjà en place chez le client",-2.0]);
   return out;
+}
+// LE DOSSIER COMMERCIAL (P2.2). N'apparait que si le lead appartient a une
+// opportunite REGROUPANT plusieurs signaux : sur un avis isole, les cinq
+// dimensions n'ajouteraient rien a la decomposition du score juste en dessous,
+// et repeter l'information la devaluerait.
+function blocOpportunite(l){
+  const o=OPP_PAR_CLE[l.opp];
+  if(!o||o.n_leads<2)return "";
+  const barres=Object.keys(DIM_LBL).map(k=>{
+    const d=o.dimensions[k];if(!d)return "";
+    const c=k==="confiance"?"var(--ink-3)":d.note>=70?"var(--green)":d.note>=45?"var(--amber)":"var(--red)";
+    return `<div class="od-row" title="${esc(d.motifs.join(" · "))}">
+      <span class="od-l">${DIM_LBL[k]}</span>
+      <span class="od-bar"><span style="width:${d.note}%;background:${c}"></span></span>
+      <span class="od-n">${d.note}</span></div>`;
+  }).join("");
+  return `<div class="dr-sec"><h5>Dossier commercial</h5>
+    <div class="od">
+      <div class="od-tete"><b>Priorité ${o.priorite}/100</b>
+        <span class="od-src">${o.n_leads} signaux · ${esc(o.sources.join(", "))}</span></div>
+      ${barres}
+      <div class="dc-note">Les 5 dimensions regroupent <b>${o.n_leads} signaux</b> détectés entre ${esc(o.premiere_vue)} et ${esc(o.derniere_vue)}. Elles réordonnent des indices déjà collectés ; elles ne sont pas encore calibrées sur les issues réelles (survole une ligne pour ses motifs).${o.dormante?" <b>Dossier dormant</b> : plus aucun signal depuis longtemps.":""}</div>
+    </div></div>`;
 }
 function blocDecomposition(l){
   if(l.type!=="avis")return "";              // formule propre aux avis seuls
@@ -1519,6 +1581,7 @@ function openDrawer(id){
     ${l.titulaire||l.pays_tit?`<div class="dr-sec"><h5>Titulaire</h5><div class="dr-grid"><div class="dr-field"><div class="l">Entreprise</div><div class="v">${esc(l.titulaire||"—")}</div></div><div class="dr-field"><div class="l">Origine</div><div class="v">${l.pays_tit||"—"} ${l.etranger?'<span class="flag">étranger</span>':""}</div></div></div></div>`:""}
     ${(function(){const c=candidatsPour(l);return c.length?`<div class="dr-sec"><h5>Candidats probables${l.src==="ATTRIB"?" (autres du secteur)":""}</h5><div class="cand-list">${c.map(x=>`<div class="cand" onclick="rechercherEnt('${(x.entreprise||"").replace(/'/g,"\\'")}')"><div class="cand-n">${esc(x.entreprise)}</div><div class="cand-m">${x.nb} marché${x.nb>1?"s":""} similaire${x.nb>1?"s":""}${x.origine?" · "+esc(x.origine):""}${x.etranger?' <span class="cand-etr">étranger</span>':""}</div></div>`).join("")}</div><div class="cand-note">Inféré depuis l'historique des attributions du même secteur / théâtre.</div></div>`:"";})()}
     <div class="dr-sec"><h5>Cible commerciale</h5><div class="dr-analyse">${esc(l.cible)||"—"}${l.interlocuteur?"<br><strong>Interlocuteur :</strong> "+esc(l.interlocuteur):""}${l.besoin?"<br><strong>Besoin de sûreté :</strong> "+esc(besL):""}${l.nature?"<br><strong>Déploiement :</strong> "+natL:""}</div></div>
+    ${blocOpportunite(l)}
     ${blocDecomposition(l)}
     ${l.justif?`<div class="dr-sec"><h5>Analyse</h5><div class="dr-analyse">${esc(l.justif)}</div></div>`:""}
     ${contact}
