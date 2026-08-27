@@ -962,21 +962,86 @@ const ONGLET_SRC={TED:"ted_radar",BM:"bm_radar","PRIVÉ":"prive_radar",ATTRIB:"a
 function leadId(l){return l.pub||l.lien||(l.src+"|"+l.pays+"|"+l.acheteur+"|"+l.titre);}
 // Statut local (optimiste) : le lead reflete l'action tout de suite, la
 // persistance part en arriere-plan (Apps Script + /api/statut si servie par Render).
-function envoyerStatut(l,statut,motif){
-  l.statut=statut;
-  if(SUIVI_URL){const p={token:SUIVI_TOKEN,id:leadId(l),source:SRC_SUIVI[l.src]||l.src,statut:statut,motif:motif||"",pays:l.pays||"",zone:l.zone||"",agence:l.acheteur||""};
-    fetch(SUIVI_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify(p)}).catch(function(){});}
-  if(API_STATUT){fetch("/api/statut",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify({onglet:ONGLET_SRC[l.src]||"",publication_number:l.pub||"",statut:statut,motif:motif||""})}).catch(function(){});}
-  closeDrawer();go(state.view);toast(statut==="non_pertinent"?"Marché écarté":statut==="surveille"?"Ajouté à la surveillance":"Marqué à contacter");
+// ===========================================================================
+// ECRITURE D'UN STATUT (P0.2, 26/08/2026) -- UNE seule destination, et elle
+// rend des comptes.
+// ===========================================================================
+// TROIS DEFAUTS CORRIGES ICI, dont un tres couteux :
+//
+// 1. DEUX ECRITURES CONCURRENTES. La version precedente postait vers l'Apps
+//    Script ET vers /api/statut. Deux destinations, aucune transaction : le
+//    Sheet et Postgres pouvaient diverger sans que personne le sache.
+//
+// 2. ECHEC SILENCIEUX. Le POST Apps Script partait en mode no-cors, ce qui
+//    rend la reponse ILLISIBLE par construction, et les deux appels finissaient
+//    par `.catch(function(){})`, qui avale l'erreur. Le statut etait pose sur
+//    l'objet AVANT tout appel et le toast de succes s'affichait quoi qu'il
+//    arrive. L'interface mentait a chaque clic rate.
+//
+// 3. ET SURTOUT : le payload navigateur ne portait PAS de `titre`, alors que
+//    le script Apps Script refuse tout envoi sans titre (`missing_fields`).
+//    Le bouton n'a donc JAMAIS rien ecrit dans le Sheet depuis le cockpit.
+//    Personne ne pouvait le voir : ce mode masquait le refus.
+//
+// Nouveau contrat : /api/statut (Postgres) est la SEULE ecriture faite par le
+// navigateur. Elle est attendue, sa reponse est lue, et l'affichage est
+// annule si elle echoue. La replication vers le Sheet se fait cote SERVEUR,
+// ou la reponse est lisible et l'echec journalise.
+async function envoyerStatut(l,statut,motif){
+  const avant=l.statut;                      // pour pouvoir revenir en arriere
+  if(!API_STATUT){
+    toast("Page en lecture seule : action non enregistrée.",true);return false;
+  }
+  l.statut=statut;                           // affichage optimiste
+  closeDrawer();go(state.view);
+  try{
+    const r=await fetch("/api/statut",{method:"POST",credentials:"same-origin",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({onglet:ONGLET_SRC[l.src]||"",publication_number:l.pub||"",
+        statut:statut,motif:motif||"",contexte:contexteLead(l)})});
+    if(!r.ok)throw new Error("HTTP "+r.status);
+    const j=await r.json();
+    if(!j||j.ok!==true)throw new Error((j&&j.error)||"réponse inattendue");
+    toast(statut==="non_pertinent"?"Marché écarté":statut==="surveille"?"Ajouté à la surveillance":"Marqué à contacter");
+    return true;
+  }catch(err){
+    // ROLLBACK : ne jamais laisser l'ecran affirmer ce que la base ignore.
+    l.statut=avant;go(state.view);
+    toast("Échec de l'enregistrement ("+err.message+"). Action NON sauvegardée.",true);
+    return false;
+  }
 }
-function toast(msg){let t=document.getElementById("toast");if(!t){t=document.createElement("div");t.id="toast";t.style.cssText="position:fixed;bottom:26px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:11px 20px;border-radius:9px;font-size:13px;font-weight:600;box-shadow:var(--sh-2);z-index:90;opacity:0;transition:.25s";document.body.appendChild(t);}t.textContent=msg;t.style.opacity="1";setTimeout(()=>t.style.opacity="0",2200);}
+// Champs d'AFFICHAGE transmis pour la replication vers le Sheet (le script
+// Apps Script exige un titre, cf. defaut 3). Ils ne servent JAMAIS a l'ecriture
+// en base, qui reste indexee sur (onglet, publication_number).
+function contexteLead(l){
+  return {titre:l.titre||"",source:SRC_SUIVI[l.src]||l.src||"",pays:l.pays||"",
+    zone:l.zone||"",agence:l.acheteur||"",lien:l.lien||"",date_det:l.datedet||"",
+    score:l.score,surete:l.surete,comm:l.comm,action:l.prio||"",fenetre:l.win||"",
+    contact:(l.nom&&l.nom!=="n.c.")?l.nom:"",email:(l.email&&l.email!=="n.c.")?l.email:"",
+    valeur:l.valeur||0,id:leadId(l)};
+}
+// Un echec doit se voir : fond rouge et duree doublee, pour qu'il ne passe pas
+// pour un succes dans le coin de l'ecran.
+function toast(msg,erreur){let t=document.getElementById("toast");if(!t){t=document.createElement("div");t.id="toast";t.style.cssText="position:fixed;bottom:26px;left:50%;transform:translateX(-50%);color:#fff;padding:11px 20px;border-radius:9px;font-size:13px;font-weight:600;box-shadow:var(--sh-2);z-index:90;opacity:0;transition:.25s;max-width:min(560px,90vw);text-align:center";document.body.appendChild(t);}t.style.background=erreur?"var(--red)":"var(--ink)";t.textContent=msg;t.style.opacity="1";clearTimeout(t._h);t._h=setTimeout(()=>t.style.opacity="0",erreur?5200:2200);}
 // --- SURVEILLANCE : marquer un marche amont pour que le run signale toute
 // attribution (surveillance_attributions.py, matching Jaccard). Statut
 // 'surveille' -> bascule en 'attribution_publiee' + gagnant au prochain run. ---
 let SURV=new Set();try{SURV=new Set(JSON.parse(localStorage.getItem("ck_surveilles")||"[]"));}catch(e){}
 function estSurveille(l){return l.statut==="surveille"||l.statut==="attribution_publiee"||SURV.has(leadId(l));}
 function attribParue(l){return l.statut==="attribution_publiee";}
-function surveiller(id){const l=LEADS.find(x=>x.id===id);if(!l)return;SURV.add(leadId(l));try{localStorage.setItem("ck_surveilles",JSON.stringify([...SURV]));}catch(e){}envoyerStatut(l,"surveille","");}
+// La marque locale suivait l'ecriture reseau sans jamais verifier qu'elle avait
+// abouti : un lead pouvait apparaitre surveille ici et nulle part ailleurs. On
+// n'ecrit le marqueur local qu'APRES confirmation, et on le retire si l'appel
+// a echoue.
+async function surveiller(id){
+  const l=LEADS.find(x=>x.id===id);if(!l)return;
+  const cle=leadId(l),avant=SURV.has(cle);
+  SURV.add(cle);majSurv();
+  const ok=await envoyerStatut(l,"surveille","");
+  if(!ok&&!avant){SURV.delete(cle);majSurv();go(state.view);}
+}
+function majSurv(){try{localStorage.setItem("ck_surveilles",JSON.stringify([...SURV]));}catch(e){}}
 // Posture d'un theatre. Lit le niveau EFFECTIF calcule cote Python (socle de
 // risque + aggravation recente). Repli sur la table constante si POSTURE est
 // absent : la page d'un ancien cache ne casse pas, elle redevient statique.
