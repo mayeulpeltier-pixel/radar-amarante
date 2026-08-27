@@ -281,6 +281,7 @@ COLONNES = [
     "date_maj", "project_id", "libelle", "pays", "iso3", "secteur",
     "phase_courante", "libelle_phase", "phase_max_atteinte", "recul",
     "maturite", "palier_maturite", "opportunite", "opportunite_phrase",
+    "opportunite_motifs",
     "alerte", "nb_signaux", "premiere_detection", "derniere_maj",
     "prochaine_etape", "fenetre_debut", "fenetre_fin", "fenetre_confiance",
     "valeur_musd", "acteurs", "services", "prospects", "timeline_json",
@@ -305,6 +306,13 @@ def ligne_depuis_projet(p):
         "palier_maturite": pj.palier_maturite(p.get("maturite", 0)),
         "opportunite": (p.get("opportunite") or {}).get("score", 0),
         "opportunite_phrase": (p.get("opportunite") or {}).get("phrase", ""),
+        # MOTIFS DU SCORE (P1.3, 26/08/2026). `score_opportunite` les
+        # construisait depuis le debut et ne renvoyait que la phrase de
+        # synthese : le detail « pourquoi 82 » n'atteignait jamais l'ecran.
+        # Serialises en une chaine (le Sheet ne stocke pas de listes), separes
+        # par « | » car les motifs contiennent deja des virgules.
+        "opportunite_motifs": " | ".join(
+            (p.get("opportunite") or {}).get("motifs", []) or []),
         "alerte": p.get("alerte", ""),
         "nb_signaux": p.get("nb_signaux", 0),
         "premiere_detection": p.get("premiere_detection", ""),
