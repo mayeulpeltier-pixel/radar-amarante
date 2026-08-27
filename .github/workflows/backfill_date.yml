@@ -1,0 +1,53 @@
+name: Back-fill date_detection
+
+# Correction ponctuelle, LANCEE A LA MAIN (P1.5). Elle ne tourne pas avec le
+# radar : rejouer un back-fill a chaque run serait du bruit, puisqu'il n'y a
+# rien a corriger une fois la correction passee.
+#
+# Le mode SONDE est le defaut : le premier lancement ne fait que compter et
+# montrer des exemples. On regarde le rapport, PUIS on relance avec
+# appliquer=true. C'est la discipline du projet : mesurer sur donnees reelles
+# avant d'ecrire.
+on:
+  workflow_dispatch:
+    inputs:
+      appliquer:
+        description: "Écrire réellement en base (sinon : sonde seule)"
+        type: boolean
+        default: false
+      onglet:
+        description: "Limiter à un onglet (vide = tous)"
+        type: string
+        default: ""
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Installer les dépendances
+        run: pip install -r requirements-radar.txt
+
+      - name: Reconstituer le compte de service
+        run: echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > service_account.json
+
+      - name: Back-fill
+        env:
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python backfill_date_detection.py \
+            ${{ inputs.appliquer && '--appliquer' || '' }} \
+            ${{ inputs.onglet && format('--onglet {0}', inputs.onglet) || '' }}
+
+      - name: Effacer le compte de service
+        if: always()
+        run: rm -f service_account.json
