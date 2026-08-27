@@ -389,6 +389,14 @@ jobs:
           # DASHBOARD_OUTPUT=public/index.html et COCKPIT_OUTPUT=public/cockpit.html.
           DASHBOARD_OUTPUT: public/legacy.html
           COCKPIT_OUTPUT: public/index.html
+          # Boucle de retroaction (P1.1, 26/08/2026). « ombre » = elle CALCULE
+          # et JOURNALISE ce qu'elle changerait, sans rien appliquer aux
+          # scores. Elle etait jusqu'ici absente de ce fichier, donc en mode
+          # `off` -- et de toute facon aveugle, puisque l'interface ne pouvait
+          # emettre aucune issue gagne/perdu avant ce chantier.
+          # Passage en « actif » seulement quand les logs annoncent
+          # « passage en mode actif : OUI » (cf. assez_d_issues).
+          RADAR_RETRO: ombre
           # SUIVI_* RETIRES ICI VOLONTAIREMENT (P0.1, 26/08/2026).
           # Ces pages sont publiees sur Cloudflare Pages. Le jeton y etait
           # injecte comme constante JS, donc publie : dans l'artefact de build,
