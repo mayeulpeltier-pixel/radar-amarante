@@ -438,9 +438,19 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
     if opportunites is None:
         try:
             import opportunites as _opp
-            opportunites = _opp.construire(leads)
+            # Les pays en aggravation viennent de la POSTURE deja calculee :
+            # une seule source de verite sur « ce pays se degrade-t-il ».
+            aggraves = {v.get("pays") for v in (posture or {}).values()
+                        if v.get("boost", 0) > 0 and v.get("pays")}
+            opportunites = _opp.construire(leads, pays_aggraves=aggraves)
         except Exception as e:
-            print("(cockpit) opportunites indisponibles ({}).".format(str(e)[:70]))
+            # BRUYANT A DESSEIN. Un best-effort muet a masque le 26/08 un
+            # simple probleme de type (« 180000000 EUR » passe a float()) :
+            # la page s'affichait normalement avec ZERO opportunite, sans que
+            # rien ne le signale. Une degradation doit se voir.
+            print("(cockpit) ATTENTION : opportunites NON calculees ({} : {})."
+                  " La page s'affiche sans dossier commercial.".format(
+                      type(e).__name__, str(e)[:90]))
             opportunites = []
     return (GABARIT
             .replace("__OPPS_JSON__", json.dumps(opportunites or [], ensure_ascii=False))
@@ -818,6 +828,16 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .mt-h{font-family:var(--display);font-weight:600;font-size:14px;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
 .mt-d{font-family:var(--mono);font-size:11px;color:var(--ink-3);font-weight:400;margin-left:auto}
 .mt-m{font-size:12.5px;color:var(--ink-2);margin-top:6px;line-height:1.5}
+.cv{margin-top:11px;padding-top:10px;border-top:1px solid var(--line)}
+.cv-t{font-family:var(--mono);font-size:11px;color:var(--ink-3);margin-bottom:7px}
+.cv-t b{color:var(--ink);font-size:12px}
+.cv-r{display:flex;gap:9px;align-items:baseline;padding:2px 0;font-size:12px}
+.cv-r.off{opacity:.42}
+.cv-i{font-family:var(--mono);font-weight:700;min-width:12px;flex:none}
+.cv-r.on .cv-i{color:var(--green)}
+.cv-l{color:var(--ink-2);min-width:132px;flex:none}
+.cv-d{color:var(--ink-3);font-size:11.5px}
+.cv-n{font-size:11px;color:var(--ink-3);font-family:var(--mono);margin-top:8px;line-height:1.55}
 .od{background:var(--surface-2);border:1px solid var(--line-2);border-radius:10px;padding:12px 14px}
 .od-tete{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding-bottom:9px;margin-bottom:8px;border-bottom:1px solid var(--line)}
 .od-tete b{font-family:var(--display);font-size:14px}
@@ -1306,6 +1326,11 @@ function blocOpportunite(l){
       <div class="od-tete"><b>Priorité ${o.priorite}/100</b>
         <span class="od-src">${o.n_leads} signaux · ${esc(o.sources.join(", "))}</span></div>
       ${barres}
+      ${o.convergence?`<div class="cv">
+        <div class="cv-t">Convergence <b>${o.convergence.n}/${o.convergence.total}</b> axes de corroboration</div>
+        ${o.convergence.axes.map(a=>`<div class="cv-r ${a.atteint?"on":"off"}"><span class="cv-i">${a.atteint?"✓":"·"}</span><span class="cv-l">${esc(a.libelle)}</span><span class="cv-d">${esc(a.detail)}</span></div>`).join("")}
+        <div class="cv-n">Un axe = une raison de croire de <b>nature différente</b>. Trente-deux offres d'emploi du même employeur comptent pour <b>un</b> axe, pas trente-deux : elles se répètent, elles ne se confirment pas.</div>
+      </div>`:""}
       <div class="dc-note">Les 5 dimensions regroupent <b>${o.n_leads} signaux</b> détectés entre ${esc(o.premiere_vue)} et ${esc(o.derniere_vue)}. Elles réordonnent des indices déjà collectés ; elles ne sont pas encore calibrées sur les issues réelles (survole une ligne pour ses motifs).${o.dormante?" <b>Dossier dormant</b> : plus aucun signal depuis longtemps.":""}</div>
     </div></div>`;
 }
