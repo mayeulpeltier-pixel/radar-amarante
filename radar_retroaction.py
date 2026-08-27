@@ -33,6 +33,77 @@ MULT_MAX = _f("RADAR_RETRO_MAX", 1.15)     # borne haute
 GAIN = _f("RADAR_RETRO_GAIN", 1.0)         # sensibilite (ecart de taux -> mult)
 FORCE_PRIOR = _f("RADAR_RETRO_PRIOR", 8.0)  # k0 : poids de l'a priori (lissage)
 
+# ===========================================================================
+# MODE D'EXECUTION (P1.1, 26/08/2026)
+# ===========================================================================
+# CE QUI ETAIT FAUX AVANT : la roadmap decrivait ce module comme « en mode
+# ombre, en attente de suffisamment d'issues ». En realite RADAR_RETRO
+# n'apparaissait nulle part dans radar.yml -- donc mode `off` -- et surtout
+# l'interface ne pouvait EMETTRE aucune issue. Ce module apprenait donc a
+# predire si un humain avait clique, jamais si Amarante avait gagne.
+#
+# Trois modes explicites, dans l'ordre de mise en service :
+#   off    : rien, pas meme le calcul (defaut historique) ;
+#   ombre  : on CALCULE et on JOURNALISE ce qu'on aurait change, sans rien
+#            appliquer. C'est l'etat cible tant que le volume d'issues reelles
+#            est insuffisant ;
+#   actif  : les multiplicateurs sont appliques aux scores.
+#
+# Le passage en `actif` ne doit PAS etre une decision de calendrier mais de
+# volume : `assez_d_issues()` en donne le critere chiffre.
+MODE = os.environ.get("RADAR_RETRO", "off").strip().lower()
+if MODE not in ("off", "ombre", "actif"):
+    print("(retroaction) mode inconnu '{}', repli sur 'off'.".format(MODE))
+    MODE = "off"
+
+
+def actif():
+    """Les multiplicateurs doivent-ils etre APPLIQUES aux scores ?"""
+    return MODE == "actif"
+
+
+def calcule():
+    """Doit-on calculer (pour appliquer OU pour journaliser en ombre) ?"""
+    return MODE in ("ombre", "actif")
+
+
+def assez_d_issues(compte):
+    """Le volume permet-il de sortir du mode ombre ? Fonction PURE.
+
+    `compte` : {'gagne': n, 'perdu': n} (cf. radar_stockage.compter_issues).
+
+    Deux conditions, et les DEUX comptent :
+      - assez d'issues au total (N_MIN x 2, soit 16 par defaut) ;
+      - au moins N_MIN/2 de CHAQUE cote. Cinquante marches gagnes et zero
+        perdu ne renseignent sur rien : sans contre-exemple, le taux de succes
+        vaut 100 % partout et le multiplicateur est du bruit deguise en
+        certitude."""
+    g = int((compte or {}).get("gagne", 0))
+    p = int((compte or {}).get("perdu", 0))
+    mini = max(1, N_MIN // 2)
+    return (g + p) >= (N_MIN * 2) and g >= mini and p >= mini
+
+
+def journaliser_ombre(mults, compte=None):
+    """Affiche ce que la retroaction AURAIT change. Le mode ombre n'a de sens
+    que s'il laisse une trace lisible : sinon c'est un calcul que personne ne
+    verifie avant de le mettre en production."""
+    if not mults:
+        print("(retroaction) ombre : aucune issue exploitable pour l'instant.")
+        return
+    print("(retroaction) OMBRE -- rien n'est applique. Base : {} issues, "
+          "taux de succes {:.0%}.".format(mults.get("n", 0), mults.get("base", 0)))
+    for dim in DIMENSIONS:
+        ecarts = {k: v for k, v in (mults.get(dim) or {}).items()
+                  if abs(v - 1.0) > 0.01}
+        for cle, m in sorted(ecarts.items(), key=lambda kv: -abs(kv[1] - 1)):
+            print("  {} « {} » : score x{:.3f}".format(dim, cle, m))
+    if compte is not None:
+        pret = "OUI" if assez_d_issues(compte) else "pas encore"
+        print("(retroaction) passage en mode actif : {} "
+              "({} gagne / {} perdu).".format(pret, compte.get("gagne", 0),
+                                              compte.get("perdu", 0)))
+
 DIMENSIONS = ("secteur", "zone")
 
 
