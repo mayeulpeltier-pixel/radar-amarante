@@ -672,6 +672,17 @@ def ligne_vers_lead(row, source):
         "lien": _txt(row.get("lien_avis")),
         "ecart": _vrai(row.get("divergence")),
         "secu": _vrai(row.get("securite_existante_detectee")),
+        # COMPOSANTES DU SCORE (P1.2, 26/08/2026) -- deja collectees, deja
+        # ponderees, jamais transportees jusqu'a l'ecran. `accessibilite_
+        # commerciale` vaut par exemple jusqu'a +3 sur 10 dans le score
+        # commercial (ted_complet_v14.py:1631) et sert de coupe-circuit sur
+        # les alertes, mais elle etait fondue dans un chiffre unique : un
+        # score de 7,2 ne disait pas s'il venait d'un marche tres accessible
+        # ou d'un gros besoin de surete. On les fait remonter telles quelles,
+        # SANS TOUCHER A AUCUN CALCUL : c'est un chantier d'affichage.
+        "acces": _txt(row.get("accessibilite_commerciale")),
+        "duree": _txt(row.get("duree_estimee")),
+        "client": _txt(row.get("type_client")),
         "mois": mois_cle,
         "mois_label": mois_label,
         "date_det": date_det,
