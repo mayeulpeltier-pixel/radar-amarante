@@ -106,7 +106,95 @@ CREATE TABLE IF NOT EXISTS radar_statuts (
 -- Migration idempotente : ajoute 'motif' aux bases anterieures a cette colonne
 -- (bouton « Pas pertinent » : on stocke la RAISON pour apprendre, 12/08/2026).
 ALTER TABLE radar_statuts ADD COLUMN IF NOT EXISTS motif TEXT NOT NULL DEFAULT '';
+-- Valeur estimee, saisie a la main au passage en « contacte » (P1.1). Sans
+-- elle, aucun apprentissage sur le MONTANT n'est possible : le radar ne peut
+-- comparer que des comptages. NULL = non renseignee, ce qui n'est PAS zero.
+ALTER TABLE radar_statuts ADD COLUMN IF NOT EXISTS valeur_estimee NUMERIC;
+
+-- =========================================================================
+-- JOURNAL DES TRANSITIONS (P1.1, 26/08/2026) -- le socle de l'apprentissage
+-- =========================================================================
+-- `radar_statuts` porte l'ETAT COURANT : un lead gagne ecrase son passage en
+-- « contacte », et l'information « combien de temps entre le contact et la
+-- signature » est perdue a jamais.
+--
+-- Cette table-ci est un JOURNAL APPEND-ONLY : une ligne par transition, avec
+-- l'etat precedent et l'horodatage. C'est ce qui permet de repondre a des
+-- questions qu'un etat courant ne peut pas porter :
+--   - quel delai moyen entre « contacte » et « gagne » par secteur ?
+--   - quels motifs de perte reviennent sur quels theatres ?
+--   - un lead repasse-t-il plusieurs fois par le meme statut ?
+--
+-- On journalise TOUTES les transitions, pas seulement les issues. Le surcout
+-- est nul (quelques lignes par semaine) et le manque serait irrattrapable :
+-- une transition non enregistree ne se reconstitue pas apres coup.
+CREATE TABLE IF NOT EXISTS radar_outcomes (
+    id                 BIGSERIAL   PRIMARY KEY,
+    onglet             TEXT        NOT NULL,
+    publication_number TEXT        NOT NULL,
+    statut             TEXT        NOT NULL,
+    statut_precedent   TEXT        NOT NULL DEFAULT '',
+    motif              TEXT        NOT NULL DEFAULT '',
+    valeur_estimee     NUMERIC,
+    cree_le            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS radar_outcomes_lead
+    ON radar_outcomes (onglet, publication_number, cree_le);
+-- Les issues seules, c'est ce que lira la boucle de retroaction.
+CREATE INDEX IF NOT EXISTS radar_outcomes_issues
+    ON radar_outcomes (statut, cree_le) WHERE statut IN ('gagne', 'perdu');
 """
+
+
+# ===========================================================================
+# VOCABULAIRE DES STATUTS (P1.1)
+# ===========================================================================
+# AVANT : l'interface ne pouvait emettre que contacte / surveille /
+# non_pertinent. Les mots « gagne » et « perdu » existaient dans les
+# commentaires, dans les filtres du dashboard, et `radar_retroaction`
+# pretendait s'en nourrir -- mais RIEN ne pouvait en produire un. La boucle
+# bayesienne apprenait donc a predire si un humain avait clique, pas si
+# Amarante avait gagne.
+#
+# Les motifs de perte sont une liste FERMEE, volontairement. Un champ libre
+# produit vingt formulations de la meme raison et zero statistique
+# exploitable : c'est la difference entre une note et une donnee.
+
+STATUTS_VALIDES = ("nouveau", "contacte", "surveille", "non_pertinent",
+                   "gagne", "perdu", "attribution_publiee")
+
+# Issues COMMERCIALES : les seules qui alimentent l'apprentissage.
+STATUTS_ISSUE = ("gagne", "perdu")
+
+# Un lead ne se perd pas s'il n'a jamais ete travaille. Exiger un contact
+# prealable evite un journal pollue de « perdu » qui ne sont que des
+# desinteressements -- lesquels ont deja leur statut : non_pertinent.
+STATUTS_AVANT_ISSUE = ("contacte", "surveille", "attribution_publiee")
+
+MOTIFS_PERTE = {
+    "prix": "Prix trop élevé",
+    "incumbent": "Titulaire en place reconduit",
+    "hors_perimetre": "Hors périmètre Amarante",
+    "pas_de_reponse": "Aucune réponse du prospect",
+    "projet_annule": "Projet annulé ou reporté",
+    "concurrent": "Perdu face à un concurrent",
+    "autre": "Autre",
+}
+
+
+def statut_valide(statut):
+    """Vrai si `statut` fait partie du vocabulaire. Fonction PURE."""
+    return str(statut or "").strip().lower() in STATUTS_VALIDES
+
+
+def motif_perte_valide(motif):
+    """Vrai si `motif` est un code de perte connu. Fonction PURE.
+
+    Vide accepte : un « perdu » sans motif reste enregistrable. Refuser
+    l'enregistrement faute de motif ferait perdre l'issue elle-meme, ce qui
+    coute bien plus cher qu'un motif manquant."""
+    m = str(motif or "").strip().lower()
+    return (not m) or (m in MOTIFS_PERTE)
 
 
 # Vues analytiques posees SUR le JSONB (sans toucher aux donnees). Recreees a
@@ -364,16 +452,94 @@ def lire_onglet(conn, onglet):
 # `radar_lignes` a rafraichir ses lignes sans risque pour le travail humain.
 # ---------------------------------------------------------------------------
 
-def definir_statut(conn, onglet, publication_number, statut, motif=""):
+def definir_statut(conn, onglet, publication_number, statut, motif="",
+                   valeur_estimee=None):
     """Upsert ASSUME du statut d'un lead. Cle : (onglet, publication_number).
-    `motif` (optionnel) trace la RAISON d'un ecartement (« Pas pertinent »)."""
+    `motif` trace la RAISON d'un ecartement ou d'une perte.
+    `valeur_estimee` (P1.1) est saisie a la main au passage en « contacte ».
+
+    JOURNALISE la transition dans `radar_outcomes` avant d'ecraser l'etat
+    courant. C'est l'ordre qui compte : lire l'ancien statut D'ABORD, sinon la
+    transition est perdue. Toute la boucle d'apprentissage repose la-dessus.
+
+    La valeur estimee n'est JAMAIS effacee par une transition ulterieure qui
+    ne la porte pas : marquer « gagne » sans ressaisir le montant ne doit pas
+    faire disparaitre le montant saisi au moment du contact."""
+    pub = str(publication_number or "")
+    statut = str(statut or "").strip().lower()
+    motif = str(motif or "").strip()
     with conn.cursor() as cur:
+        # 1. Etat AVANT, pour pouvoir journaliser la transition.
         cur.execute(
-            "INSERT INTO radar_statuts (onglet, publication_number, statut, motif)"
-            " VALUES (%s, %s, %s, %s)"
+            "SELECT statut FROM radar_statuts"
+            " WHERE onglet = %s AND publication_number = %s", (onglet, pub))
+        ligne = cur.fetchone()
+        precedent = (ligne[0] if ligne else "") or ""
+
+        # 2. Journal append-only. Une transition non enregistree ne se
+        #    reconstitue pas apres coup : on ecrit meme si l'etat ne change
+        #    pas (un re-clic est une information sur l'hesitation).
+        cur.execute(
+            "INSERT INTO radar_outcomes (onglet, publication_number, statut,"
+            " statut_precedent, motif, valeur_estimee)"
+            " VALUES (%s, %s, %s, %s, %s, %s)",
+            (onglet, pub, statut, precedent, motif, valeur_estimee))
+
+        # 3. Etat courant.
+        cur.execute(
+            "INSERT INTO radar_statuts (onglet, publication_number, statut,"
+            " motif, valeur_estimee)"
+            " VALUES (%s, %s, %s, %s, %s)"
             " ON CONFLICT (onglet, publication_number)"
-            " DO UPDATE SET statut = EXCLUDED.statut, motif = EXCLUDED.motif, maj = now()",
-            (onglet, str(publication_number or ""), str(statut or ""), str(motif or "")))
+            " DO UPDATE SET statut = EXCLUDED.statut, motif = EXCLUDED.motif,"
+            " valeur_estimee = COALESCE(EXCLUDED.valeur_estimee,"
+            "                           radar_statuts.valeur_estimee),"
+            " maj = now()",
+            (onglet, pub, statut, motif, valeur_estimee))
+
+
+def lire_outcomes(conn, depuis=None):
+    """Issues COMMERCIALES (gagne / perdu) du journal, plus recentes d'abord.
+
+    C'est la source que `radar_retroaction` doit lire, a la place de la
+    colonne `statut` de l'onglet prive -- laquelle ne contiendra jamais
+    d'issue puisque l'interface n'en emettait aucune (le defaut corrige par
+    P1.1). Renvoie une liste de dicts, vide si la table n'existe pas encore
+    (base anterieure a la migration)."""
+    sql = ("SELECT onglet, publication_number, statut, statut_precedent,"
+           " motif, valeur_estimee, cree_le FROM radar_outcomes"
+           " WHERE statut IN ('gagne', 'perdu')")
+    params = []
+    if depuis:
+        sql += " AND cree_le >= %s"
+        params.append(depuis)
+    sql += " ORDER BY cree_le DESC"
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            return [{"onglet": o, "publication_number": p, "statut": s,
+                     "statut_precedent": sp, "motif": m,
+                     "valeur_estimee": (float(v) if v is not None else None),
+                     "cree_le": c}
+                    for o, p, s, sp, m, v, c in cur.fetchall()]
+    except Exception as e:
+        print("(stockage) lire_outcomes indisponible : {}".format(str(e)[:90]))
+        return []
+
+
+def compter_issues(conn):
+    """{'gagne': n, 'perdu': n} -- de quoi savoir si le seuil d'apprentissage
+    est atteint AVANT de sortir la retroaction du mode ombre."""
+    out = {"gagne": 0, "perdu": 0}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT statut, COUNT(*) FROM radar_outcomes"
+                        " WHERE statut IN ('gagne', 'perdu') GROUP BY statut")
+            for statut, n in cur.fetchall():
+                out[statut] = int(n)
+    except Exception:
+        pass
+    return out
 
 
 def lire_statuts(conn):
