@@ -143,6 +143,52 @@ CREATE INDEX IF NOT EXISTS radar_outcomes_lead
 -- Les issues seules, c'est ce que lira la boucle de retroaction.
 CREATE INDEX IF NOT EXISTS radar_outcomes_issues
     ON radar_outcomes (statut, cree_le) WHERE statut IN ('gagne', 'perdu');
+
+-- =========================================================================
+-- NOYAU RELATIONNEL MINIMAL (P2.1, 26/08/2026)
+-- =========================================================================
+-- L'audit externe reclamait un modele relationnel en supposant qu'on partait
+-- de zero. C'est faux : DEUX identites stables existent deja et sont
+-- calculees a chaque run --
+--   `ent_cle`   (radar_dashboard._norm_ent) : cle canonique d'entreprise, qui
+--               fusionne deja watchlist, signaux prives et titulaires ;
+--   `projet_id` (P######) : identifiant de projet Banque mondiale.
+-- On ne cree donc pas des identites, on leur donne une PERSISTANCE.
+--
+-- CE QUE CES TABLES APPORTENT, ET QUE LE REGROUPEMENT A L'AFFICHAGE NE PEUT
+-- PAS APPORTER : le cockpit regroupe les entreprises a chaque rendu, a partir
+-- des seuls leads presents. Il ne peut donc pas savoir DEPUIS QUAND une
+-- entreprise est connue du radar. `premiere_vue` survit a la rotation du
+-- corpus, a un filtre, a un lead ecarte. C'est une information neuve, pas une
+-- copie de ce qui est deja a l'ecran.
+--
+-- Le payload source reste en JSONB dans `radar_lignes` : on RELIE, on ne
+-- reecrit pas. Quatre tables, pas douze.
+CREATE TABLE IF NOT EXISTS radar_entreprises (
+    ent_cle      TEXT        PRIMARY KEY,
+    nom          TEXT        NOT NULL DEFAULT '',
+    pays_origine TEXT        NOT NULL DEFAULT '',
+    etranger     BOOLEAN     NOT NULL DEFAULT false,
+    n_marches    INTEGER     NOT NULL DEFAULT 0,
+    n_signaux    INTEGER     NOT NULL DEFAULT 0,
+    zones        TEXT        NOT NULL DEFAULT '',
+    premiere_vue DATE        NOT NULL DEFAULT CURRENT_DATE,
+    derniere_vue DATE        NOT NULL DEFAULT CURRENT_DATE,
+    maj          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS radar_entreprises_activite
+    ON radar_entreprises (derniere_vue DESC);
+
+CREATE TABLE IF NOT EXISTS radar_projets (
+    projet_id    TEXT        PRIMARY KEY,
+    titre        TEXT        NOT NULL DEFAULT '',
+    pays         TEXT        NOT NULL DEFAULT '',
+    zone         TEXT        NOT NULL DEFAULT '',
+    n_leads      INTEGER     NOT NULL DEFAULT 0,
+    premiere_vue DATE        NOT NULL DEFAULT CURRENT_DATE,
+    derniere_vue DATE        NOT NULL DEFAULT CURRENT_DATE,
+    maj          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 """
 
 
@@ -560,6 +606,98 @@ def lire_motifs(conn):
                         " WHERE motif <> ''")
             return {(o, p): m for o, p, m in cur.fetchall()}
     except Exception:
+        return {}
+
+
+# ===========================================================================
+# NOYAU RELATIONNEL : ecriture et lecture (P2.1)
+# ===========================================================================
+
+def enregistrer_entites(conn, entreprises, projets, aujourd=None):
+    """Persiste les identites derivees des leads. Renvoie (n_ent, n_proj).
+
+    REGLE CENTRALE : `premiere_vue` ne recule JAMAIS vers le present.
+    `LEAST(table.premiere_vue, EXCLUDED.premiere_vue)` garantit qu'une
+    entreprise connue depuis mars ne se remettra pas a dater d'aujourd'hui
+    parce que le corpus a tourne. C'est exactement le defaut qu'on a corrige
+    sur `date_detection` : on ne le refait pas ici.
+
+    Les COMPTEURS, eux, refletent le corpus COURANT et peuvent donc baisser
+    (dedoublonnage, lead ecarte). C'est voulu : les figer en cumul historique
+    afficherait « 12 marches gagnes » pour une entreprise qui n'en a que 9
+    apres correction d'un doublon."""
+    auj = aujourd or date.today()
+    n_ent = n_proj = 0
+    with conn.cursor() as cur:
+        for e in (entreprises or []):
+            if not e.get("ent_cle"):
+                continue
+            cur.execute(
+                "INSERT INTO radar_entreprises (ent_cle, nom, pays_origine,"
+                " etranger, n_marches, n_signaux, zones, premiere_vue,"
+                " derniere_vue) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+                " ON CONFLICT (ent_cle) DO UPDATE SET"
+                "   nom = EXCLUDED.nom,"
+                # Une origine connue ne doit pas etre effacee par un run ou la
+                # source ne la portait pas : NULLIF garde l'ancienne valeur.
+                "   pays_origine = COALESCE(NULLIF(EXCLUDED.pays_origine, ''),"
+                "                           radar_entreprises.pays_origine),"
+                "   etranger = EXCLUDED.etranger,"
+                "   n_marches = EXCLUDED.n_marches,"
+                "   n_signaux = EXCLUDED.n_signaux,"
+                "   zones = EXCLUDED.zones,"
+                "   premiere_vue = LEAST(radar_entreprises.premiere_vue,"
+                "                        EXCLUDED.premiere_vue),"
+                "   derniere_vue = GREATEST(radar_entreprises.derniere_vue,"
+                "                           EXCLUDED.derniere_vue),"
+                "   maj = now()",
+                (e["ent_cle"], e.get("nom", ""), e.get("pays_origine", ""),
+                 bool(e.get("etranger")), int(e.get("n_marches", 0)),
+                 int(e.get("n_signaux", 0)), e.get("zones", ""),
+                 e.get("premiere_vue") or auj, e.get("derniere_vue") or auj))
+            n_ent += 1
+        for p in (projets or []):
+            if not p.get("projet_id"):
+                continue
+            cur.execute(
+                "INSERT INTO radar_projets (projet_id, titre, pays, zone,"
+                " n_leads, premiere_vue, derniere_vue)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s)"
+                " ON CONFLICT (projet_id) DO UPDATE SET"
+                "   titre = COALESCE(NULLIF(EXCLUDED.titre, ''),"
+                "                    radar_projets.titre),"
+                "   pays = COALESCE(NULLIF(EXCLUDED.pays, ''), radar_projets.pays),"
+                "   zone = COALESCE(NULLIF(EXCLUDED.zone, ''), radar_projets.zone),"
+                "   n_leads = EXCLUDED.n_leads,"
+                "   premiere_vue = LEAST(radar_projets.premiere_vue,"
+                "                        EXCLUDED.premiere_vue),"
+                "   derniere_vue = GREATEST(radar_projets.derniere_vue,"
+                "                           EXCLUDED.derniere_vue),"
+                "   maj = now()",
+                (p["projet_id"], p.get("titre", ""), p.get("pays", ""),
+                 p.get("zone", ""), int(p.get("n_leads", 0)),
+                 p.get("premiere_vue") or auj, p.get("derniere_vue") or auj))
+            n_proj += 1
+    return (n_ent, n_proj)
+
+
+def lire_entreprises(conn):
+    """{ent_cle: {...}}. Best-effort : renvoie {} si la table n'existe pas
+    encore (base anterieure a la migration)."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT ent_cle, nom, pays_origine, etranger, n_marches,"
+                " n_signaux, zones, premiere_vue, derniere_vue"
+                " FROM radar_entreprises")
+            return {r[0]: {"ent_cle": r[0], "nom": r[1], "pays_origine": r[2],
+                           "etranger": bool(r[3]), "n_marches": r[4],
+                           "n_signaux": r[5], "zones": r[6],
+                           "premiere_vue": r[7].isoformat() if r[7] else "",
+                           "derniere_vue": r[8].isoformat() if r[8] else ""}
+                    for r in cur.fetchall()}
+    except Exception as e:
+        print("(stockage) lire_entreprises indisponible : {}".format(str(e)[:90]))
         return {}
 
 
