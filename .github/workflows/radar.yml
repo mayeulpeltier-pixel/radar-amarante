@@ -389,6 +389,11 @@ jobs:
           # DASHBOARD_OUTPUT=public/index.html et COCKPIT_OUTPUT=public/cockpit.html.
           DASHBOARD_OUTPUT: public/legacy.html
           COCKPIT_OUTPUT: public/index.html
+          # Noyau relationnel (P2.1) : cette etape persiste les identites
+          # entreprise/projet derivees des leads. Le secret ne peut pas fuiter
+          # dans la page publiee : `verifier_absence_secret` refuse d'ecrire
+          # tout fichier contenant DATABASE_URL (cf. P0.1).
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
           # Boucle de retroaction (P1.1, 26/08/2026). « ombre » = elle CALCULE
           # et JOURNALISE ce qu'elle changerait, sans rien appliquer aux
           # scores. Elle etait jusqu'ici absente de ce fichier, donc en mode
