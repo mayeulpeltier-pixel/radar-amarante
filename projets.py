@@ -43,6 +43,7 @@ Le rattachement se fait sur le texte ; `project_id` peut deja etre fourni
 
 import collections
 import datetime
+import os
 import re
 import unicodedata
 
@@ -271,6 +272,12 @@ def _finaliser(seau, aujourd):
     seau["phase_max_atteinte"] = _phase_max_corroboree(hist)
     seau["recul"] = bool(hist and rang(seau["phase_courante"])
                          < rang(seau["phase_max_atteinte"]))
+    # Le pendant montant du recul (P1.4). Emis comme un EVENEMENT date, pas
+    # comme un simple changement d'attribut : c'est ce qui permet a la Home
+    # de dire « ce projet vient de franchir une etape » plutot que de se
+    # contenter d'afficher sa phase du jour.
+    seau["montees"] = transitions_montantes(hist)
+    seau["montee"] = derniere_montee(hist, aujourd)
 
     seau["acteurs_top"] = [a for a, _ in seau["acteurs"].most_common(10)]
     seau["maturite"] = score_maturite(seau, aujourd)
@@ -281,6 +288,117 @@ def _finaliser(seau, aujourd):
     seau["services"] = services_probables(seau)
     seau["acteurs"] = dict(seau["acteurs"])       # serialisable
     return seau
+
+
+# ===========================================================================
+# 4bis. TRANSITIONS DE PHASE MONTANTES (P1.4, 26/08/2026)
+# ===========================================================================
+# CE QUI MANQUAIT : le RECUL etait detecte et affiche (`seau["recul"]`), les
+# MONTEES ne produisaient rien. Un projet qui passait de « financement
+# approuve » a « appel d'offres EPC » changeait de phase silencieusement --
+# alors que c'est exactement le moment ou il faut agir : l'EPC qui va etre
+# choisi est celui qui deploiera du personnel, et il se demarche AVANT que le
+# marche surete existe.
+#
+# On ne diffe PAS deux runs successifs. Les transitions se derivent de
+# l'historique lui-meme, qui est deja date et trie : c'est sans etat,
+# testable, et ca fonctionne retroactivement sur les projets deja collectes.
+# Un diff de runs aurait exige un fichier d'etat de plus, et n'aurait rien vu
+# du passe.
+#
+# CORROBORATION : meme discipline que `_phase_max_corroboree`. Un seul article
+# mal classe ne doit pas declencher « contacter maintenant ». On exige donc
+# que la phase d'arrivee soit vue `minimum` fois avant de compter la montee.
+
+# Ce que chaque arrivee VEUT DIRE commercialement. C'est la seule table qui
+# traduit un changement d'etat en action : sans elle, « EPC_AWARDED » ne dit
+# rien a un commercial.
+SENS_MONTEE = {
+    "FUNDING_APPROVED": ("haute",
+        "Financement acquis : le projet devient réel, les acteurs se positionnent."),
+    "CONSULTANT_SELECTION": ("moyenne",
+        "Consultants en cours de sélection : les acteurs internationaux se révèlent."),
+    "FEED": ("moyenne",
+        "Études détaillées lancées : le calendrier de mobilisation se précise."),
+    "FID": ("haute",
+        "Décision d'investissement finale : la mobilisation est désormais certaine."),
+    "EPC_PROCUREMENT": ("critique",
+        "Appel d'offres EPC ouvert : fenêtre pour se positionner AVANT que le "
+        "marché sûreté existe."),
+    "EPC_AWARDED": ("critique",
+        "EPC attribué : le titulaire qui déploiera est connu, c'est lui qu'il "
+        "faut contacter maintenant."),
+    "CONSTRUCTION": ("haute",
+        "Chantier ouvert : besoin de sûreté de site et de transport sécurisé."),
+    "COMMISSIONING": ("moyenne",
+        "Mise en service : bascule progressive vers un besoin résident."),
+    "OPERATIONS": ("moyenne",
+        "Exploitation : le besoin change de nature (protection des personnes, "
+        "voyages, résidences)."),
+}
+ORDRE_IMPORTANCE = {"critique": 3, "haute": 2, "moyenne": 1, "faible": 0}
+
+# Au-dela de ce delai, une montee est de l'HISTOIRE, plus un signal d'action.
+JOURS_MONTEE_RECENTE = int(os.environ.get("RADAR_MONTEE_JOURS", "120"))
+
+
+def transitions_montantes(historique, minimum=2):
+    """Montees de phase deduites de l'historique. Fonction PURE.
+
+    Renvoie [{de, vers, date, saut, importance, message, libelle_de,
+    libelle_vers}], de la plus ancienne a la plus recente.
+
+    Le rang de reference ne fait que MONTER au fil du parcours : un projet qui
+    recule puis remonte a une phase deja franchie ne re-emet pas la montee.
+    Sans cette regle, un projet qui oscille entre deux phases produirait une
+    alerte a chaque aller-retour, et le signal deviendrait du bruit."""
+    if not historique:
+        return []
+    vus = collections.Counter(h.get("phase") for h in historique)
+    sorties, plafond, phase_ref = [], 0, ""
+    for h in historique:
+        ph = h.get("phase") or ""
+        r = rang(ph)
+        if r <= plafond:
+            continue
+        # Corroboration : une phase vue une seule fois ne declenche rien.
+        # Meme garde-fou que `_phase_max_corroboree`, meme raison.
+        if vus.get(ph, 0) < minimum:
+            continue
+        if plafond:                     # la premiere phase n'est pas une montee
+            imp, msg = SENS_MONTEE.get(ph, ("faible", ""))
+            sorties.append({
+                "de": phase_ref, "vers": ph, "date": h.get("date", ""),
+                "saut": r - plafond,
+                "libelle_de": LIBELLE_PHASE.get(phase_ref, phase_ref),
+                "libelle_vers": LIBELLE_PHASE.get(ph, ph),
+                "importance": imp, "message": msg,
+                "titre": h.get("titre", ""), "lien": h.get("lien", ""),
+            })
+        plafond, phase_ref = r, ph
+    return sorties
+
+
+def derniere_montee(historique, aujourd=None, minimum=2):
+    """La montee la plus RECENTE, enrichie de son age. Fonction PURE.
+
+    C'est elle qui porte le signal d'action : une montee vers EPC_PROCUREMENT
+    la semaine derniere est une urgence, la meme il y a trois ans est une
+    ligne d'historique. `recente` tranche selon JOURS_MONTEE_RECENTE.
+
+    Renvoie {} s'il n'y a aucune montee corroboree."""
+    ms = transitions_montantes(historique, minimum)
+    if not ms:
+        return {}
+    m = dict(ms[-1])
+    aujourd = aujourd or datetime.date.today()
+    try:
+        age = (aujourd - datetime.date.fromisoformat(m["date"])).days
+    except (ValueError, TypeError):
+        age = None
+    m["age_jours"] = age
+    m["recente"] = bool(age is not None and 0 <= age <= JOURS_MONTEE_RECENTE)
+    return m
 
 
 # ===========================================================================
