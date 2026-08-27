@@ -555,11 +555,15 @@ def persister_entites(leads, aujourdhui=None):
         if not st.actif():
             return (0, 0)
         ents, projs = entites_depuis_leads(leads, aujourdhui)
+        import opportunites as opp
+        opps = opp.serialiser(opp.construire(leads, aujourdhui))
         with st.connexion() as conn:
             st.initialiser(conn)
             n = st.enregistrer_entites(conn, ents, projs, aujourdhui)
+            n_opp = st.enregistrer_opportunites(conn, opps)
             conn.commit()
-        print("  noyau : {} entreprise(s), {} projet(s) persiste(s).".format(*n))
+        print("  noyau : {} entreprise(s), {} projet(s), {} opportunite(s)"
+              " persiste(s).".format(n[0], n[1], n_opp))
         return n
     except Exception as e:
         print("  noyau : persistance ignoree ({}).".format(str(e)[:90]))
