@@ -115,14 +115,168 @@ def sources_distinctes(leads):
 
 
 # ===========================================================================
+# 1bis. CONVERGENCE DE SIGNAUX (P2.3)
+# ===========================================================================
+# LE MALENTENDU A EVITER
+# ----------------------
+# L'audit externe donnait cet exemple de convergence :
+#
+#     ✓ Funding approved
+#     ✓ Contractor detected
+#     ✓ 32 recruitment signals      <-- le piege est ici
+#     ✓ Country risk increased
+#
+# « 32 signaux de recrutement » n'est PAS 32 corroborations. C'est UNE seule :
+# l'entreprise recrute. Trente-deux annonces publiees par le meme employeur sur
+# le meme site ne se confirment pas mutuellement, elles se repetent.
+#
+# La convergence se mesure donc en AXES INDEPENDANTS, pas en volume. Un axe
+# repond a la question : « ai-je une raison SUPPLEMENTAIRE et de NATURE
+# DIFFERENTE de croire que ce deploiement va avoir lieu ? »
+#
+# Sept axes, tous detectables sur les champs deja collectes. Aucun n'est
+# invente : si un axe n'est pas mesurable, il n'est pas dans la liste.
+
+# Sources qui publient des AVIS de marche (par opposition aux signaux presse
+# ou aux projets amont).
+SRC_AVIS = {"TED", "UNGM", "BM", "AFDB", "ADB", "EBRD", "MIGA", "IFC",
+            "IDB", "PROPARCO", "DFC", "ISDB"}
+# Sources de signaux prives (presse, offres d'emploi, diplomatie economique).
+SRC_SIGNAL = {"PRIVÉ", "PRIVE", "DIPLO", "BITD", "RW", "ONG"}
+
+
+def _axe_projet(leads):
+    n = sum(1 for l in leads if str(l.get("projet_id") or "").strip())
+    return (n > 0, "rattaché à un projet identifié" if n else
+            "aucun projet amont rattaché")
+
+
+def _axe_financement(leads):
+    env = _val(leads, "enveloppe")
+    return (env > 0, "enveloppe de financement de {:.0f} M€".format(env)
+            if env else "aucun financement chiffré")
+
+
+def _axe_marche(leads):
+    avis = [l for l in leads if str(l.get("src") or "") in SRC_AVIS]
+    return (bool(avis), "avis de marché publié ({})".format(
+        ", ".join(sorted({l["src"] for l in avis}))) if avis
+        else "aucun avis publié : le marché n'existe pas encore")
+
+
+def _axe_acteur(leads):
+    noms = {str(l.get("ent_cle") or "").strip() for l in leads}
+    noms.discard("")
+    return (bool(noms), "acteur identifié" if noms
+            else "aucune entreprise identifiée")
+
+
+def _axe_deploiement(leads):
+    """Un signal de mobilisation humaine. VOLONTAIREMENT booleen : trente-deux
+    offres d'emploi du meme employeur comptent pour UNE raison de croire, pas
+    trente-deux."""
+    signal = any(str(l.get("src") or "") in SRC_SIGNAL for l in leads)
+    nature = any(l.get("nature") in ("expatrie_significatif", "mixte")
+                 for l in leads)
+    return (signal or nature,
+            "signal de déploiement humain détecté" if (signal or nature)
+            else "aucun signal de mobilisation")
+
+
+def _axe_presse(leads):
+    dom = {_domaine(l.get("lien")) for l in leads}
+    presse = {d for d in dom if d and not any(
+        x in d for x in ("ted.europa.eu", "ungm.org", "worldbank.org"))}
+    return (bool(presse), "couverture presse ou source tierce" if presse
+            else "aucune source tierce")
+
+
+def _axe_contexte(leads, pays_aggraves=None):
+    pays = {str(l.get("pays") or "").strip() for l in leads}
+    touche = pays & set(pays_aggraves or ())
+    return (bool(touche), "pays en aggravation récente : {}".format(
+        ", ".join(sorted(touche))) if touche
+        else "aucune aggravation géopolitique récente")
+
+
+AXES = (
+    ("projet", "Projet amont identifié", _axe_projet),
+    ("financement", "Financement engagé", _axe_financement),
+    ("marche", "Marché publié", _axe_marche),
+    ("acteur", "Acteur identifié", _axe_acteur),
+    ("deploiement", "Déploiement humain", _axe_deploiement),
+    ("presse", "Source tierce", _axe_presse),
+)
+
+
+def convergence(leads, pays_aggraves=None):
+    """Axes de corroboration INDEPENDANTS. Fonction PURE.
+
+    Renvoie {"axes": [{cle, libelle, atteint, detail}], "n": int, "total": int}.
+
+    `n` compte les axes ATTEINTS, jamais le nombre de signaux : c'est toute la
+    difference entre une corroboration et une repetition."""
+    out = []
+    for cle, libelle, fn in AXES:
+        atteint, detail = fn(leads or [])
+        out.append({"cle": cle, "libelle": libelle,
+                    "atteint": bool(atteint), "detail": detail})
+    atteint, detail = _axe_contexte(leads or [], pays_aggraves)
+    out.append({"cle": "contexte", "libelle": "Contexte géopolitique",
+                "atteint": bool(atteint), "detail": detail})
+    return {"axes": out, "n": sum(1 for a in out if a["atteint"]),
+            "total": len(out)}
+
+
+# ===========================================================================
 # 2. LES CINQ DIMENSIONS
 # ===========================================================================
 # Chacune renvoie (note sur 100, motifs). Les motifs sont la partie utile :
 # une note sans justification n'est pas auditable, et c'est precisement le
 # reproche qui a mene a P1.3.
 
+def _nombre(v):
+    """Lit un montant quel que soit son etat. Fonction PURE.
+
+    PIEGE RENCONTRE LE 26/08 : selon l'endroit de la chaine, un lead porte
+    `valeur` sous forme de CHAINE brute (« 180000000 EUR ») ou `valeur_meur`
+    deja convertie en millions par `radar_cockpit.enrichir`. Un `float()` sec
+    levait donc sur les leads non enrichis, et le best-effort transformait
+    l'exception en « aucune opportunite » -- une degradation SILENCIEUSE,
+    exactement ce qu'on passe son temps a supprimer ailleurs.
+
+    On accepte les deux formes et on ignore ce qui n'est pas lisible."""
+    if isinstance(v, (int, float)):
+        return float(v)
+    txt = str(v or "").strip()
+    if not txt:
+        return 0.0
+    m = re.match(r"[-+]?\d[\d\s\u00A0.,]*", txt.replace(",", "."))
+    if not m:
+        return 0.0
+    try:
+        return float(re.sub(r"[\s\u00A0]", "", m.group(0)).rstrip("."))
+    except ValueError:
+        return 0.0
+
+
 def _val(leads, champ):
-    return max([float(l.get(champ) or 0) for l in leads] or [0.0])
+    """Plus grande valeur du champ, en MILLIONS d'euros.
+
+    Prefere systematiquement la variante `_meur` (deja convertie et
+    normalisee) quand elle existe : c'est la seule qui garantit l'unite. Sans
+    elle, on tente une lecture tolerante du brut."""
+    meur = champ + "_meur"
+    vals = []
+    for l in leads:
+        if l.get(meur) is not None:
+            vals.append(_nombre(l.get(meur)))
+        else:
+            brut = _nombre(l.get(champ))
+            # Un brut a 7 chiffres est en euros, pas en millions : sans cette
+            # correction, un marche de 4 M€ deviendrait 4 000 000 M€.
+            vals.append(brut / 1e6 if brut > 10000 else brut)
+    return max(vals or [0.0])
 
 
 def attractivite(leads):
@@ -248,20 +402,33 @@ def fit(leads):
     return (max(0, min(100, round(n))), motifs)
 
 
-def confiance(leads):
+def confiance(leads, pays_aggraves=None):
     """« Quelle est la qualite des preuves ? »
 
-    Deux facteurs seulement, et les deux sont mesurables : le nombre de
-    sources INDEPENDANTES (cf. `sources_distinctes`) et la fraicheur du signal
-    le plus recent. Une opportunite attestee par une seule source de l'an
-    dernier ne merite pas la meme confiance qu'une opportunite corroboree par
-    trois canaux ce mois-ci."""
+    TROIS facteurs, tous mesurables :
+      - le nombre d'AXES de convergence atteints (P2.3) : des raisons de
+        croire de NATURE differente ;
+      - le nombre de sources INDEPENDANTES (cf. `sources_distinctes`), qui
+        fusionne les liens Google News ;
+      - la fraicheur du signal le plus recent.
+
+    Les axes pesent plus que les sources, et c'est deliberé : deux depeches
+    presse distinctes sur le meme fait, ce sont deux sources mais UN seul axe.
+    Une enveloppe de financement plus un avis publie, ce sont deux axes -- deux
+    raisons de croire independantes. C'est la seconde qui vaut quelque chose.
+
+    La convergence n'est donc PAS un score parallele : elle alimente la
+    dimension existante, pour ne pas avoir deux chiffres a reconcilier."""
     motifs = []
+    conv = convergence(leads, pays_aggraves)
+    n = 15 + 11 * conv["n"]
+    motifs.append("{}/{} axes de corroboration".format(conv["n"], conv["total"]))
     n_src = sources_distinctes(leads)
-    n = {0: 10, 1: 35}.get(n_src, min(85, 35 + 25 * (n_src - 1)))
+    if n_src > 1:
+        n += min(15, 7 * (n_src - 1))
     motifs.append("{} source{} indépendante{}".format(
         n_src, "s" if n_src > 1 else "", "s" if n_src > 1 else ""))
-    if n_src == 1:
+    if conv["n"] <= 1:
         motifs.append("non corroborée : à vérifier avant d'engager du temps")
     dates = sorted(str(l.get("date_det") or "")[:10] for l in leads
                    if str(l.get("date_det") or "")[:10])
@@ -297,7 +464,7 @@ def priorite(dims):
 # ===========================================================================
 # 4. CONSTRUCTION
 # ===========================================================================
-def construire(leads, aujourd=None):
+def construire(leads, aujourd=None, pays_aggraves=None):
     """[opportunites] triees par priorite decroissante. Fonction PURE.
 
     Aucun appel reseau ni base : la persistance est le travail de
@@ -323,7 +490,8 @@ def construire(leads, aujourd=None):
                 "timing": timing(groupe, auj),
                 "winability": winability(groupe),
                 "fit": fit(groupe),
-                "confiance": confiance(groupe)}
+                "confiance": confiance(groupe, pays_aggraves)}
+        conv = convergence(groupe, pays_aggraves)
         dates = sorted(str(l.get("date_det") or "")[:10] for l in groupe
                        if str(l.get("date_det") or "")[:10])
         derniere = dates[-1] if dates else ""
@@ -331,7 +499,7 @@ def construire(leads, aujourd=None):
             dormante = (auj - datetime.date.fromisoformat(derniere)).days > JOURS_DORMANCE
         except ValueError:
             dormante = False
-        principal = max(groupe, key=lambda l: float(l.get("final") or 0))
+        principal = max(groupe, key=lambda l: _nombre(l.get("final")))
         out.append({
             "opportunity_id": cle,
             "titre": principal.get("titre", ""),
@@ -349,6 +517,7 @@ def construire(leads, aujourd=None):
             "dormante": dormante,
             "dimensions": {k: {"note": v[0], "motifs": v[1]}
                            for k, v in dims.items()},
+            "convergence": conv,
             "priorite": priorite(dims),
             "statut": principal.get("statut", "nouveau"),
         })
@@ -374,6 +543,10 @@ def serialiser(opportunites):
             "winability": d["winability"]["note"],
             "fit": d["fit"]["note"],
             "confiance": d["confiance"]["note"],
+            "convergence": o["convergence"]["n"],
+            "axes": " | ".join(
+                ("+ " if a["atteint"] else "- ") + a["detail"]
+                for a in o["convergence"]["axes"]),
             # « | » et non « , » : les motifs contiennent deja des virgules.
             "motifs": " | ".join(
                 "{}: {}".format(k, "; ".join(v["motifs"]))
