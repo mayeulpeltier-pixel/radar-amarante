@@ -475,6 +475,97 @@ def verifier_absence_secret(html, secrets=None, ou="la page generee"):
     return True
 
 
+# ===========================================================================
+# NOYAU RELATIONNEL : derivation des entites (P2.1, 26/08/2026)
+# ===========================================================================
+# Ces deux fonctions vivent ICI, a cote de `_norm_ent`, pour qu'il n'existe
+# qu'UNE definition de la cle d'entite. Une seconde implementation ailleurs
+# produirait deux regroupements divergents, et donc deux verites sur « qui est
+# cette entreprise ».
+
+def entites_depuis_leads(leads, aujourdhui=None):
+    """(entreprises, projets) derives du corpus. Fonction PURE.
+
+    Ne fait AUCUN appel reseau ni base : elle transforme des leads en
+    identites, la persistance est le travail de `radar_stockage`.
+
+    `premiere_vue` / `derniere_vue` sont bornees par les dates de DETECTION
+    des leads, pas par la date du run. Une entreprise vue pour la premiere
+    fois dans un lead detecte en mars doit dater de mars, meme si le radar ne
+    la persiste qu'aujourd'hui -- sinon on refabrique le « detecte
+    aujourd'hui » qu'on vient de corriger."""
+    ref = aujourdhui or _date.today()
+    ents, projs = {}, {}
+    for l in (leads or []):
+        d = str(l.get("date_det") or "")[:10]
+        jour = d if len(d) == 10 else ref.isoformat()
+        cle = l.get("ent_cle") or ""
+        nom = (_nom_entreprise(l) or "").strip()
+        if cle and nom:
+            e = ents.setdefault(cle, {
+                "ent_cle": cle, "nom": nom, "pays_origine": "",
+                "etranger": False, "n_marches": 0, "n_signaux": 0,
+                "zones": set(), "premiere_vue": jour, "derniere_vue": jour})
+            # Nom retenu : le plus long. Les sources tronquent inegalement le
+            # meme titulaire (« STECOL » vs « STECOL CORPORATION ») ; la forme
+            # la plus complete est la plus utile a l'ecran.
+            if len(nom) > len(e["nom"]):
+                e["nom"] = nom
+            if l.get("origine") and not e["pays_origine"]:
+                e["pays_origine"] = str(l["origine"]).strip()
+            if l.get("etranger_titulaire"):
+                e["etranger"] = True
+            if l.get("src") == "ATTRIB":
+                e["n_marches"] += 1
+            else:
+                e["n_signaux"] += 1
+            if l.get("zone"):
+                e["zones"].add(str(l["zone"]))
+            e["premiere_vue"] = min(e["premiere_vue"], jour)
+            e["derniere_vue"] = max(e["derniere_vue"], jour)
+        pid = str(l.get("projet_id") or "").strip()
+        if pid:
+            p = projs.setdefault(pid, {
+                "projet_id": pid, "titre": "", "pays": l.get("pays", ""),
+                "zone": l.get("zone", ""), "n_leads": 0,
+                "premiere_vue": jour, "derniere_vue": jour})
+            p["n_leads"] += 1
+            if not p["titre"]:
+                p["titre"] = str(l.get("titre") or "")[:300]
+            p["premiere_vue"] = min(p["premiere_vue"], jour)
+            p["derniere_vue"] = max(p["derniere_vue"], jour)
+    for e in ents.values():
+        e["zones"] = ", ".join(sorted(e.pop("zones")))
+    return (list(ents.values()), list(projs.values()))
+
+
+def persister_entites(leads, aujourdhui=None):
+    """Derive puis enregistre. Best-effort et SILENCIEUSEMENT INOFFENSIVE :
+    ces tables ne sont lues par rien pour l'instant, un echec ne doit donc pas
+    compromettre la generation du tableau de bord.
+
+    RADAR_ENTITES=0 desactive. Defaut ACTIF : l'operation n'ecrit que dans des
+    tables NEUVES que rien ne lit encore, le rayon d'impact est nul -- alors
+    qu'un defaut OFF ferait perdre chaque jour de l'historique de premiere
+    detection, qui ne se reconstitue pas apres coup."""
+    if os.environ.get("RADAR_ENTITES", "1") == "0":
+        return (0, 0)
+    try:
+        import radar_stockage as st
+        if not st.actif():
+            return (0, 0)
+        ents, projs = entites_depuis_leads(leads, aujourdhui)
+        with st.connexion() as conn:
+            st.initialiser(conn)
+            n = st.enregistrer_entites(conn, ents, projs, aujourdhui)
+            conn.commit()
+        print("  noyau : {} entreprise(s), {} projet(s) persiste(s).".format(*n))
+        return n
+    except Exception as e:
+        print("  noyau : persistance ignoree ({}).".format(str(e)[:90]))
+        return (0, 0)
+
+
 def sante_run(leads, aujourdhui=None):
     """Etat du dernier run par source, derive des leads deja construits.
 
@@ -1582,6 +1673,12 @@ def main():
               len(lignes_ted), len(lignes_bm), len(lignes_afdb), len(lignes_adb),
               len(lignes_ebrd), len(lignes_ungm), len(lignes_rw),
               len(lignes_miga), len(lignes_ifc), len(lignes_idb), len(lignes_bmp), len(leads)))
+
+    # Noyau relationnel (P2.1) : on persiste les identites AVANT de generer la
+    # page. Les leads sont deja construits, la derivation est pure, et un
+    # echec ici ne doit pas empecher la publication -- d'ou le best-effort
+    # dans `persister_entites`.
+    persister_entites(leads)
 
     html = generer_html(leads, lignes_watchlist, alertes=lignes_alertes)
     # GARDE-FOU : ce fichier part sur Cloudflare Pages. On refuse de l'ecrire
