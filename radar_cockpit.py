@@ -784,6 +784,14 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .fmeta-sect{color:var(--ink-2);font-weight:600}
 .fmeta-warn{color:var(--amber);font-weight:700;cursor:help}
 .ech{display:block;font-family:var(--mono);font-size:9px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.04em;margin-top:1px;cursor:help}
+.dc{background:var(--surface-2);border:1px solid var(--line-2);border-radius:10px;padding:12px 14px}
+.dc-tete{font-size:12px;color:var(--ink-2);font-family:var(--mono);padding-bottom:8px;margin-bottom:6px;border-bottom:1px solid var(--line)}
+.dc-tete b{color:var(--ink);font-size:13px}
+.dc-row{display:flex;gap:11px;align-items:baseline;padding:3px 0}
+.dc-p{font-family:var(--mono);font-weight:700;font-size:12.5px;min-width:38px;text-align:right;flex:none}
+.dc-p.pos{color:var(--green)}.dc-p.neg{color:var(--red)}
+.dc-l{font-size:12.5px;color:var(--ink-2)}
+.dc-note{font-size:11px;color:var(--ink-3);font-family:var(--mono);margin-top:9px;padding-top:8px;border-top:1px solid var(--line);line-height:1.55}
 .issue-g{color:var(--green);border-color:rgba(35,122,87,.45)}.issue-g:hover{background:var(--green-soft);border-color:var(--green)}
 .issue-p{color:var(--red);border-color:rgba(192,57,43,.4)}.issue-p:hover{background:var(--red-soft);border-color:var(--red)}
 .issue-note{font-size:11px;color:var(--ink-3);font-family:var(--mono);margin-top:9px;line-height:1.5}
@@ -1084,13 +1092,16 @@ function postureNote(z){
 }
 const LEADS=RAW.map((l,i)=>({
   id:i,titre:l.titre||"(sans titre)",src:l.src||"?",zone:l.zone||"Non classé",pays:l.pays||"",
-  secteur:l.sect||l.grp||"Autre",score:+l.final||0,prio:l.action||"surveiller",valeur:+l.valeur_meur||0,enveloppe:+l.enveloppe_meur||0,
+  secteur:l.sect||l.grp||"Autre",score:+l.final||0,surete:+l.surete||0,comm:+l.comm||0,prio:l.action||"surveiller",valeur:+l.valeur_meur||0,enveloppe:+l.enveloppe_meur||0,
   acheteur:l.agence||"n.c.",statut:l.statut||"nouveau",motif:l.motif_ecart||l.motif||"",titulaire:l.entreprise||"",pays_tit:l.origine||"",entcle:l.ent_cle||"",
   etranger:!!l.etranger_titulaire,renouv:l.statut_renouv||"",nature:l.nature_deploiement||"",besoin:l.besoin_surete||"",
   interlocuteur:l.interlocuteur||"",cible:l.cible||"",justif:l.justif||"",lien:l.lien||"",secu:!!l.secu,
   type_activite:l.grp||"",resume:l.justif||"",
   mois:l.mois_label||l.mois||"",moiscle:l.mois||"",nom:l.nom||"n.c.",email:l.email||"n.c.",tel:l.tel||"n.c.",win:l.win||"",pub:l.pub||"",
   proj:l.projet_id||"",deadline:l.deadline||"",datedet:l.date_det||"",
+  // Composantes du score (P1.2) : deja calculees et ponderees a la collecte,
+  // jamais affichees. Transportees telles quelles, aucun recalcul ici.
+  acces:l.acces||"",duree:l.duree||"",client:l.client||"",conf:l.confiance||l.conf||"",
   // Rehausse geopolitique (dash.appliquer_boost_geo) : score d'origine
   // conserve pour que l'UI puisse montrer AVANT -> APRES, jamais un chiffre
   // rehausse presente comme brut.
@@ -1193,6 +1204,49 @@ const scoreColor=s=>s>=8?"#237A57":s>=6?"#B07419":s>=4?"#33628F":"#8B93A2";
 //   privé  -> intensité du signal de déploiement, scoring signaux privés ;
 //   attrib -> formule DETERMINISTE zone + secteur + valeur, sans LLM.
 // L'en-tete affichait la formule des attributions pour TOUTES les lignes.
+// ===========================================================================
+// DECOMPOSITION DU SCORE (P1.2 / P1.3, 26/08/2026)
+// ===========================================================================
+// Le score commercial est une somme de contributions connues, ecrasee en un
+// chiffre unique a l'affichage. Un 7,2 ne disait pas s'il venait d'un marche
+// tres accessible ou d'un gros besoin de surete.
+//
+// MIROIR EXACT de ted_complet_v14.calculer_scores (lignes 1630-1643). Ce
+// tableau ne RECALCULE rien : il nomme les contributions deja appliquees.
+// Si la formule amont change, ces libelles mentent -- d'ou le test apparie qui
+// verifie que les poids d'ici correspondent a ceux du collecteur.
+const POIDS_CLIENT={bailleur_donateur:4.0,entreprise_privee:3.5,autre:2.0,
+  institution_ue_onu:2.0,etat_administration_locale:0.5};
+const CLIENT_LBL={bailleur_donateur:"Bailleur / donateur",entreprise_privee:"Entreprise privée",
+  institution_ue_onu:"Institution UE / ONU",etat_administration_locale:"État / administration locale",
+  autre:"Autre type de client"};
+const POIDS_ACCES={facile:3.0,moyenne:1.5,difficile:0.0};
+const ACCES_LBL={facile:"Accès commercial facile",moyenne:"Accès commercial moyen",
+  difficile:"Accès commercial difficile"};
+const POIDS_DUREE={longue_ou_residente:1.5,indetermine:0.5,courte_ponctuelle:0.0};
+const DUREE_LBL={longue_ou_residente:"Mission longue ou résidente",
+  indetermine:"Durée indéterminée",courte_ponctuelle:"Mission courte, ponctuelle"};
+// Renvoie [{libelle, points}] pour le volet commercial. Les contributions
+// nulles sont CONSERVEES quand elles sont explicites (« accès difficile :
+// +0 » est une information, pas un vide).
+function composantes(l){
+  const out=[];
+  if(l.client)out.push([CLIENT_LBL[l.client]||l.client,POIDS_CLIENT[l.client]!==undefined?POIDS_CLIENT[l.client]:2.0]);
+  if(l.acces)out.push([ACCES_LBL[l.acces]||l.acces,POIDS_ACCES[l.acces]!==undefined?POIDS_ACCES[l.acces]:1.5]);
+  if(l.duree&&POIDS_DUREE[l.duree]!==undefined&&POIDS_DUREE[l.duree]>0)out.push([DUREE_LBL[l.duree],POIDS_DUREE[l.duree]]);
+  if(l.secu)out.push(["Sûreté déjà en place chez le client",-2.0]);
+  return out;
+}
+function blocDecomposition(l){
+  if(l.type!=="avis")return "";              // formule propre aux avis seuls
+  const c=composantes(l);
+  if(!c.length)return "";
+  const lignes=c.map(([lbl,p])=>`<div class="dc-row"><span class="dc-p ${p<0?"neg":"pos"}">${p>0?"+":""}${p.toFixed(1)}</span><span class="dc-l">${esc(lbl)}</span></div>`).join("");
+  return `<div class="dr-sec"><h5>D'où vient ce score</h5><div class="dc">
+    <div class="dc-tete">Volet commercial <b>${l.comm!=null?l.comm.toFixed(1):"?"}/10</b></div>${lignes}
+    <div class="dc-note">Le score affiché est la moyenne du volet commercial et du volet sûreté (${l.surete!=null?l.surete.toFixed(1):"?"}/10), lui-même dérivé de l'exposition terrain et du risque pays.${l.conf?" Confiance de l'analyse : "+esc(l.conf)+".":""}</div>
+  </div></div>`;
+}
 const ECHELLE={
   avis:["avis","Analyse sûreté × potentiel commercial du marché (modèle). Ne se compare pas au score d'une attribution."],
   prive:["signal","Intensité du signal de déploiement détecté (offre d'emploi, presse). Ne se compare pas au score d'un avis de marché."],
@@ -1455,6 +1509,7 @@ function openDrawer(id){
     ${l.titulaire||l.pays_tit?`<div class="dr-sec"><h5>Titulaire</h5><div class="dr-grid"><div class="dr-field"><div class="l">Entreprise</div><div class="v">${esc(l.titulaire||"—")}</div></div><div class="dr-field"><div class="l">Origine</div><div class="v">${l.pays_tit||"—"} ${l.etranger?'<span class="flag">étranger</span>':""}</div></div></div></div>`:""}
     ${(function(){const c=candidatsPour(l);return c.length?`<div class="dr-sec"><h5>Candidats probables${l.src==="ATTRIB"?" (autres du secteur)":""}</h5><div class="cand-list">${c.map(x=>`<div class="cand" onclick="rechercherEnt('${(x.entreprise||"").replace(/'/g,"\\'")}')"><div class="cand-n">${esc(x.entreprise)}</div><div class="cand-m">${x.nb} marché${x.nb>1?"s":""} similaire${x.nb>1?"s":""}${x.origine?" · "+esc(x.origine):""}${x.etranger?' <span class="cand-etr">étranger</span>':""}</div></div>`).join("")}</div><div class="cand-note">Inféré depuis l'historique des attributions du même secteur / théâtre.</div></div>`:"";})()}
     <div class="dr-sec"><h5>Cible commerciale</h5><div class="dr-analyse">${esc(l.cible)||"—"}${l.interlocuteur?"<br><strong>Interlocuteur :</strong> "+esc(l.interlocuteur):""}${l.besoin?"<br><strong>Besoin de sûreté :</strong> "+esc(besL):""}${l.nature?"<br><strong>Déploiement :</strong> "+natL:""}</div></div>
+    ${blocDecomposition(l)}
     ${l.justif?`<div class="dr-sec"><h5>Analyse</h5><div class="dr-analyse">${esc(l.justif)}</div></div>`:""}
     ${contact}
     ${estSurveille(l)?`<div class="dr-sec"><h5>Surveillance</h5><div class="dr-analyse">${attribParue(l)?'<strong style="color:var(--green)">🎯 Attribution parue au dernier run.</strong>'+(l.motif?"<br>Titulaire détecté : <strong>"+esc(l.motif)+"</strong>":""):"👁 Ce marché est surveillé. Chaque run vérifie s\'il a été attribué (et par qui) ou s\'il évolue."}</div></div>`:""}
@@ -1683,6 +1738,9 @@ const PROJETS=(PROJETS_RAW||[]).map((p,i)=>({
   phaseMax:String(p.phase_max_atteinte||""),recul:String(p.recul||"")==="oui",
   maturite:+p.maturite||0,palier:String(p.palier_maturite||""),
   opportunite:+p.opportunite||0,phrase:String(p.opportunite_phrase||""),
+  // Motifs du score : construits depuis toujours par score_opportunite, jamais
+  // affiches. « | » comme separateur car les motifs contiennent des virgules.
+  motifs:String(p.opportunite_motifs||"").split("|").map(x=>x.trim()).filter(Boolean),
   alerte:String(p.alerte||"aucune"),nbSignaux:+p.nb_signaux||0,
   premiere:String(p.premiere_detection||""),derniere:String(p.derniere_maj||""),
   suite:String(p.prochaine_etape||""),
@@ -1787,7 +1845,8 @@ function openProjet(i){
       <div class="fi-stat"><div class="n">${p.nbSignaux}</div><div class="l">signaux</div></div>
       <div class="fi-stat"><div class="n">${p.fDebut||"—"}</div><div class="l">besoin probable</div></div>
     </div>
-    <div class="dr-sec"><h5>Pourquoi cette opportunité</h5><div class="dr-analyse">${esc(p.phrase)||"—"}</div></div>
+    <div class="dr-sec"><h5>Pourquoi cette opportunité</h5><div class="dr-analyse">${esc(p.phrase)||"—"}</div>
+      ${p.motifs.length?`<div class="dc" style="margin-top:10px"><div class="dc-tete">Le détail du score <b>${p.opportunite}/100</b></div>${p.motifs.map(m=>`<div class="dc-row"><span class="dc-p pos">•</span><span class="dc-l">${esc(m)}</span></div>`).join("")}<div class="dc-note">Ces motifs sont ceux réellement retenus par le calcul, pas une reformulation.</div></div>`:""}</div>
     <div class="dr-sec"><h5>Trajectoire</h5><div class="dr-grid">
       <div class="dr-field"><div class="l">Phase courante</div><div class="v">${esc(p.phaseLbl)}</div></div>
       <div class="dr-field"><div class="l">Prochaine étape</div><div class="v">${esc(p.suite)||"—"}</div></div>
