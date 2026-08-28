@@ -335,7 +335,7 @@ def etat_sante(leads):
         return {}
 
 
-def sante_detaillee():
+def sante_detaillee(leads=None):
     """Etat COMPLET du systeme, au-dela du coup d'oeil du bandeau (P3.1).
 
     Le bandeau repond a « une source s'est-elle tue ce run ». Cette fonction
@@ -353,7 +353,11 @@ def sante_detaillee():
     Best-effort integral : chaque bloc echoue independamment, un indicateur
     absent n'emporte pas les autres."""
     out = {"muettes": [], "inventaire": {}, "issues": {}, "quotas": {},
-           "runs": [], "retro": {}}
+           "runs": [], "retro": {}, "rendement": []}
+    try:
+        out["rendement"] = dash.rendement_sources(leads or [])
+    except Exception as e:
+        print("(cockpit) rendement par source indisponible ({}).".format(str(e)[:70]))
     try:
         import radar_runs as rr
         hist = rr.historique(limite=12, type_="sante")
@@ -508,7 +512,7 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
     if posture is None:
         posture = postures(leads, geo_alertes, risque)
     if detail_sante is None:
-        detail_sante = sante_detaillee() if SANTE_ON else {}
+        detail_sante = sante_detaillee(leads) if SANTE_ON else {}
     payload = enrichir(leads)
     # SECRETS : une page STATIQUE ne porte jamais le jeton de suivi. Elle est
     # non authentifiee, donc en lecture seule. Voir dash.assainir_suivi.
@@ -921,6 +925,13 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .sc.absent{opacity:.5}.sc.absent .dot{background:var(--red)}
 /* Echeance de l'avis : le champ le plus operationnel d'un marche a saisir. */
 .k-note{color:var(--ink-3);font-size:9.5px}
+.rd{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11px}
+.rd th{text-align:right;padding:4px 7px;color:var(--ink-3);font-weight:600;border-bottom:1px solid var(--line);text-transform:none;letter-spacing:0;background:none;cursor:help}
+.rd th:first-child{text-align:left}
+.rd td{padding:4px 7px;text-align:right;border-bottom:1px solid var(--line-2);color:var(--ink-2)}
+.rd td:first-child{text-align:left;color:var(--ink);font-weight:600}
+.rd tr.maigre{opacity:.5}
+.rd-nc{color:var(--ink-3)}
 .sd-b{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--ink-3);border:1px solid var(--line);border-radius:6px;padding:3px 9px}
 .sd-b:hover{color:var(--ink);border-color:var(--ink-3)}
 .sd{margin-top:13px;padding-top:12px;border-top:1px solid var(--line)}
@@ -1502,7 +1513,19 @@ function detailSante(){
   const retro=`<div class="sd-n"><b>${iss.gagne||0}</b> gagné(s) · <b>${iss.perdu||0}</b> perdu(s) enregistré(s). Rétroaction en mode <b>${esc(r.mode||"off")}</b> : ${r.peut_activer?"le volume permet de passer en <b>actif</b>.":"volume encore insuffisant pour sortir du mode ombre (il faut au moins "+((r.n_min||8)*2)+" issues, dont "+Math.max(1,Math.floor((r.n_min||8)/2))+" de chaque côté)."}</div>`;
   const q=Object.keys(d.quotas||{}).length
     ? `<div class="sd-grid">${Object.entries(d.quotas).map(([k,v])=>`<span class="sd-c"><b>${esc(v)}</b> ${esc(k)}</span>`).join("")}</div><div class="sd-n">Ce sont des volumes par run, pas des montants : aucun suivi de coût en euros n'existe dans le radar, et en afficher un serait l'inventer.</div>`:"";
-  return bloc("Sources en régression",muettes)+bloc("Tendance de volume",runs)
+  // RENDEMENT : ce que le volume ne dit pas. Une source a 900 leads dont 14 %
+  // menent a un contact vaut moins qu'une a 110 dont 87 %.
+  const rd=(d.rendement||[]).filter(x=>x.n>0);
+  const pct=v=>v===null||v===undefined?'<span class="rd-nc">—</span>':v+"%";
+  const rend=rd.length?`<table class="rd"><thead><tr><th>Source</th><th>Volume</th><th>Traités</th>
+      <th title="Part des leads traités qui ont été écartés à la main : proxy de BRUIT">Bruit</th>
+      <th title="Part des leads traités qui ont mené à un contact : proxy de VALEUR">Contact</th>
+      <th title="Part des issues qui sont des marchés gagnés : le vrai rendement">Succès</th></tr></thead><tbody>${
+    rd.map(x=>`<tr class="${x.assez?"":"maigre"}"><td>${esc(x.src)}</td><td>${x.n}</td><td>${x.traites}</td>
+      <td>${pct(x.taux_ecart)}</td><td>${pct(x.taux_contact)}</td><td>${pct(x.taux_succes)}</td></tr>`).join("")
+  }</tbody></table>
+  <div class="sd-n">Le <b>volume ne mesure rien</b> : compter les leads récompense le bruit. « Bruit » et « Contact » sont des <b>proxys</b>, calculés seulement au-delà d'une dizaine de leads traités ; en dessous, « — » signifie <b>on ne sait pas</b>, pas « zéro ». Le « Succès » n'apparaît qu'à partir de quelques issues gagné/perdu réelles : c'est le seul vrai rendement, et il arrive avec l'usage.</div>`:"";
+  return bloc("Sources en régression",muettes)+bloc("Rendement par source",rend)+bloc("Tendance de volume",runs)
     +bloc("Lignes en base",inv)+bloc("Boucle d'apprentissage",retro)
     +bloc("Quotas de traitement",q);
 }
