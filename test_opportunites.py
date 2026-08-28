@@ -411,5 +411,118 @@ class TestAffichageConvergence(unittest.TestCase):
                       src)
 
 
+class TestProchaineAction(unittest.TestCase):
+    """P2.4 — Une opportunité sans prochaine action est une ligne de plus à
+    lire. Avec, c'est une décision prise.
+
+    L'action est DÉDUITE de ce qui manque (axes de convergence) et de ce qui
+    presse (échéance), jamais choisie arbitrairement. L'ORDRE des règles est
+    la doctrine : ce qui est irréversible passe avant ce qui est améliorable.
+    """
+
+    def _opp(self, leads):
+        return op.construire(leads, AUJ)[0]
+
+    def test_l_irreversible_passe_avant_tout(self):
+        """Une clôture ne se rattrape pas ; une vérification, si."""
+        o = self._opp([_lead(deadline="2026-08-30", projet_id="P1",
+                             ent_cle="x", lien="https://a.fr")])
+        self.assertEqual(o["action"]["urgence"], "critique")
+        self.assertEqual(o["action"]["libelle"], "Répondre ou renoncer")
+
+    def test_dossier_travaille_appelle_une_suite(self):
+        """Pas une reprise à zéro : « relancer », pas « prendre contact »."""
+        o = self._opp([_lead(statut="contacte", projet_id="P1", ent_cle="x",
+                             lien="https://a.fr")])
+        self.assertEqual(o["action"]["libelle"], "Relancer et qualifier")
+
+    def test_non_corrobore_appelle_une_verification_pas_un_contact(self):
+        """Engager du temps commercial sur un seul indice, c'est le gaspiller."""
+        o = self._opp([_lead(pub="SEUL")])
+        self.assertIn("Vérifier", o["action"]["libelle"])
+        self.assertEqual(o["action"]["urgence"], "faible")
+
+    def test_sans_acteur_il_n_y_a_personne_a_appeler(self):
+        o = self._opp([_lead(src="BM", projet_id="P1", enveloppe=50.0,
+                             lien="https://a.fr")])
+        self.assertIn("Identifier", o["action"]["libelle"])
+
+    def test_amont_sans_marche_est_l_avantage_pas_un_manque(self):
+        """Le marché sûreté qui n'existe pas encore est précisément la fenêtre
+        où Amarante peut se positionner en premier."""
+        o = self._opp([_lead(src="PRIVÉ", projet_id="P1", ent_cle="x",
+                             enveloppe=50.0, nature="mixte",
+                             lien="https://news.google.com/a")])
+        self.assertIn("avant publication", o["action"]["libelle"])
+        self.assertEqual(o["action"]["urgence"], "haute")
+
+    def test_toute_opportunite_a_une_action(self):
+        """Aucun dossier ne doit rester sans suite proposée."""
+        for leads in ([_lead()], HISTOIRE, [_lead(statut="contacte")]):
+            for o in op.construire(leads, AUJ):
+                self.assertTrue(o["action"]["libelle"])
+                self.assertIn(o["action"]["urgence"], op.ORDRE_URGENCE)
+
+    def test_l_urgence_ne_contamine_pas_le_score(self):
+        """Une action urgente sur un mauvais dossier reste un mauvais
+        dossier : l'urgence trie, elle ne note pas."""
+        urgent = self._opp([_lead(deadline="2026-08-28")])
+        self.assertEqual(urgent["action"]["urgence"], "critique")
+        self.assertLess(urgent["priorite"], 70)
+
+    def test_serialisation_de_l_action(self):
+        ligne = op.serialiser(op.construire(HISTOIRE, AUJ))[0]
+        for c in ("action", "action_motif", "action_urgence"):
+            self.assertIn(c, ligne)
+            self.assertIsInstance(ligne[c], str)
+
+
+class TestHomeAction(unittest.TestCase):
+    """La vue d'ensemble répondait à « que contient mon radar ? ». Juste, et
+    inerte : rien n'y disait par où commencer."""
+
+    def setUp(self):
+        self.html = ck.generer_cockpit(HISTOIRE, suivi={"api": True})
+
+    def test_bloc_rendu_en_tete_de_vue(self):
+        self.assertIn('<div id="aujourdhui"></div>', self.html)
+        self.assertIn("function renderAujourdhui", self.html)
+        i_auj = self.html.index('id="aujourdhui"')
+        i_th = self.html.index('id="theatres"')
+        self.assertLess(i_auj, i_th)
+
+    def test_appele_a_l_ouverture(self):
+        self.assertIn('if(v==="overview"){renderAujourdhui();', self.html)
+
+    def test_tri_par_urgence_pas_par_score(self):
+        """Le tri par score remonterait les gros dossiers lointains devant les
+        petits qui se ferment demain."""
+        self.assertIn("URG_ORDRE[b.action.urgence]-URG_ORDRE[a.action.urgence]",
+                      self.html)
+        self.assertIn("irrattrapable", self.html)
+
+    def test_dossiers_clos_et_dormants_exclus(self):
+        self.assertIn('!o.dormante', self.html)
+        self.assertIn('o.statut!=="gagne"&&o.statut!=="perdu"', self.html)
+
+    def test_etat_vide_redige(self):
+        """Un bloc vide sans phrase laisse croire à une panne."""
+        self.assertIn("Rien ne presse aujourd", self.html)
+
+    def test_les_quatre_sections_existent(self):
+        for titre in ("À traiter", "Échéances sous 30 jours",
+                      "Mouvements concurrents", "Contexte géopolitique"):
+            self.assertIn(titre, self.html)
+
+    def test_ouverture_sur_le_lead_le_plus_significatif(self):
+        """Une opportunité groupe plusieurs leads : le tiroir doit s'ouvrir
+        sur celui qui porte le plus d'information."""
+        self.assertIn("function ouvrirOpp", self.html)
+        self.assertIn("LEADS.filter(x=>x.opp===id).sort", self.html)
+
+    def test_page_toujours_valide(self):
+        self.assertEqual(re.findall(r"__[A-Z_]+__", self.html), [])
+
+
 if __name__ == "__main__":
     unittest.main()
