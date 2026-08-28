@@ -314,6 +314,63 @@ def etat_sante(leads):
         return {}
 
 
+def sante_detaillee():
+    """Etat COMPLET du systeme, au-dela du coup d'oeil du bandeau (P3.1).
+
+    Le bandeau repond a « une source s'est-elle tue ce run ». Cette fonction
+    repond a « le radar va-t-il bien », ce qui demande de l'HISTORIQUE et de
+    l'etat de base : une source peut etre a zero ce run sans probleme, et a
+    zero depuis trois runs avec un vrai probleme.
+
+    Ce qu'elle NE contient PAS, et pourquoi : l'audit externe reclamait un
+    « budget LLM restant » en euros. Aucun suivi de cout monetaire n'existe
+    dans le code -- `RADAR_ENRICH_BUDGET` est un NOMBRE DE FICHES par run, pas
+    un montant. Afficher un euro invente serait pire que ne rien afficher, et
+    ce serait exactement le reproche fait ailleurs au « potentiel en euros ».
+    On expose donc les budgets tels qu'ils sont : des quotas de volume.
+
+    Best-effort integral : chaque bloc echoue independamment, un indicateur
+    absent n'emporte pas les autres."""
+    out = {"muettes": [], "inventaire": {}, "issues": {}, "quotas": {},
+           "runs": [], "retro": {}}
+    try:
+        import radar_runs as rr
+        hist = rr.historique(limite=12, type_="sante")
+        out["muettes"] = rr.sources_muettes(hist)
+        # Tendance : volume total par run, du plus ancien au plus recent.
+        out["runs"] = [{"horo": r.get("horodatage", "")[:16],
+                        "actives": r.get("actives", 0),
+                        "a_verifier": r.get("a_verifier", 0),
+                        "total": sum((s.get("n") or 0)
+                                     for s in (r.get("sources") or []))}
+                       for r in reversed(hist)][-8:]
+    except Exception as e:
+        print("(cockpit) sante : historique indisponible ({}).".format(str(e)[:70]))
+    try:
+        import radar_stockage as st
+        if st.actif():
+            with st.connexion() as conn:
+                out["inventaire"] = st.inventaire(conn)
+                out["issues"] = st.compter_issues(conn)
+    except Exception as e:
+        print("(cockpit) sante : base indisponible ({}).".format(str(e)[:70]))
+    try:
+        import radar_retroaction as rt
+        out["retro"] = {"mode": rt.MODE,
+                        "peut_activer": rt.assez_d_issues(out["issues"]),
+                        "n_min": rt.N_MIN}
+    except Exception:
+        pass
+    # Quotas : des VOLUMES par run, pas des montants. Nommes comme tels.
+    for cle, var, defaut in (("enrichissement", "RADAR_ENRICH_BUDGET", "80"),
+                             ("adzuna", "RADAR_ADZUNA_QUOTA", ""),
+                             ("hunter", "RADAR_HUNTER_QUOTA", "")):
+        v = os.environ.get(var, defaut)
+        if v:
+            out["quotas"][cle] = v
+    return out
+
+
 def appliquer_geo(leads, alertes):
     """Rehausse les avis des pays en aggravation recente, AVANT serialisation.
 
@@ -404,7 +461,7 @@ def postures(leads, alertes, risque=None):
 def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
                     candidats=None, dossiers=None, projets=None,
                     candidats_projets=None, sante=None, posture=None,
-                    geo_alertes=None, opportunites=None):
+                    geo_alertes=None, opportunites=None, detail_sante=None):
     """leads (schema dashboard) -> HTML autonome. Fonction PURE.
     dossiers : liste compacte (dossiers.serialiser) pour la vue Ecosysteme
                (projets BM suivis a travers leurs phases). Defaut [].
@@ -429,6 +486,8 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
         sante = etat_sante(leads)
     if posture is None:
         posture = postures(leads, geo_alertes, risque)
+    if detail_sante is None:
+        detail_sante = sante_detaillee() if SANTE_ON else {}
     payload = enrichir(leads)
     # SECRETS : une page STATIQUE ne porte jamais le jeton de suivi. Elle est
     # non authentifiee, donc en lecture seule. Voir dash.assainir_suivi.
@@ -479,6 +538,7 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
             .replace("__OPPS_JSON__", json.dumps(opportunites or [], ensure_ascii=False))
             .replace("__COMPTES_JSON__", json.dumps(comptes_ or {}, ensure_ascii=False))
             .replace("__SOUM_JSON__", json.dumps(soum, ensure_ascii=False))
+            .replace("__SANTEDET_JSON__", json.dumps(detail_sante or {}, ensure_ascii=False))
             .replace("__POSTURE_JSON__", json.dumps(posture or {}, ensure_ascii=False))
             .replace("__SANTE_JSON__", json.dumps(sante or {}, ensure_ascii=False))
             .replace("__LEADS_JSON__", json.dumps(payload, ensure_ascii=False))
@@ -839,6 +899,20 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .sc.absent{opacity:.5}.sc.absent .dot{background:var(--red)}
 /* Echeance de l'avis : le champ le plus operationnel d'un marche a saisir. */
 .k-note{color:var(--ink-3);font-size:9.5px}
+.sd-b{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--ink-3);border:1px solid var(--line);border-radius:6px;padding:3px 9px}
+.sd-b:hover{color:var(--ink);border-color:var(--ink-3)}
+.sd{margin-top:13px;padding-top:12px;border-top:1px solid var(--line)}
+.sd-s{margin-bottom:13px}.sd-s:last-child{margin-bottom:0}
+.sd-s h6{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--ink-3);font-family:var(--mono);margin:0 0 6px}
+.sd-alerte{background:var(--amber-soft);color:var(--amber);border-radius:7px;padding:8px 11px;font-size:12.5px}
+.sd-ok{font-size:12.5px;color:var(--ink-3);font-family:var(--mono)}
+.sd-n{font-size:11px;color:var(--ink-3);font-family:var(--mono);line-height:1.55;margin-top:6px}
+.sd-grid{display:flex;flex-wrap:wrap;gap:6px}
+.sd-c{font-family:var(--mono);font-size:11px;color:var(--ink-2);background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:3px 8px}
+.sd-c b{color:var(--ink)}
+.sd-spark{display:block}
+.sd-bar{display:inline-flex;align-items:flex-end;width:24px;height:36px;margin-right:3px;background:var(--line-2);border-radius:3px;cursor:help;vertical-align:bottom}
+.sd-bar span{display:block;width:100%;background:var(--amarante);border-radius:3px}
 .post-up{display:block;font-family:var(--mono);font-size:9.5px;font-weight:700;color:var(--red);text-transform:none;letter-spacing:0;margin-top:2px;cursor:help;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .fmeta-sect{color:var(--ink-2);font-weight:600}
 .fmeta-warn{color:var(--amber);font-weight:700;cursor:help}
@@ -1101,6 +1175,9 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 const RAW=__LEADS_JSON__, COORDS=__COORDS_JSON__, RISQUE=__RISQUE_JSON__, GEO=__GEO_JSON__, WATCHLIST=__WATCHLIST_JSON__, CANDIDATS=__CANDIDATS_JSON__, DOSSIERS=__DOSSIERS_JSON__, PROJETS_RAW=__PROJETS_JSON__, CANDPROJ_RAW=__CANDPROJ_JSON__;
 // Etat du dernier run par source, derive cote Python (dash.sante_run).
 const SANTE=__SANTE_JSON__;
+// Etat COMPLET (P3.1) : historique, base, issues, quotas. Le bandeau dit « une
+// source s'est-elle tue ce run » ; ceci dit « le radar va-t-il bien ».
+const SANTEDET=__SANTEDET_JSON__;
 // Posture EFFECTIVE par theatre (socle de risque + aggravation recente),
 // derivee cote Python. Cf. radar_cockpit.postures.
 const POSTURE=__POSTURE_JSON__;
@@ -1361,7 +1438,39 @@ function renderSante(){
   const chips=SANTE.sources.map(x=>`<span class="sc ${esc(x.etat)}" title="${esc(x.src)} · ${x.n} lead(s) · plus récent : ${esc(ageTxt(x))}"><span class="dot"></span><span class="src">${esc(x.src)}</span><span>${x.n}</span><span class="ag">${esc(ageTxt(x))}</span></span>`).join("");
   const av=SANTE.a_verifier>0?`<span class="warn">${SANTE.a_verifier} à vérifier</span>`:"toutes actives";
   box.classList.toggle("alerte",SANTE.a_verifier>0);
-  box.innerHTML=`<div class="sante-tete"><span class="sante-titre">État du dernier run</span><span class="sante-sub">${esc(SANTE.date||"")} · ${SANTE.actives} source(s) active(s) · ${av}</span></div><div class="sante-grid">${chips}</div>`;
+  box.innerHTML=`<div class="sante-tete"><span class="sante-titre">État du dernier run</span><span class="sante-sub">${esc(SANTE.date||"")} · ${SANTE.actives} source(s) active(s) · ${av}</span><button class="sd-b" onclick="basculerSante()">Diagnostic complet</button></div><div class="sante-grid">${chips}</div><div class="sd" id="santeDetail" style="display:none">${detailSante()}</div>`;
+}
+function basculerSante(){
+  const d=document.getElementById("santeDetail");if(!d)return;
+  d.style.display=d.style.display==="none"?"block":"none";
+}
+// DIAGNOSTIC COMPLET (P3.1). Replie par defaut : c'est un ecran d'exploitation,
+// pas une information commerciale. L'ouvrir de force volerait la place de ce
+// que le commercial vient chercher.
+function detailSante(){
+  const d=SANTEDET||{};
+  const bloc=(t,c)=>c?`<div class="sd-s"><h6>${t}</h6>${c}</div>`:"";
+  // Une source MUETTE est le seul vrai signal d'alarme de cet ecran : elle
+  // produisait, elle ne produit plus. Une source vide depuis toujours ne
+  // declenche rien, sinon l'alerte devient du bruit permanent.
+  const muettes=(d.muettes||[]).length
+    ? `<div class="sd-alerte">${d.muettes.map(m=>`<b>${esc(m.src)}</b> muette depuis ${m.runs_muets} runs`).join(" · ")}</div>`
+    : '<div class="sd-ok">Aucune source en régression sur les derniers runs.</div>';
+  const runs=(d.runs||[]).length
+    ? `<div class="sd-spark">${d.runs.map(r=>{
+        const max=Math.max(...d.runs.map(x=>x.total),1);
+        return `<span class="sd-bar" title="${esc(r.horo)} · ${r.total} leads · ${r.a_verifier} source(s) à vérifier"><span style="height:${Math.max(4,r.total/max*100)}%"></span></span>`;
+      }).join("")}<div class="sd-n">Volume total par run (${d.runs.length} derniers). Une chute franche sans source muette signale plutôt une fenêtre de collecte étroite qu'une panne.</div></div>`
+    : '<div class="sd-n">Pas encore assez de runs enregistrés pour une tendance.</div>';
+  const inv=Object.keys(d.inventaire||{}).length
+    ? `<div class="sd-grid">${Object.entries(d.inventaire).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<span class="sd-c"><b>${v}</b> ${esc(k)}</span>`).join("")}</div>`:"";
+  const iss=d.issues||{},r=d.retro||{};
+  const retro=`<div class="sd-n"><b>${iss.gagne||0}</b> gagné(s) · <b>${iss.perdu||0}</b> perdu(s) enregistré(s). Rétroaction en mode <b>${esc(r.mode||"off")}</b> : ${r.peut_activer?"le volume permet de passer en <b>actif</b>.":"volume encore insuffisant pour sortir du mode ombre (il faut au moins "+((r.n_min||8)*2)+" issues, dont "+Math.max(1,Math.floor((r.n_min||8)/2))+" de chaque côté)."}</div>`;
+  const q=Object.keys(d.quotas||{}).length
+    ? `<div class="sd-grid">${Object.entries(d.quotas).map(([k,v])=>`<span class="sd-c"><b>${esc(v)}</b> ${esc(k)}</span>`).join("")}</div><div class="sd-n">Ce sont des volumes par run, pas des montants : aucun suivi de coût en euros n'existe dans le radar, et en afficher un serait l'inventer.</div>`:"";
+  return bloc("Sources en régression",muettes)+bloc("Tendance de volume",runs)
+    +bloc("Lignes en base",inv)+bloc("Boucle d'apprentissage",retro)
+    +bloc("Quotas de traitement",q);
 }
 const SECT_COLORS={"Génie civil / BTP":"#8E2649","Eau / assainissement":"#33628F","Énergie":"#B07419","Santé":"#237A57","Sécurité / défense":"#C0392B","Logistique / transport":"#6B5B95","Extractif / mines":"#7A5230","Télécom / IT":"#3A8FA8"};
 // SOURCE DE VERITE des couleurs de priorite (marqueurs carte + KPI). Les
