@@ -402,6 +402,21 @@ SANTE_CALME_JOURS = int(os.environ.get("RADAR_SANTE_CALME_JOURS") or "14")
 
 # Sources attendues, dans l'ordre d'affichage. Une source de cette liste ABSENTE
 # des leads s'affiche a 0 (c'est ainsi qu'une source morte se voit).
+# SOURCE -> ONGLET DE STOCKAGE. Definition UNIQUE, consommee par le legacy et
+# par le cockpit (radar_cockpit.table_onglets). Elle etait auparavant recopiee
+# a la main dans chaque gabarit JS, et la copie du cockpit n'en couvrait que 4
+# sur 15 : les statuts des 11 autres sources partaient avec un onglet vide et
+# devenaient irrecuperables, puisque `superposer_statuts` relit sur la cle
+# (onglet, publication_number).
+ONGLET_PAR_SOURCE = {
+    "TED": "ted_radar", "BM": "bm_radar", "AFDB": "afdb_radar",
+    "ADB": "adb_radar", "EBRD": "ebrd_radar", "UNGM": "ungm_radar",
+    "RW": "reliefweb_radar", "PRIVÉ": "prive_radar",
+    "ATTRIB": "attributions_radar", "MIGA": "miga_radar", "IFC": "ifc_radar",
+    "IDB": "idb_radar", "BMP": "bm_projets_radar",
+    "PROPARCO": "proparco_radar", "DFC": "dfc_radar",
+}
+
 CATALOGUE_SOURCES = ("TED", "BM", "AFDB", "ADB", "EBRD", "UNGM", "RW",
                      "MIGA", "IFC", "PROPARCO", "DFC", "IDB", "BMP", "ATTRIB", "PRIVÉ")
 
