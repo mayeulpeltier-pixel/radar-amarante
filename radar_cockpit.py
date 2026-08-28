@@ -435,6 +435,7 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
     _url, _token = dash.assainir_suivi(suivi.get("url", ""),
                                        suivi.get("token", ""),
                                        bool(suivi.get("api")))
+    comptes_ = {}
     if opportunites is None:
         try:
             import opportunites as _opp
@@ -443,6 +444,8 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
             aggraves = {v.get("pays") for v in (posture or {}).values()
                         if v.get("boost", 0) > 0 and v.get("pays")}
             opportunites = _opp.construire(leads, pays_aggraves=aggraves)
+            import comptes as _cp
+            comptes_ = _cp.construire(leads, aggraves, opportunites)
         except Exception as e:
             # BRUYANT A DESSEIN. Un best-effort muet a masque le 26/08 un
             # simple probleme de type (« 180000000 EUR » passe a float()) :
@@ -452,8 +455,10 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
                   " La page s'affiche sans dossier commercial.".format(
                       type(e).__name__, str(e)[:90]))
             opportunites = []
+            comptes_ = {}
     return (GABARIT
             .replace("__OPPS_JSON__", json.dumps(opportunites or [], ensure_ascii=False))
+            .replace("__COMPTES_JSON__", json.dumps(comptes_ or {}, ensure_ascii=False))
             .replace("__POSTURE_JSON__", json.dumps(posture or {}, ensure_ascii=False))
             .replace("__SANTE_JSON__", json.dumps(sante or {}, ensure_ascii=False))
             .replace("__LEADS_JSON__", json.dumps(payload, ensure_ascii=False))
@@ -828,6 +833,20 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .mt-h{font-family:var(--display);font-weight:600;font-size:14px;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
 .mt-d{font-family:var(--mono);font-size:11px;color:var(--ink-3);font-weight:400;margin-left:auto}
 .mt-m{font-size:12.5px;color:var(--ink-2);margin-top:6px;line-height:1.5}
+.cf{background:var(--surface-2);border:1px solid var(--line-2);border-radius:10px;padding:13px 15px}
+.cf-t{font-family:var(--mono);font-size:11px;color:var(--ink-3);padding-bottom:9px;margin-bottom:4px;border-bottom:1px solid var(--line)}
+.cf-t b{font-family:var(--display);color:var(--ink);font-size:14px}
+.cf-m{display:block;margin-top:3px;line-height:1.5}
+.cf-h{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--ink-3);font-family:var(--mono);margin:12px 0 6px}
+.cf-r{padding:4px 0}
+.cf-f{display:block;font-size:13px;font-weight:600;color:var(--ink)}
+.cf-p{display:block;font-size:11.5px;color:var(--ink-3);margin-top:1px}
+.cf-a{display:flex;gap:8px;align-items:baseline;font-size:12.5px;color:var(--ink-2);padding:3px 0}
+.cf-d{color:var(--amarante);font-weight:700;flex:none}
+.cf-s{color:var(--ink-3);font-size:11px;font-family:var(--mono)}
+.cf-n{font-size:11px;color:var(--ink-3);font-family:var(--mono);margin-top:8px;line-height:1.55;padding-top:7px;border-top:1px solid var(--line)}
+.cf-vide{font-size:12px;color:var(--ink-3);font-family:var(--mono);line-height:1.5}
+.cf-o .al{border-bottom-color:var(--line)}
 .auj{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin-bottom:18px;box-shadow:var(--sh)}
 .auj-t{font-family:var(--display);font-size:18px;font-weight:600;margin-bottom:14px;display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
 .auj-t span{font-family:var(--mono);font-size:11px;color:var(--ink-3);font-weight:400}
@@ -1061,6 +1080,9 @@ const POSTURE=__POSTURE_JSON__;
 // porte `opp` ; on retrouve ici son dossier complet.
 const OPPS=__OPPS_JSON__;
 const OPP_PAR_CLE={};OPPS.forEach(o=>{OPP_PAR_CLE[o.opportunity_id]=o;});
+// Comptes (P2.5) : la lecture COMMERCIALE d'une entreprise, par-dessus la
+// fiche 360 qui repond deja a « qui est-ce » et « ou travaille-t-elle ».
+const COMPTES=__COMPTES_JSON__;
 const DIM_LBL={attractivite:"Attractivité",timing:"Timing",winability:"Winability",
   fit:"Fit Amarante",confiance:"Confiance"};
 function candidatsPour(l){
@@ -1857,10 +1879,34 @@ function openFiche(cle){
   <div class="dr-body">
     <div class="fi-stats"><div class="fi-stat"><div class="n">${e.marches.length}</div><div class="l">marchés gagnés</div></div><div class="fi-stat"><div class="n">${e.signaux.length}</div><div class="l">signaux</div></div><div class="fi-stat"><div class="n">${z.length}</div><div class="l">théâtres</div></div><div class="fi-stat"><div class="n">${e.valeur?fmtEur(e.valeur):"—"}</div><div class="l">valeur cumulée</div></div></div>
     ${(z.length||s.length)?`<div class="dr-sec"><h5>Présence</h5><div class="fchips">${z.map(x=>`<span class="fchip">${x}</span>`).join("")}${s.map(x=>`<span class="fchip alt">${x}</span>`).join("")}</div></div>`:""}
+    ${blocCompte(e)}
     <div class="dr-sec"><h5>Historique unifié (marchés + signaux)</h5><div class="tl">${timeline}</div></div>
     <div class="dr-sec"><h5>Contact</h5>${mail}</div>
   </div>`;
   document.getElementById("drawer").classList.add("on");document.getElementById("drawer-ov").classList.add("on");
+}
+// LA LECTURE COMMERCIALE DU COMPTE (P2.5).
+// La fiche repond deja a « qui est-ce », « ou travaille-t-elle », « qu'a-t-elle
+// gagne ». Il lui manquait les deux questions qu'un commercial se pose
+// vraiment : QUI est-ce que j'appelle, et POURQUOI maintenant.
+function blocCompte(e){
+  const c=COMPTES[e.cle];
+  if(!c)return "";
+  const fonctions=c.fonctions.map(([f,pq])=>
+    `<div class="cf-r"><span class="cf-f">${esc(f)}</span><span class="cf-p">${esc(pq)}</span></div>`).join("");
+  const angle=c.angle.map(([fait,src])=>
+    `<div class="cf-a"><span class="cf-d">•</span><span>${esc(fait)}<span class="cf-s"> — ${esc(src)}</span></span></div>`).join("")
+    || '<div class="cf-vide">Aucun fait exploitable pour l\'instant. Il n\'y a rien de concret à dire à ce compte : c\'est en soi une information.</div>';
+  const opps=c.opportunites.length?`<div class="cf-o">${c.opportunites.map(o=>
+    `<div class="al" onclick="ouvrirOpp('${esc(o.id)}')"><span class="ac-p">${o.priorite}</span><span class="al-t">${esc(o.titre)||o.id}</span><span class="al-m">${esc(o.action)}</span></div>`).join("")}</div>`:"";
+  return `<div class="dr-sec"><h5>Lecture commerciale</h5>
+    <div class="cf">
+      <div class="cf-t">Priorité du compte <b>${c.priorite}/100</b><span class="cf-m">${esc(c.motifs.join(" · "))}</span></div>
+      <div class="cf-h">Qui appeler</div>${fonctions}
+      <div class="cf-n">Ce sont des <b>fonctions à viser</b>, pas des personnes identifiées : rien dans les données collectées ne permet de nommer quelqu'un, et l'inventer serait pire que de ne rien proposer.</div>
+      <div class="cf-h">Pourquoi maintenant</div>${angle}
+      ${opps?`<div class="cf-h">Dossiers ouverts</div>${opps}`:""}
+    </div></div>`;
 }
 // --- CANDIDATS DE DECOUVERTE : pistes non encore promues, a arbitrer ---
 // Un candidat n'est PAS un projet suivi. Il est affiche a part, avec ce qui
