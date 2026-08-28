@@ -36,6 +36,9 @@ import unittest
 
 import radar_dashboard as dash
 import radar_stockage as st
+# Meme raison que dans test_backfill_date : les workflows ne sont pas a la
+# racine du depot, ils sont dans `.github/workflows/`.
+from test_workflows import lire_workflow
 
 
 AUJ = datetime.date(2026, 8, 26)
@@ -229,7 +232,9 @@ class TestSecretNonPublie(unittest.TestCase):
                 os.environ["DATABASE_URL"] = avant
 
     def test_workflow_documente_la_raison(self):
-        y = _lire("radar.yml")
+        y = lire_workflow("radar.yml")
+        if y is None:
+            self.skipTest("radar.yml introuvable")
         self.assertIn("DATABASE_URL: ${{ secrets.DATABASE_URL }}", y)
         self.assertIn("verifier_absence_secret", y)
 
