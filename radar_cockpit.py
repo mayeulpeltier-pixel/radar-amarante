@@ -82,6 +82,27 @@ COORDS = {
 }
 
 
+# Miroir de `dash.ONGLET_PAR_SOURCE` : une seule definition, cote Python.
+def table_onglets():
+    """{source: onglet_de_stockage}. Derive du CATALOGUE, pas recopie.
+
+    Le defaut corrige : la table etait ecrite a la main dans le JS et n'en
+    couvrait que 4 sur 15. Une source ajoutee au catalogue heritait
+    silencieusement d'un onglet vide, et tous ses statuts etaient perdus."""
+    table = dict(getattr(dash, "ONGLET_PAR_SOURCE", {}))
+    # GARDE-FOU : on refuse de servir une page ou une source du catalogue
+    # n'aurait pas d'onglet. Mieux vaut un run rouge qu'un statut ecrit dans
+    # le vide, qui ne se recupere pas apres coup.
+    manquantes = [s for s in getattr(dash, "CATALOGUE_SOURCES", ())
+                  if s not in table]
+    if manquantes:
+        raise RuntimeError(
+            "Sources sans onglet de stockage : {}. Leurs statuts seraient "
+            "ecrits avec un onglet vide et perdus. Complete "
+            "radar_dashboard.ONGLET_PAR_SOURCE.".format(", ".join(manquantes)))
+    return table
+
+
 def _cle_opp(lead):
     """Cle d'opportunite du lead, calculee UNE SEULE FOIS, cote Python.
 
@@ -539,6 +560,7 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
             .replace("__COMPTES_JSON__", json.dumps(comptes_ or {}, ensure_ascii=False))
             .replace("__SOUM_JSON__", json.dumps(soum, ensure_ascii=False))
             .replace("__SANTEDET_JSON__", json.dumps(detail_sante or {}, ensure_ascii=False))
+            .replace("__ONGLET_SRC_JSON__", json.dumps(table_onglets(), ensure_ascii=False))
             .replace("__POSTURE_JSON__", json.dumps(posture or {}, ensure_ascii=False))
             .replace("__SANTE_JSON__", json.dumps(sante or {}, ensure_ascii=False))
             .replace("__LEADS_JSON__", json.dumps(payload, ensure_ascii=False))
@@ -1205,7 +1227,19 @@ function candidatsPour(l){
 const SUIVI_URL=__SUIVI_URL__, SUIVI_TOKEN=__SUIVI_TOKEN__, API_STATUT=__API_STATUT__;
 const SUIVI_ON=!!SUIVI_URL||API_STATUT;
 const SRC_SUIVI={TED:"TED",BM:"Banque Mondiale","PRIVÉ":"Privé BITD",RW:"ReliefWeb",PROPARCO:"Proparco",DFC:"DFC"};
-const ONGLET_SRC={TED:"ted_radar",BM:"bm_radar","PRIVÉ":"prive_radar",ATTRIB:"attributions_radar"};
+// SOURCE -> ONGLET DE STOCKAGE. Table CRITIQUE : `superposer_statuts` relit
+// les statuts sur la cle (onglet, publication_number). Un onglet VIDE rend le
+// statut illisible pour toujours -- il est ecrit, il n'est jamais retrouve.
+//
+// DEFAUT CORRIGE LE 26/08/2026 : cette table ne comptait que 4 sources sur
+// les 15 du catalogue. Marquer « a contacter » un avis AFDB, EBRD, UNGM,
+// ReliefWeb, MIGA, IFC, IDB, BMP, PROPARCO, DFC ou ADB envoyait onglet:""
+// et le statut disparaissait au rechargement. Le legacy avait la table
+// complete depuis toujours ; le cockpit ne l'avait jamais reprise.
+//
+// Elle est desormais generee cote Python depuis CATALOGUE_SOURCES : une
+// source ajoutee au catalogue ne peut plus etre oubliee ici.
+const ONGLET_SRC=__ONGLET_SRC_JSON__;
 function leadId(l){return l.pub||l.lien||(l.src+"|"+l.pays+"|"+l.acheteur+"|"+l.titre);}
 // Statut local (optimiste) : le lead reflete l'action tout de suite, la
 // persistance part en arriere-plan (Apps Script + /api/statut si servie par Render).
