@@ -436,6 +436,25 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
                                        suivi.get("token", ""),
                                        bool(suivi.get("api")))
     comptes_ = {}
+    # Soumissionnaires probables (P2.6), calcules pour les seuls avis A
+    # CONTACTER : c'est la ou la question « qui va soumissionner » se pose. Les
+    # calculer pour tout le corpus alourdirait la page de plusieurs centaines
+    # de listes que personne n'ouvrirait.
+    soum = {}
+    try:
+        import candidats_probables as _cp
+        cibles = [l for l in leads
+                  if l.get("src") != "ATTRIB" and l.get("action") == "contacter"]
+        for l in cibles[:200]:
+            cle = str(l.get("pub") or "").strip()
+            if not cle:
+                continue
+            r = _cp.soumissionnaires_probables(l, leads, n=4)
+            if r:
+                soum[cle] = r
+    except Exception as e:
+        print("(cockpit) ATTENTION : soumissionnaires non calcules ({} : {})."
+              .format(type(e).__name__, str(e)[:80]))
     if opportunites is None:
         try:
             import opportunites as _opp
@@ -459,6 +478,7 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
     return (GABARIT
             .replace("__OPPS_JSON__", json.dumps(opportunites or [], ensure_ascii=False))
             .replace("__COMPTES_JSON__", json.dumps(comptes_ or {}, ensure_ascii=False))
+            .replace("__SOUM_JSON__", json.dumps(soum, ensure_ascii=False))
             .replace("__POSTURE_JSON__", json.dumps(posture or {}, ensure_ascii=False))
             .replace("__SANTE_JSON__", json.dumps(sante or {}, ensure_ascii=False))
             .replace("__LEADS_JSON__", json.dumps(payload, ensure_ascii=False))
@@ -833,6 +853,14 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .mt-h{font-family:var(--display);font-weight:600;font-size:14px;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
 .mt-d{font-family:var(--mono);font-size:11px;color:var(--ink-3);font-weight:400;margin-left:auto}
 .mt-m{font-size:12.5px;color:var(--ink-2);margin-top:6px;line-height:1.5}
+.sb{background:var(--surface-2);border:1px solid var(--line-2);border-radius:10px;padding:12px 14px}
+.sb-r{padding:6px 0;border-bottom:1px solid var(--line)}
+.sb-r:last-of-type{border-bottom:none}
+.sb-h{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.sb-e{font-weight:600;font-size:13px}
+.sb-p{margin-left:auto;font-family:var(--mono);font-size:13px;font-weight:700;color:var(--amarante);cursor:help}
+.sb-i{font-family:var(--mono);font-size:11px;color:var(--ink-3);cursor:help}
+.sb-m{font-size:11.5px;color:var(--ink-3);margin-top:3px;line-height:1.45}
 .cf{background:var(--surface-2);border:1px solid var(--line-2);border-radius:10px;padding:13px 15px}
 .cf-t{font-family:var(--mono);font-size:11px;color:var(--ink-3);padding-bottom:9px;margin-bottom:4px;border-bottom:1px solid var(--line)}
 .cf-t b{font-family:var(--display);color:var(--ink);font-size:14px}
@@ -1083,6 +1111,11 @@ const OPP_PAR_CLE={};OPPS.forEach(o=>{OPP_PAR_CLE[o.opportunity_id]=o;});
 // Comptes (P2.5) : la lecture COMMERCIALE d'une entreprise, par-dessus la
 // fiche 360 qui repond deja a « qui est-ce » et « ou travaille-t-elle ».
 const COMPTES=__COMPTES_JSON__;
+// Soumissionnaires probables (P2.6), par numero d'avis. Deux scores SEPARES :
+// la probabilite de participer (prevision) et l'interet commercial
+// (preference). Les melanger, comme le faisait la v1, produisait un classement
+// qui se presentait comme une prevision sans en etre une.
+const SOUM=__SOUM_JSON__;
 const DIM_LBL={attractivite:"Attractivité",timing:"Timing",winability:"Winability",
   fit:"Fit Amarante",confiance:"Confiance"};
 function candidatsPour(l){
@@ -1408,6 +1441,27 @@ function composantes(l){
 // opportunite REGROUPANT plusieurs signaux : sur un avis isole, les cinq
 // dimensions n'ajouteraient rien a la decomposition du score juste en dessous,
 // et repeter l'information la devaluerait.
+// QUI VA SOUMISSIONNER, ET QUI VAUT D'ETRE DEMARCHE (P2.6).
+// Les deux colonnes sont distinctes a l'ecran parce qu'elles repondent a deux
+// questions differentes : « probable » est une prevision fondee sur
+// l'historique, « intérêt » est une preference commerciale. Un titulaire tres
+// probable peut n'avoir aucun interet (local, sans expatries), et
+// reciproquement.
+function blocSoumissionnaires(l){
+  const c=SOUM[l.pub];
+  if(!c||!c.length)return "";
+  const lignes=c.map(x=>`<div class="sb-r">
+    <div class="sb-h"><span class="sb-e">${esc(x.entreprise)}</span>
+      ${x.etranger?'<span class="flag">étr.</span>':""}
+      <span class="sb-p" title="Probabilité de soumissionner, fondée sur l'historique">${x.probabilite}%</span>
+      <span class="sb-i" title="Intérêt commercial pour Amarante">int. ${x.interet}</span></div>
+    <div class="sb-m">${esc(x.motifs.join(" · "))}</div>
+  </div>`).join("");
+  return `<div class="dr-sec"><h5>Soumissionnaires probables</h5>
+    <div class="sb">${lignes}
+    <div class="dc-note"><b>Probabilité</b> = chance de soumissionner, déduite de l'historique (acheteur déjà servi, secteur, théâtre, récence, ordre de grandeur). <b>Intérêt</b> = valeur du compte pour Amarante. Les deux sont séparés : un titulaire très probable peut n'avoir aucun intérêt, et l'inverse.</div>
+    </div></div>`;
+}
 function blocOpportunite(l){
   const o=OPP_PAR_CLE[l.opp];
   if(!o||o.n_leads<2)return "";
@@ -1704,6 +1758,7 @@ function openDrawer(id){
     ${l.titulaire||l.pays_tit?`<div class="dr-sec"><h5>Titulaire</h5><div class="dr-grid"><div class="dr-field"><div class="l">Entreprise</div><div class="v">${esc(l.titulaire||"—")}</div></div><div class="dr-field"><div class="l">Origine</div><div class="v">${l.pays_tit||"—"} ${l.etranger?'<span class="flag">étranger</span>':""}</div></div></div></div>`:""}
     ${(function(){const c=candidatsPour(l);return c.length?`<div class="dr-sec"><h5>Candidats probables${l.src==="ATTRIB"?" (autres du secteur)":""}</h5><div class="cand-list">${c.map(x=>`<div class="cand" onclick="rechercherEnt('${(x.entreprise||"").replace(/'/g,"\\'")}')"><div class="cand-n">${esc(x.entreprise)}</div><div class="cand-m">${x.nb} marché${x.nb>1?"s":""} similaire${x.nb>1?"s":""}${x.origine?" · "+esc(x.origine):""}${x.etranger?' <span class="cand-etr">étranger</span>':""}</div></div>`).join("")}</div><div class="cand-note">Inféré depuis l'historique des attributions du même secteur / théâtre.</div></div>`:"";})()}
     <div class="dr-sec"><h5>Cible commerciale</h5><div class="dr-analyse">${esc(l.cible)||"—"}${l.interlocuteur?"<br><strong>Interlocuteur :</strong> "+esc(l.interlocuteur):""}${l.besoin?"<br><strong>Besoin de sûreté :</strong> "+esc(besL):""}${l.nature?"<br><strong>Déploiement :</strong> "+natL:""}</div></div>
+    ${blocSoumissionnaires(l)}
     ${blocOpportunite(l)}
     ${blocDecomposition(l)}
     ${l.justif?`<div class="dr-sec"><h5>Analyse</h5><div class="dr-analyse">${esc(l.justif)}</div></div>`:""}
