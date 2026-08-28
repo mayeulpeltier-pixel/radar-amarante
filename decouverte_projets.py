@@ -1379,6 +1379,137 @@ def verifier_par_la_presse(candidats, fetch=None, session=None, plafond=None):
     return sortie, len(resultats)
 
 
+# ===========================================================================
+# CYCLE DE VIE DU CANDIDAT (P3.6, 26/08/2026)
+# ===========================================================================
+# CE QUI EXISTAIT : deux etats, `candidat` et `promu`. Un candidat non
+# promouvable retombait dans un sac indistinct nomme « attente », qui melange
+# trois situations tres differentes :
+#
+#   - une piste qui n'a qu'un seul article et n'ira probablement nulle part ;
+#   - une piste qui coche presque tous les criteres et n'attend qu'un signal ;
+#   - une piste qui a cesse de bouger il y a huit mois.
+#
+# Les traiter pareil oblige l'humain a re-arbitrer le meme tas a chaque run.
+#
+# CE QU'ON AJOUTE : un etat LU depuis les criteres deja en place, et surtout
+# CE QUI MANQUE pour avancer. On n'invente aucun seuil : `etat_candidat`
+# interroge `promouvable` et ses composantes, elle ne les redefinit pas. Une
+# seconde definition divergerait a la premiere modification de doctrine.
+
+# Au-dela de ce delai sans nouveau signal, une piste ne progresse plus. Elle
+# n'est pas fausse pour autant : elle sort simplement de la file d'arbitrage.
+JOURS_DORMANCE_CANDIDAT = int(os.environ.get("RADAR_CANDIDAT_DORMANCE", "180"))
+
+
+def _voie_ok(candidat, min_signaux, min_sources, seuil_poids):
+    """La voie CONVERGENCE aboutit-elle ? Miroir exact de `promouvable`."""
+    return (candidat.get("nb_signaux", 0) >= min_signaux
+            and candidat.get("nb_sources", 0) >= min_sources
+            and float(candidat.get("poids_sources", 0) or 0) >= seuil_poids
+            and float(candidat.get("meilleure_fiabilite", 0) or 0) >= 0.50)
+
+
+def manque_pour_promouvoir(candidat, seuil=None, min_signaux=None,
+                           min_sources=None, seuil_poids=None):
+    """Ce qui BLOQUE la promotion, en clair. Fonction PURE.
+
+    Renvoie [] si le candidat est promouvable. Chaque element nomme un
+    critere reellement evalue par `promouvable` : la liste est une lecture de
+    la regle, pas une paraphrase approximative."""
+    seuil = SEUIL_CONFIANCE if seuil is None else seuil
+    min_signaux = SEUIL_SIGNAUX if min_signaux is None else min_signaux
+    min_sources = SEUIL_SOURCES if min_sources is None else min_sources
+    seuil_poids = SEUIL_POIDS if seuil_poids is None else seuil_poids
+    manques = []
+    if not candidat.get("iso3"):
+        manques.append("pays non identifié")
+    if candidat.get("sans_nom"):
+        manques.append("aucun nom officiel : un identifiant stable en dépend")
+    if candidat.get("confiance", 0) < seuil:
+        manques.append("confiance {}/{} requise".format(
+            int(candidat.get("confiance", 0)), int(seuil)))
+    if float(candidat.get("confiance_llm", 0) or 0) < SEUIL_CONFIANCE_LLM:
+        manques.append("le modèle doute qu'il s'agisse d'un projet")
+    if manques:
+        return manques
+    # Les deux voies sont ALTERNATIVES : on ne signale un manque que si
+    # AUCUNE des deux n'aboutit, sinon on reprocherait a un candidat promu par
+    # la voie presse de ne pas avoir de source officielle.
+    poids = float(candidat.get("poids_sources", 0) or 0)
+    meilleure = float(candidat.get("meilleure_fiabilite", 0) or 0)
+    n_presse = int(candidat.get("nb_sources_presse", 0) or 0)
+    if (candidat.get("sources_officielles") and poids >= 0.85 and n_presse >= 1):
+        return ([] if pertinent_pour_amarante(candidat)[0]
+                else [pertinent_pour_amarante(candidat)[1]
+                      or "hors périmètre commercial d'Amarante"])
+    if _voie_ok(candidat, min_signaux, min_sources, seuil_poids):
+        return ([] if pertinent_pour_amarante(candidat)[0]
+                else [pertinent_pour_amarante(candidat)[1]
+                      or "hors périmètre commercial d'Amarante"])
+    if candidat.get("sources_officielles") and n_presse < 1:
+        manques.append("source officielle non corroborée par la presse")
+        return manques
+    if _voie_ok(candidat, min_signaux, min_sources, seuil_poids):
+        # Les deux voies passent, il reste le DERNIER filtre de `promouvable` :
+        # ce projet vaut-il quelque chose POUR AMARANTE ? Je l'avais manqué au
+        # premier jet, et le test d'accord entre les deux fonctions l'a
+        # immediatement signale -- c'est exactement son role.
+        return [] if pertinent_pour_amarante(candidat)[0] else [
+            pertinent_pour_amarante(candidat)[1]
+            or "hors périmètre commercial d'Amarante"]
+    else:
+        if candidat.get("nb_signaux", 0) < min_signaux:
+            manques.append("{}/{} signaux".format(
+                candidat.get("nb_signaux", 0), min_signaux))
+        if candidat.get("nb_sources", 0) < min_sources:
+            manques.append("{}/{} sources distinctes".format(
+                candidat.get("nb_sources", 0), min_sources))
+        if poids < seuil_poids:
+            manques.append("poids de preuve {:.2f}/{:.2f}".format(
+                poids, seuil_poids))
+        if meilleure < 0.50:
+            manques.append("aucune source identifiée et crédible")
+    return manques or ["critères de promotion non réunis"]
+
+
+def etat_candidat(candidat, aujourd=None, **kw):
+    """{"etat", "manque", "jours_sans_signal"}. Fonction PURE.
+
+    Quatre etats, du plus avance au moins avance :
+
+      promouvable  -> tous les criteres sont reunis, l'arbitrage humain peut
+                      avoir lieu ;
+      surveillance -> la piste a une traction reelle (une source officielle,
+                      ou deja plusieurs signaux) mais il manque encore quelque
+                      chose. C'est la file a re-regarder au prochain run ;
+      candidat     -> detecte, rien de plus ;
+      dormant      -> plus aucun signal depuis longtemps. Ni faux ni promu :
+                      il sort de la file d'arbitrage pour qu'elle reste
+                      lisible. C'est ce qui manquait le plus : sans cet etat,
+                      la file grossit indefiniment et personne ne la relit."""
+    auj = aujourd or date.today()
+    manques = manque_pour_promouvoir(candidat, **kw)
+    jours = None
+    try:
+        d = str(candidat.get("derniere_maj") or "")[:10]
+        if d:
+            jours = (auj - date.fromisoformat(d)).days
+    except ValueError:
+        jours = None
+    if not manques:
+        etat = "promouvable"
+    elif jours is not None and jours > JOURS_DORMANCE_CANDIDAT:
+        etat = "dormant"
+    elif (candidat.get("sources_officielles")
+          or candidat.get("nb_signaux", 0) >= 2
+          or candidat.get("nb_sources", 0) >= 2):
+        etat = "surveillance"
+    else:
+        etat = "candidat"
+    return {"etat": etat, "manque": manques, "jours_sans_signal": jours}
+
+
 def promouvoir(candidats, registre=None, seuil=None):
     """Candidats -> (entrees promues, candidats restes en attente).
     Ecarte au passage tout candidat devenu redondant avec le registre.
@@ -1504,17 +1635,26 @@ def _date_iso(brut):
 # ===========================================================================
 COLONNES = [
     "date_maj", "statut", "nom", "project_id_propose", "iso3", "secteur",
-    "phase", "confiance", "motifs", "nb_signaux", "nb_sources",
+    "phase", "confiance", "manque", "jours_sans_signal",
+    "motifs", "nb_signaux", "nb_sources",
     "montant_musd", "acteurs", "premiere_detection", "derniere_maj",
     "sources", "signaux_json",
 ]
 
 
-def ligne_candidat(c, promu=False):
-    """Candidat -> ligne du Sheet. Fonction PURE."""
+def ligne_candidat(c, promu=False, aujourd=None):
+    """Candidat -> ligne du Sheet. Fonction PURE.
+
+    `statut` porte desormais l'ETAT du cycle de vie (P3.6), pas seulement
+    « candidat » ou « promu » : un candidat qui n'attend qu'un signal et un
+    candidat abandonne depuis huit mois ne demandent pas le meme arbitrage."""
+    etat = etat_candidat(c, aujourd)
     v = {
         "date_maj": date.today().isoformat(),
-        "statut": "promu" if promu else "candidat",
+        "statut": "promu" if promu else etat.get("etat", "candidat"),
+        "manque": " | ".join(etat.get("manque", [])) if not promu else "",
+        "jours_sans_signal": ("" if etat.get("jours_sans_signal") is None
+                              else etat["jours_sans_signal"]),
         "nom": c.get("nom", ""),
         "project_id_propose": generer_project_id(c.get("nom", ""), c.get("iso3")),
         "iso3": c.get("iso3", ""), "secteur": c.get("secteur", ""),
