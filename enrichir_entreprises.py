@@ -124,6 +124,14 @@ def rechercher_entreprise_gouv(nom, session=None, fetch=None):
     if not resultats:
         return None
     r = resultats[0]
+    # GARDE-FOU : la recherche est FLOUE. Sans ce controle, un titulaire
+    # etranger heritait de l'identite d'une societe francaise homonyme.
+    trouve = r.get("nom_complet") or r.get("nom_raison_sociale") or ""
+    if not noms_compatibles(nom, trouve):
+        print("  (enrich) '{}' ignore : le registre FR propose '{}' "
+              "(correspondance {:.0%}).".format(
+                  nom[:40], trouve[:40], correspondance(nom, trouve)))
+        return None
     siege = r.get("siege") or {}
     principal, autres = _extraire_dirigeants(r.get("dirigeants") or [])
     tranche = r.get("tranche_effectif_salarie")
@@ -137,6 +145,89 @@ def rechercher_entreprise_gouv(nom, session=None, fetch=None):
         "effectif": TRANCHES_EFFECTIF.get(tranche, tranche or ""),
         "ville": siege.get("libelle_commune", ""),
     }
+
+
+# ===========================================================================
+# GARDE-FOU DE CORRESPONDANCE (P3.5, 26/08/2026)
+# ===========================================================================
+# LE DEFAUT : `recherche-entreprises.api.gouv.fr` fait une recherche FLOUE et
+# le code retenait `results[0]` SANS JAMAIS verifier que le nom trouve
+# correspondait au nom cherche. Consequence mesuree le 26/08 : chercher
+# « STECOL CORPORATION » (titulaire chinois) pouvait retourner
+# « STECOLE FORMATION SARL », et la fiche heritait d'un SIREN francais, d'un
+# gerant lyonnais et d'un code NAF « Formation continue ».
+#
+# Une fiche enrichie a tort est PIRE qu'une fiche vide : elle a l'air
+# renseignee, personne ne la re-verifie, et le commercial appelle un inconnu.
+#
+# La regle appliquee : le nom retourne doit RESSEMBLER au nom cherche. On
+# compare des jetons normalises plutot qu'une distance d'edition, parce que le
+# bruit reel est fait de suffixes juridiques (SARL, SAS, LTD, GMBH) et de
+# ponctuation, pas de fautes de frappe.
+
+SUFFIXES_JURIDIQUES = {
+    "sa", "sas", "sasu", "sarl", "eurl", "sci", "snc", "scop", "gie",
+    "ltd", "limited", "llc", "inc", "corp", "corporation", "co",
+    "gmbh", "ag", "bv", "nv", "spa", "srl", "plc", "pty", "ab", "as",
+    "group", "groupe", "holding", "holdings", "international", "france",
+    "se", "kg", "oy", "sp", "zoo", "pjsc", "jsc", "cjsc", "ooo",
+}
+# Sous ce seuil de recouvrement, on refuse la correspondance. 0,6 laisse
+# passer « TOTAL ENERGIES » vs « TOTALENERGIES SE » et refuse « STECOL
+# CORPORATION » vs « STECOLE FORMATION SARL ».
+SEUIL_CORRESPONDANCE = float(os.environ.get("RADAR_ENRICH_SEUIL", "0.6"))
+
+
+def _jetons(nom):
+    """Jetons significatifs d'un nom d'entreprise. Fonction PURE.
+
+    Retire accents, ponctuation et suffixes juridiques : ce qui reste est ce
+    qui identifie vraiment la societe."""
+    txt = unicodedata.normalize("NFKD", str(nom or "").lower())
+    txt = "".join(c for c in txt if not unicodedata.combining(c))
+    mots = re.split(r"[^a-z0-9]+", txt)
+    utiles = [m for m in mots if m and m not in SUFFIXES_JURIDIQUES]
+    # ORDRE CONSERVE : la comparaison « collee » ci-dessous en depend.
+    # « TOTAL ENERGIES » -> « totalenergies » ne fonctionne que si l'ordre
+    # d'origine est preserve ; un set trie donnerait « energiestotal ».
+    # Un nom entierement compose de suffixes ne doit pas devenir une liste
+    # vide, sinon la comparaison renverrait « aucune correspondance » au lieu
+    # de « je ne sais pas ».
+    return utiles or [m for m in mots if m]
+
+
+def correspondance(cherche, trouve):
+    """Recouvrement 0-1 entre deux noms d'entreprise. Fonction PURE.
+
+    DEUX regles, parce qu'une seule ne suffit pas :
+
+    1. Recouvrement de jetons, rapporte a l'ensemble le PLUS PETIT. « VINCI »
+       doit correspondre a « VINCI CONSTRUCTION GRANDS PROJETS » ; un Jaccard
+       classique le refuserait (1/4 = 25 %).
+
+    2. Repli sur la chaine CONCATENEE. Les societes se renomment en collant
+       leurs mots : « TOTAL ENERGIES » devient « TOTALENERGIES SE ». Aucun
+       jeton commun, alors que c'est la meme entreprise. Sans ce repli, le
+       garde-fou produirait des faux NEGATIFS sur les groupes les plus
+       courants -- une fiche vide au lieu d'une fiche juste.
+
+    On garde le meilleur des deux : un garde-fou doit bloquer les erreurs,
+    pas les bonnes correspondances."""
+    la, lb = _jetons(cherche), _jetons(trouve)
+    if not la or not lb:
+        return 0.0
+    a, b = set(la), set(lb)
+    jetons = len(a & b) / min(len(a), len(b))
+    # Concatenation dans l'ORDRE D'ORIGINE (cf. _jetons).
+    ca, cb = "".join(la), "".join(lb)
+    court, long_ = (ca, cb) if len(ca) <= len(cb) else (cb, ca)
+    colle = len(court) / len(long_) if court and court in long_ else 0.0
+    return max(jetons, colle)
+
+
+def noms_compatibles(cherche, trouve, seuil=None):
+    """Le resultat de la recherche floue designe-t-il bien la societe visee ?"""
+    return correspondance(cherche, trouve) >= (seuil or SEUIL_CORRESPONDANCE)
 
 
 def _extraire_dirigeants(dirigeants):
@@ -269,7 +360,19 @@ def enrichir_une(entreprise_row, session=None, fetch_gouv=None, fetch_pappers=No
     nom = entreprise_row.get("entreprise", "").strip()
     if not nom:
         return None
-    gouv = rechercher_entreprise_gouv(nom, session=session, fetch=fetch_gouv)
+    # REGISTRE FRANCAIS D'ABORD, MAIS PAS POUR TOUT LE MONDE (P3.5).
+    # `recherche-entreprises.api.gouv.fr` ne connait que les societes
+    # FRANCAISES. L'interroger pour un titulaire chinois ou turc consomme du
+    # temps de run pour rien, et surtout l'expose au faux positif que
+    # `noms_compatibles` vient bloquer. Quand la ligne porte deja
+    # `etranger=True` (titulaires DFI, attributaires marques etrangers), on va
+    # DIRECTEMENT au repli mondial. C'est l'information qu'on a, autant s'en
+    # servir : le perimetre d'Amarante est international, le registre FR est
+    # l'exception, pas la regle.
+    if entreprise_row.get("etranger"):
+        gouv = None
+    else:
+        gouv = rechercher_entreprise_gouv(nom, session=session, fetch=fetch_gouv)
     aujourd = datetime.date.today().isoformat()
     if not gouv:
         # Repli international : GLEIF (gratuit, sans cle). Donne l'identite
