@@ -389,11 +389,6 @@ jobs:
           # DASHBOARD_OUTPUT=public/index.html et COCKPIT_OUTPUT=public/cockpit.html.
           DASHBOARD_OUTPUT: public/legacy.html
           COCKPIT_OUTPUT: public/index.html
-          # Noyau relationnel (P2.1) : cette etape persiste les identites
-          # entreprise/projet derivees des leads. Le secret ne peut pas fuiter
-          # dans la page publiee : `verifier_absence_secret` refuse d'ecrire
-          # tout fichier contenant DATABASE_URL (cf. P0.1).
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
           # Boucle de retroaction (P1.1, 26/08/2026). « ombre » = elle CALCULE
           # et JOURNALISE ce qu'elle changerait, sans rien appliquer aux
           # scores. Elle etait jusqu'ici absente de ce fichier, donc en mode
@@ -414,9 +409,16 @@ jobs:
           # il s'execute cote serveur et ne publie rien.
           # Ne PAS remettre ces deux lignes : la generation echouerait de
           # toute facon (garde-fou dash.verifier_absence_secret).
-          # Persistance best-effort du snapshot sante par run (radar_runs) dans
-          # 'runs_radar'. Sans DATABASE_URL, la generation est intacte, la stat
-          # n'est simplement pas enregistree.
+          # DATABASE_URL sert TROIS choses a cette etape, d'ou UNE SEULE
+          # declaration ici. Une seconde ferait une cle dupliquee, que GitHub
+          # Actions refuse en retirant le workflow de l'onglet Actions
+          # (constate le 26/08/2026) :
+          #  - snapshot sante par run (radar_runs -> 'runs_radar') ;
+          #  - noyau relationnel P2.1 (radar_entreprises, radar_projets) ;
+          #  - opportunites P2.2 (radar_opportunites).
+          # Sans elle, la generation reste intacte : ces trois ecritures sont
+          # best-effort. Le secret ne peut pas fuiter dans la page publiee :
+          # `verifier_absence_secret` refuse d'ecrire tout fichier le contenant.
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python radar_dashboard.py
       # 6) Digest hebdo push : envoie par e-mail les NOUVELLES opportunites "a
