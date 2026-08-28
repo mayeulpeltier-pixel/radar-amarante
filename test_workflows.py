@@ -37,6 +37,39 @@ import unittest
 import yaml
 
 
+# ---------------------------------------------------------------------------
+# LOCALISATION DES WORKFLOWS -- definition UNIQUE, importee par les autres
+# fichiers de test qui lisent un .yml.
+# ---------------------------------------------------------------------------
+# INCIDENT DU 26/08/2026 : trois tests faisaient `open("radar.yml")`. Ils
+# passaient en local parce que mon bac a sable avait une copie a la racine, et
+# ils ont echoue en CI ou les workflows vivent dans `.github/workflows/`.
+#
+# Un test qui passe pour la mauvaise raison est pire qu'un test absent : il
+# donne une confiance qu'il ne merite pas. On cherche donc le fichier la ou il
+# peut REELLEMENT etre, et on saute proprement s'il n'y est pas.
+
+DOSSIERS_WORKFLOWS = (".github/workflows", ".", "workflows")
+
+
+def chemin_workflow(nom):
+    """Chemin reel d'un workflow, ou None. Fonction PURE (hors acces disque)."""
+    for dossier in DOSSIERS_WORKFLOWS:
+        chemin = os.path.join(dossier, nom)
+        if os.path.exists(chemin):
+            return chemin
+    return None
+
+
+def lire_workflow(nom):
+    """Contenu d'un workflow, ou None s'il est introuvable."""
+    chemin = chemin_workflow(nom)
+    if not chemin:
+        return None
+    with open(chemin, encoding="utf-8") as f:
+        return f.read()
+
+
 class ChargeurStrict(yaml.SafeLoader):
     """SafeLoader qui REFUSE les clés dupliquées, comme GitHub Actions."""
 
@@ -55,9 +88,12 @@ ChargeurStrict.construct_mapping = _mapping_strict
 
 
 def _workflows():
-    """Tous les .yml du dépôt qui ressemblent à un workflow."""
+    """Tous les .yml du dépôt qui ressemblent à un workflow, où qu'ils soient."""
+    trouves = []
+    for dossier in DOSSIERS_WORKFLOWS:
+        trouves.extend(sorted(glob.glob(os.path.join(dossier, "*.yml"))))
     out = []
-    for chemin in sorted(glob.glob("*.yml")):
+    for chemin in trouves:
         try:
             with open(chemin, encoding="utf-8") as f:
                 brut = f.read()
@@ -106,18 +142,20 @@ class TestWorkflows(unittest.TestCase):
     def test_le_radar_est_lancable_a_la_main(self):
         """Sans `workflow_dispatch`, plus de bouton « Run workflow » : on ne
         peut plus valider une modification sans attendre le cron."""
-        with open("radar.yml", encoding="utf-8") as f:
-            d = yaml.load(f, Loader=ChargeurStrict)
+        brut = lire_workflow("radar.yml")
+        if brut is None:
+            self.skipTest("radar.yml introuvable")
+        d = yaml.load(brut, Loader=ChargeurStrict)
         decl = d.get("on") or d.get(True) or {}
         self.assertIn("workflow_dispatch", decl)
 
     def test_le_backfill_est_manuel_et_jamais_planifie(self):
         """Un back-fill rejoué automatiquement serait du bruit : il n'y a rien
         à corriger une fois la correction passée."""
-        if not os.path.exists("backfill_date.yml"):
+        brut = lire_workflow("backfill_date.yml")
+        if brut is None:
             self.skipTest("backfill_date.yml absent")
-        with open("backfill_date.yml", encoding="utf-8") as f:
-            d = yaml.load(f, Loader=ChargeurStrict)
+        d = yaml.load(brut, Loader=ChargeurStrict)
         decl = d.get("on") or d.get(True) or {}
         self.assertIn("workflow_dispatch", decl)
         self.assertNotIn("schedule", decl)
@@ -139,8 +177,10 @@ class TestSecretsDansLesWorkflows(unittest.TestCase):
     suivi."""
 
     def test_l_etape_de_generation_ne_porte_pas_le_jeton(self):
-        with open("radar.yml", encoding="utf-8") as f:
-            d = yaml.load(f, Loader=ChargeurStrict)
+        brut = lire_workflow("radar.yml")
+        if brut is None:
+            self.skipTest("radar.yml introuvable")
+        d = yaml.load(brut, Loader=ChargeurStrict)
         for job in (d.get("jobs") or {}).values():
             for etape in job.get("steps") or []:
                 if "radar_dashboard.py" in str(etape.get("run", "")):
@@ -150,8 +190,10 @@ class TestSecretsDansLesWorkflows(unittest.TestCase):
 
     def test_le_digest_garde_le_jeton(self):
         """Lui s'exécute côté serveur et ne publie rien."""
-        with open("radar.yml", encoding="utf-8") as f:
-            d = yaml.load(f, Loader=ChargeurStrict)
+        brut = lire_workflow("radar.yml")
+        if brut is None:
+            self.skipTest("radar.yml introuvable")
+        d = yaml.load(brut, Loader=ChargeurStrict)
         trouve = False
         for job in (d.get("jobs") or {}).values():
             for etape in job.get("steps") or []:
