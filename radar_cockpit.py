@@ -828,6 +828,26 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .mt-h{font-family:var(--display);font-weight:600;font-size:14px;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
 .mt-d{font-family:var(--mono);font-size:11px;color:var(--ink-3);font-weight:400;margin-left:auto}
 .mt-m{font-size:12.5px;color:var(--ink-2);margin-top:6px;line-height:1.5}
+.auj{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin-bottom:18px;box-shadow:var(--sh)}
+.auj-t{font-family:var(--display);font-size:18px;font-weight:600;margin-bottom:14px;display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+.auj-t span{font-family:var(--mono);font-size:11px;color:var(--ink-3);font-weight:400}
+.auj-s{margin-bottom:16px}.auj-s:last-child{margin-bottom:0}
+.auj-s h4{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--ink-3);font-family:var(--mono);margin:0 0 8px;display:flex;gap:9px;align-items:baseline}
+.auj-s h4 span{text-transform:none;letter-spacing:0;opacity:.75}
+.auj-vide{font-family:var(--mono);font-size:12.5px;color:var(--ink-3);padding:6px 0}
+.ac{border:1px solid var(--line);border-left:3px solid var(--ink-3);border-radius:10px;padding:11px 13px;margin-bottom:7px;cursor:pointer;transition:.12s}
+.ac:hover{background:var(--surface-2);box-shadow:var(--sh)}
+.ac.critique{border-left-color:var(--red)}.ac.haute{border-left-color:var(--amber)}
+.ac.moyenne{border-left-color:var(--blue)}.ac.faible{border-left-color:var(--line)}
+.ac-h{display:flex;align-items:baseline;gap:10px}
+.ac-a{font-weight:600;font-size:13.5px}
+.ac-p{margin-left:auto;font-family:var(--mono);font-size:12px;font-weight:700;color:var(--ink-3)}
+.ac-t{font-size:12.5px;color:var(--ink-2);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ac-m{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);margin-top:4px}
+.al{display:flex;align-items:baseline;gap:10px;padding:6px 2px;border-bottom:1px solid var(--line-2);cursor:pointer;font-size:12.5px}
+.al:hover{background:var(--surface-2)}.al:last-child{border-bottom:none}
+.al-t{color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.al-m{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);flex:none}
 .cv{margin-top:11px;padding-top:10px;border-top:1px solid var(--line)}
 .cv-t{font-family:var(--mono);font-size:11px;color:var(--ink-3);margin-bottom:7px}
 .cv-t b{color:var(--ink);font-size:12px}
@@ -911,6 +931,7 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
       <button class="btn pri" onclick="exportCSV()"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16"/></svg>Exporter</button>
     </div>
     <section class="view on" id="v-overview">
+      <div id="aujourdhui"></div>
       <div class="sante" id="santeRun"></div>
       <div class="theatres" id="theatres"></div>
       <div class="kpis" id="kpis"></div>
@@ -1217,6 +1238,61 @@ function badgeDeadline(l){
 // --- ETAT DU DERNIER RUN PAR SOURCE ---------------------------------------
 // Derive cote Python (dash.sante_run) : aucun calcul ici, on rend. Bandeau
 // masque si le calcul est absent -- pas de cadre vide sans information.
+// ===========================================================================
+// AUJOURD'HUI (P2.4) -- « que dois-je faire ? », pas « que contient mon radar ? »
+// ===========================================================================
+// La vue d'ensemble repondait a la seconde question. Elle etait juste et
+// inerte : quatre KPI, des graphes, un entonnoir. Rien n'y disait par ou
+// commencer.
+//
+// Ce bloc ne CALCULE rien de neuf : il trie et presente ce que les chantiers
+// precedents ont produit (priorite et convergence des opportunites, echeances
+// des avis, franchissements d'etape, mouvements de titulaires). Son seul
+// travail est de mettre en tete ce qui est irrattrapable.
+const URG_ORDRE={critique:3,haute:2,moyenne:1,faible:0};
+function renderAujourdhui(){
+  const box=document.getElementById("aujourdhui");if(!box)return;
+  // 1. Opportunites a traiter : ni closes, ni ecartees, ni dormantes.
+  const aTraiter=OPPS.filter(o=>!o.dormante
+      &&o.statut!=="gagne"&&o.statut!=="perdu"&&o.statut!=="non_pertinent")
+    .sort((a,b)=>(URG_ORDRE[b.action.urgence]-URG_ORDRE[a.action.urgence])
+                 ||(b.priorite-a.priorite)).slice(0,6);
+  // 2. Echeances : ce qui se ferme, quel que soit le score.
+  const ech=LEADS.filter(l=>l.src!=="ATTRIB"&&l.statut!=="non_pertinent"
+      &&l.statut!=="écarté"&&joursRestants(l.deadline)!==null
+      &&joursRestants(l.deadline)>=0&&joursRestants(l.deadline)<=30)
+    .sort((a,b)=>joursRestants(a.deadline)-joursRestants(b.deadline)).slice(0,5);
+  // 3. Mouvements concurrents : titulaires etrangers frais, renouvellements.
+  const mvt=LEADS.filter(l=>l.src==="ATTRIB"&&(estNouveau(l)||l.renouv))
+    .sort((a,b)=>b.ts-a.ts).slice(0,4);
+  // 4. Contexte : theatres dont la posture vient d'etre rehaussee.
+  const geo=Object.keys(POSTURE||{}).map(z=>[z,POSTURE[z]])
+    .filter(([,p])=>p.boost>0).sort((a,b)=>b[1].boost-a[1].boost).slice(0,3);
+
+  if(!aTraiter.length&&!ech.length&&!mvt.length&&!geo.length){
+    box.innerHTML='<div class="auj"><div class="auj-vide">Rien ne presse aujourd\'hui. Aucune échéance sous 30 jours, aucun mouvement concurrent récent.</div></div>';
+    return;
+  }
+  const carte=(o)=>`<div class="ac ${esc(o.action.urgence)}" onclick="ouvrirOpp('${esc(o.opportunity_id)}')">
+    <div class="ac-h"><span class="ac-a">${esc(o.action.libelle)}</span><span class="ac-p">${o.priorite}</span></div>
+    <div class="ac-t">${esc(o.titre)||"(sans titre)"}</div>
+    <div class="ac-m">${esc(o.action.motif)} · ${esc(o.pays)} · ${o.convergence.n}/${o.convergence.total} axes</div>
+  </div>`;
+  const bloc=(titre,contenu,sub)=>contenu?`<div class="auj-s"><h4>${titre}${sub?`<span>${sub}</span>`:""}</h4>${contenu}</div>`:"";
+  box.innerHTML=`<div class="auj">
+    <div class="auj-t">Aujourd'hui<span>trié par ce qui est irrattrapable, pas par score</span></div>
+    ${bloc("À traiter", aTraiter.map(carte).join(""), aTraiter.length+" dossier(s)")}
+    ${bloc("Échéances sous 30 jours", ech.map(l=>`<div class="al" onclick="openDrawer(${l.id})">${badgeDeadline(l)}<span class="al-t">${esc(l.titre)}</span><span class="al-m">${esc(l.pays)} · ${esc(l.acheteur)}</span></div>`).join(""))}
+    ${bloc("Mouvements concurrents", mvt.map(l=>`<div class="al" onclick="openDrawer(${l.id})"><span class="mb${l.renouv?" renouv":""}">${l.renouv?"renouv.":"nouveau"}</span><span class="al-t">${esc(l.titulaire||l.titre)}</span><span class="al-m">${esc(l.pays)}${l.pays_tit?" · origine "+esc(l.pays_tit):""}</span></div>`).join(""))}
+    ${bloc("Contexte géopolitique", geo.map(([z,p])=>`<div class="al" onclick="goZone('${z.replace(/'/g,"\\'")}')"><span class="mb geo">▲</span><span class="al-t">${esc(z)}</span><span class="al-m">${esc(p.pays)}${p.motif?" · "+esc(p.motif):""} · posture ${p.base} → ${p.niveau}</span></div>`).join(""))}
+  </div>`;
+}
+// Ouvre le lead le plus significatif d'une opportunite : c'est lui qui porte
+// le tiroir complet (dossier commercial, convergence, decomposition).
+function ouvrirOpp(id){
+  const l=LEADS.filter(x=>x.opp===id).sort((a,b)=>b.score-a.score)[0];
+  if(l)openDrawer(l.id);
+}
 function renderSante(){
   const box=document.getElementById("santeRun");if(!box)return;
   if(!SANTE||!SANTE.sources||!SANTE.sources.length){box.innerHTML="";box.classList.remove("alerte");return;}
@@ -2042,7 +2118,7 @@ function go(v){
   document.querySelectorAll(".view").forEach(s=>s.classList.remove("on"));
   document.getElementById("v-"+v).classList.add("on");
   document.getElementById("top-title").textContent=TITLES[v][0];document.getElementById("top-crumb").textContent=TITLES[v][1];
-  if(v==="overview"){renderSante();renderTheatres();renderKPIs();renderCharts();renderFunnel();renderHot();}
+  if(v==="overview"){renderAujourdhui();renderSante();renderTheatres();renderKPIs();renderCharts();renderFunnel();renderHot();}
   if(v==="opps")renderTable();if(v==="attrib")renderAttrib();
   const rc=document.getElementById("search");
   if(rc){const actif=(v==="opps"||v==="attrib");rc.disabled=!actif;
