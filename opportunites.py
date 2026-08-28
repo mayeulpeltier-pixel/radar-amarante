@@ -462,6 +462,78 @@ def priorite(dims):
 
 
 # ===========================================================================
+# 3bis. PROCHAINE ACTION (P2.4)
+# ===========================================================================
+# Une opportunite sans prochaine action est une ligne de plus a lire. Avec,
+# c'est une decision prise.
+#
+# L'action est DEDUITE de ce qui manque, jamais choisie arbitrairement : les
+# axes de convergence disent deja ce qui n'est pas etabli, et l'echeance dit
+# ce qui presse. On lit ces deux choses et on en tire la question suivante a
+# resoudre. Aucune regle ne repose sur un champ non collecte.
+#
+# L'ordre des regles EST la doctrine : la premiere qui s'applique gagne. Ce qui
+# est irreversible (une cloture) passe avant ce qui est ameliorable (une
+# verification).
+
+def prochaine_action(opp, aujourd=None):
+    """{"libelle", "motif", "urgence"} pour une opportunite. Fonction PURE.
+
+    `urgence` : "critique" | "haute" | "moyenne" | "faible". Elle sert au tri
+    de la Home et a la couleur, pas au score : une action urgente sur un
+    mauvais dossier reste un mauvais dossier."""
+    auj = aujourd or datetime.date.today()
+    atteints = {a["cle"] for a in opp.get("convergence", {}).get("axes", [])
+                if a["atteint"]}
+    statut = opp.get("statut") or "nouveau"
+    jours = opp.get("jours_avant_cloture")
+
+    # 1. Ce qui est IRREVERSIBLE d'abord. Une cloture ne se rattrape pas.
+    if jours is not None and 0 <= jours <= 7:
+        return {"libelle": "Répondre ou renoncer",
+                "motif": "clôture dans {} jour{}".format(
+                    jours, "s" if jours > 1 else ""),
+                "urgence": "critique"}
+    if opp.get("montee_critique"):
+        return {"libelle": "Contacter le titulaire pressenti",
+                "motif": opp.get("montee_motif")
+                or "étape décisive franchie récemment",
+                "urgence": "critique"}
+
+    # 2. Un dossier deja travaille appelle une suite, pas une reprise a zero.
+    if statut == "contacte":
+        return {"libelle": "Relancer et qualifier",
+                "motif": "contacté, sans issue enregistrée",
+                "urgence": "haute" if (jours is not None and jours <= 30)
+                else "moyenne"}
+
+    # 3. Ce qui BLOQUE l'action commerciale, dans l'ordre ou ca bloque.
+    if opp.get("convergence", {}).get("n", 0) <= 1:
+        return {"libelle": "Vérifier avant d'investir du temps",
+                "motif": "un seul axe de corroboration",
+                "urgence": "faible"}
+    if "acteur" not in atteints:
+        return {"libelle": "Identifier l'entreprise qui déploiera",
+                "motif": "aucun acteur identifié : personne à contacter",
+                "urgence": "moyenne"}
+    if "marche" not in atteints:
+        return {"libelle": "Se positionner avant publication",
+                "motif": "le marché sûreté n'existe pas encore : c'est "
+                         "l'avantage",
+                "urgence": "haute"}
+    if jours is not None and jours <= 30:
+        return {"libelle": "Préparer la réponse",
+                "motif": "clôture dans {} jours".format(jours),
+                "urgence": "haute"}
+    return {"libelle": "Prendre contact",
+            "motif": "dossier corroboré, aucun contact engagé",
+            "urgence": "moyenne"}
+
+
+ORDRE_URGENCE = {"critique": 3, "haute": 2, "moyenne": 1, "faible": 0}
+
+
+# ===========================================================================
 # 4. CONSTRUCTION
 # ===========================================================================
 def construire(leads, aujourd=None, pays_aggraves=None):
@@ -500,6 +572,17 @@ def construire(leads, aujourd=None, pays_aggraves=None):
         except ValueError:
             dormante = False
         principal = max(groupe, key=lambda l: _nombre(l.get("final")))
+        # Jours avant la cloture la plus proche : c'est ce qui rend une action
+        # irrattrapable, donc ce qui doit primer sur tout le reste.
+        jours = None
+        for l in groupe:
+            try:
+                j = (datetime.date.fromisoformat(
+                    str(l.get("deadline") or "")[:10]) - auj).days
+            except ValueError:
+                continue
+            if j >= 0:
+                jours = j if jours is None else min(jours, j)
         out.append({
             "opportunity_id": cle,
             "titre": principal.get("titre", ""),
@@ -520,7 +603,15 @@ def construire(leads, aujourd=None, pays_aggraves=None):
             "convergence": conv,
             "priorite": priorite(dims),
             "statut": principal.get("statut", "nouveau"),
+            "jours_avant_cloture": jours,
+            "montee_critique": any(
+                l.get("montee_importance") == "critique"
+                and l.get("montee_recente") for l in groupe),
+            "montee_motif": next(
+                (l.get("montee_message") for l in groupe
+                 if l.get("montee_message")), ""),
         })
+        out[-1]["action"] = prochaine_action(out[-1], auj)
     out.sort(key=lambda o: (-o["priorite"], o["opportunity_id"]))
     return out
 
@@ -538,6 +629,9 @@ def serialiser(opportunites):
             "premiere_vue": o["premiere_vue"], "derniere_vue": o["derniere_vue"],
             "dormante": "oui" if o["dormante"] else "non",
             "priorite": o["priorite"], "statut": o["statut"],
+            "action": o["action"]["libelle"],
+            "action_motif": o["action"]["motif"],
+            "action_urgence": o["action"]["urgence"],
             "attractivite": d["attractivite"]["note"],
             "timing": d["timing"]["note"],
             "winability": d["winability"]["note"],
