@@ -426,10 +426,21 @@ class TestPreFiltresEtCollecte(unittest.TestCase):
 class TestSortie(unittest.TestCase):
 
     def test_ligne_respecte_les_colonnes(self):
+        """MODIFIE LE 26/08/2026 (P3.6). `statut` ne vaut plus seulement
+        « candidat » ou « promu » : il porte l'ETAT du cycle de vie
+        (promouvable / surveillance / candidat / dormant). Ce candidat-ci
+        remplit tous les criteres, il est donc « promouvable » -- une
+        information que l'ancien vocabulaire binaire ne pouvait pas rendre."""
         c = dp.regrouper(SIGNAUX_HISTORIQUES, registre=REGISTRE_VIDE)[0]
         ligne = dp.ligne_candidat(c)
         self.assertEqual(len(ligne), len(dp.COLONNES))
-        self.assertEqual(ligne[dp.COLONNES.index("statut")], "candidat")
+        self.assertIn(ligne[dp.COLONNES.index("statut")],
+                      ("promouvable", "surveillance", "candidat", "dormant"))
+
+    def test_l_etat_reflete_la_promouvabilite(self):
+        c = dp.regrouper(SIGNAUX_HISTORIQUES, registre=REGISTRE_VIDE)[0]
+        statut = dp.ligne_candidat(c)[dp.COLONNES.index("statut")]
+        self.assertEqual(statut == "promouvable", dp.promouvable(c))
 
     def test_statut_promu(self):
         c = dp.regrouper(SIGNAUX_HISTORIQUES, registre=REGISTRE_VIDE)[0]
