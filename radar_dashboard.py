@@ -585,6 +585,83 @@ def persister_entites(leads, aujourdhui=None):
         return (0, 0)
 
 
+# ===========================================================================
+# RENDEMENT PAR SOURCE (P3.2, 26/08/2026)
+# ===========================================================================
+# CE QUE MESURER LE VOLUME NE DIT PAS
+# -----------------------------------
+# Une source qui produit 900 leads dont 14 exploitables vaut moins qu'une
+# source qui en produit 110 dont 25. Compter les leads, c'est recompenser le
+# bruit -- et c'est ce que fait aujourd'hui le bandeau de sante, dont ce n'est
+# d'ailleurs pas le role : il mesure la FRAICHEUR, pas la VALEUR.
+#
+# CE QU'ON PEUT MESURER MAINTENANT, ET CE QU'ON NE PEUT PAS
+# ---------------------------------------------------------
+# Le vrai rendement (« combien de marches gagnes par 100 leads ») exige des
+# issues gagne/perdu. Elles sont enfin ENREGISTRABLES depuis P1.1, mais elles
+# n'existeront en volume que dans plusieurs semaines. Attendre pour livrer
+# quoi que ce soit serait une perte seche.
+#
+# On livre donc les deux proxys DISPONIBLES, en disant ce qu'ils sont :
+#   - taux d'ECART manuel  (non_pertinent / traites)  -> proxy de BRUIT
+#   - taux de CONTACT      (contacte / traites)       -> proxy de VALEUR
+# et le taux de SUCCES apparait de lui-meme des que les issues arrivent.
+#
+# LE PIEGE : un taux sur trois leads traites ne veut rien dire. En dessous du
+# seuil, on affiche « pas assez de recul » plutot qu'un pourcentage qui
+# inviterait a couper une source sur un echantillon de trois.
+
+TRAITES_MIN = int(os.environ.get("RADAR_RENDEMENT_MIN", "10"))
+
+
+def rendement_sources(leads, traites_min=None):
+    """[{src, n, traites, ecartes, contactes, gagnes, perdus, taux_ecart,
+    taux_contact, taux_succes, assez}] trie par volume. Fonction PURE.
+
+    `assez` dit si l'echantillon permet de conclure. Les taux valent None
+    quand il ne le permet pas : un None se lit « on ne sait pas », un 0 %
+    se lirait « source inutile », et ce n'est pas la meme chose."""
+    mini = traites_min or TRAITES_MIN
+    par = {}
+    for l in (leads or []):
+        src = str(l.get("src") or "?")
+        d = par.setdefault(src, {"src": src, "n": 0, "traites": 0,
+                                 "ecartes": 0, "contactes": 0,
+                                 "gagnes": 0, "perdus": 0})
+        d["n"] += 1
+        st = str(l.get("statut") or "nouveau")
+        if st in ("nouveau", ""):
+            continue
+        d["traites"] += 1
+        if st in ("non_pertinent", "écarté"):
+            d["ecartes"] += 1
+        elif st == "contacte":
+            d["contactes"] += 1
+        elif st == "gagne":
+            d["gagnes"] += 1
+            d["contactes"] += 1        # un marche gagne a forcement ete contacte
+        elif st == "perdu":
+            d["perdus"] += 1
+            d["contactes"] += 1
+    out = []
+    for d in par.values():
+        assez = d["traites"] >= mini
+        issues = d["gagnes"] + d["perdus"]
+        d["assez"] = assez
+        d["taux_ecart"] = (round(100 * d["ecartes"] / d["traites"])
+                           if assez else None)
+        d["taux_contact"] = (round(100 * d["contactes"] / d["traites"])
+                             if assez else None)
+        # Le taux de succes a son PROPRE seuil : il se calcule sur les issues,
+        # pas sur les leads traites. Une source peut avoir 40 leads traites et
+        # 2 issues -- le taux de succes n'y veut rien dire.
+        d["taux_succes"] = (round(100 * d["gagnes"] / issues)
+                            if issues >= max(3, mini // 3) else None)
+        d["issues"] = issues
+        out.append(d)
+    return sorted(out, key=lambda d: -d["n"])
+
+
 def sante_run(leads, aujourdhui=None):
     """Etat du dernier run par source, derive des leads deja construits.
 
