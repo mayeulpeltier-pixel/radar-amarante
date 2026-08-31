@@ -103,6 +103,45 @@ def table_onglets():
     return table
 
 
+# Nombre de dossiers dont on embarque le DETAIL (dimensions, motifs, axes de
+# convergence). Au-dela, seul l'essentiel voyage.
+DETAIL_OPPS = int(os.environ.get("RADAR_DETAIL_OPPS", "150"))
+
+
+def alleger_opps(opportunites):
+    """Reduit le payload des opportunites. Fonction PURE.
+
+    LE DEFAUT CORRIGE (26/08/2026) : la page servie faisait 4,2 Mo sur un
+    corpus de 2 000 leads, dont 2,3 Mo pour les seules opportunites -- soit
+    presque le DOUBLE des leads eux-memes. En cause : on serialisait les cinq
+    dimensions, leurs motifs et les sept axes de convergence pour CHAQUE
+    dossier, y compris les centaines que personne n'ouvrira jamais.
+    Sur le plan gratuit Render, ces megaoctets se paient en secondes d'attente
+    a chaque chargement.
+
+    Les `DETAIL_OPPS` premiers dossiers (deja tries par priorite) gardent tout :
+    ce sont ceux qui remontent dans « Aujourd'hui » et que l'on ouvre. Les
+    suivants conservent ce qui sert au REGROUPEMENT et aux compteurs, et
+    perdent le detail -- si l'un d'eux est ouvert, le tiroir affiche la
+    decomposition du score, qui reste calculee cote client.
+
+    `n_leads` et `convergence.n` sont CONSERVES pour tous : le premier decide
+    de l'affichage du bloc, le second est affiche dans les cartes."""
+    out = []
+    for i, o in enumerate(opportunites or []):
+        if i < DETAIL_OPPS:
+            out.append(o)
+            continue
+        allege = {k: v for k, v in o.items()
+                  if k not in ("dimensions", "convergence")}
+        conv = o.get("convergence") or {}
+        allege["convergence"] = {"n": conv.get("n", 0),
+                                 "total": conv.get("total", 0), "axes": []}
+        allege["dimensions"] = {}
+        out.append(allege)
+    return out
+
+
 def _cle_opp(lead):
     """Cle d'opportunite du lead, calculee UNE SEULE FOIS, cote Python.
 
@@ -375,6 +414,13 @@ def sante_detaillee(leads=None):
         import radar_stockage as st
         if st.actif():
             with st.connexion() as conn:
+                # `initialiser` AVANT toute lecture : ces tables sont creees
+                # par la migration, et tant qu'aucun collecteur n'a tourne
+                # elles n'existent pas. Interroger une table absente abandonne
+                # la transaction, ce qui laissait la connexion ouverte jusqu'au
+                # `IdleInTransactionSessionTimeout` de Neon (incident du
+                # 26/08/2026). Idempotent, donc sans risque a rejouer.
+                st.initialiser(conn)
                 out["inventaire"] = st.inventaire(conn)
                 out["issues"] = st.compter_issues(conn)
     except Exception as e:
@@ -529,11 +575,14 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
         import candidats_probables as _cp
         cibles = [l for l in leads
                   if l.get("src") != "ATTRIB" and l.get("action") == "contacter"]
+        # L'historique des titulaires est le MEME pour tous les avis : le
+        # reconstruire a chaque iteration parcourait tout le corpus 200 fois.
+        hists = _cp.historique_titulaires(leads)
         for l in cibles[:200]:
             cle = str(l.get("pub") or "").strip()
             if not cle:
                 continue
-            r = _cp.soumissionnaires_probables(l, leads, n=4)
+            r = _cp.soumissionnaires_probables(l, leads, n=4, hists=hists)
             if r:
                 soum[cle] = r
     except Exception as e:
@@ -560,7 +609,8 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
             opportunites = []
             comptes_ = {}
     return (GABARIT
-            .replace("__OPPS_JSON__", json.dumps(opportunites or [], ensure_ascii=False))
+            .replace("__OPPS_JSON__", json.dumps(alleger_opps(opportunites),
+                                                 ensure_ascii=False))
             .replace("__COMPTES_JSON__", json.dumps(comptes_ or {}, ensure_ascii=False))
             .replace("__SOUM_JSON__", json.dumps(soum, ensure_ascii=False))
             .replace("__SANTEDET_JSON__", json.dumps(detail_sante or {}, ensure_ascii=False))
