@@ -574,6 +574,30 @@ def definir_statut(conn, onglet, publication_number, statut, motif="",
             (onglet, pub, statut, motif, valeur_estimee))
 
 
+def _annuler(conn):
+    """Annule la transaction en cours, sans jamais lever. Fonction defensive.
+
+    POURQUOI ELLE EXISTE (incident du 26/08/2026)
+    ---------------------------------------------
+    En Postgres, une requete qui echoue ABANDONNE la transaction : toute
+    requete suivante sur la meme connexion echoue avec « current transaction
+    is aborted », et le COMMIT de sortie echoue aussi. La connexion reste
+    alors ouverte, en transaction, jusqu'a ce que le serveur la tue --
+    `IdleInTransactionSessionTimeout` dans les journaux Render.
+
+    Les lectures best-effort ajoutees les 25 et 26/08 (`lire_outcomes`,
+    `compter_issues`, `lire_entreprises`) avalaient l'exception sans annuler.
+    Or elles interrogent des tables CREEES PAR LA MIGRATION : tant qu'aucun
+    collecteur n'avait tourne, ces tables n'existaient pas en production, et
+    chaque rendu de page empoisonnait une connexion.
+
+    Avaler une erreur ne suffit pas : il faut rendre la connexion utilisable."""
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+
+
 def lire_outcomes(conn, depuis=None):
     """Issues COMMERCIALES (gagne / perdu) du journal, plus recentes d'abord.
 
@@ -599,6 +623,7 @@ def lire_outcomes(conn, depuis=None):
                      "cree_le": c}
                     for o, p, s, sp, m, v, c in cur.fetchall()]
     except Exception as e:
+        _annuler(conn)
         print("(stockage) lire_outcomes indisponible : {}".format(str(e)[:90]))
         return []
 
@@ -613,8 +638,9 @@ def compter_issues(conn):
                         " WHERE statut IN ('gagne', 'perdu') GROUP BY statut")
             for statut, n in cur.fetchall():
                 out[statut] = int(n)
-    except Exception:
-        pass
+    except Exception as e:
+        _annuler(conn)
+        print("(stockage) compter_issues indisponible : {}".format(str(e)[:90]))
     return out
 
 
@@ -773,6 +799,7 @@ def lire_entreprises(conn):
                            "derniere_vue": r[8].isoformat() if r[8] else ""}
                     for r in cur.fetchall()}
     except Exception as e:
+        _annuler(conn)
         print("(stockage) lire_entreprises indisponible : {}".format(str(e)[:90]))
         return {}
 
