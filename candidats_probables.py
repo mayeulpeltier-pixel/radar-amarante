@@ -283,13 +283,17 @@ def interet_amarante(hist):
     return (min(100, n), motifs)
 
 
-def soumissionnaires_probables(avis, leads, n=5, aujourd=None):
+def soumissionnaires_probables(avis, leads, n=5, aujourd=None, hists=None):
     """[{entreprise, probabilite, interet, motifs, ...}] pour un avis donne.
 
     Trie par PROBABILITE, pas par interet : la question posee est « qui va
     soumissionner », et melanger les deux etait le defaut de la v1. L'interet
     est rendu a cote pour que l'arbitrage reste possible a l'oeil."""
-    hists = historique_titulaires(leads, aujourd)
+    # `hists` est le MEME pour tous les avis d'un run : l'appelant qui boucle
+    # sur des centaines d'avis doit le construire UNE fois et le passer ici.
+    # Sans ce parametre, on reparcourait tout le corpus a chaque appel.
+    if hists is None:
+        hists = historique_titulaires(leads, aujourd)
     out = []
     for ent, h in hists.items():
         p, mp = probabilite_participation(avis, h, aujourd)
