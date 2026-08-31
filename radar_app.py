@@ -589,6 +589,21 @@ def creer_application():
                 "page_en_cache": bool(_cache["html"]),
                 "replication": repl}
 
+    @app.head("/")
+    def reveil():
+        """Reveil du service, SANS generer la page ni authentifier.
+
+        Les journaux du 26/08 montraient `HEAD /?frais=1 -> 405` en boucle :
+        FastAPI n'expose pas HEAD sur une route declaree en GET, donc le ping
+        de reveil echouait a chaque appel. Un pinger qui recoit 405 ne
+        maintient rien eveille.
+
+        On repond 200 sans rien calculer : le but d'un HEAD est de reveiller
+        l'instance, pas de payer la generation d'une page de plusieurs
+        megaoctets a chaque ping -- ce qui reveillerait le service pour le
+        saturer aussitot."""
+        return Response(status_code=200, headers=EN_TETES_PRIVES)
+
     @app.get("/")
     def accueil(frais: int = 0, _: None = Depends(_verifier)):
         """La page. `?frais=1` force la regeneration (utile juste apres un run
