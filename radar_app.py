@@ -166,7 +166,19 @@ def page_en_cache(frais=False):
             if not frais_requis:
                 _cache["verif"] = time.time()
                 return _cache["html"], True
-            html = generer_page(conn)
+            # LA CONNEXION NE TRAVERSE PAS LE CALCUL (correctif 26/08/2026).
+            # `generer_page(conn)` gardait la connexion ouverte pendant TOUTE
+            # la generation : lecture (1 s), puis construction des leads,
+            # opportunites, comptes, soumissionnaires et rendu HTML (plusieurs
+            # secondes). Entre les deux, la connexion restait IDLE IN
+            # TRANSACTION, et Neon la tuait :
+            #   psycopg.errors.IdleInTransactionSessionTimeout
+            # L'erreur remontait au COMMIT de sortie, donc APRES avoir genere
+            # la page pour rien : le dashboard etait inaccessible alors que
+            # tout le reste allait bien.
+            donnees = lire_donnees(conn)
+        # Hors du `with` : la connexion est rendue AVANT le calcul.
+        html = rendre_page(donnees)
         _cache["html"] = html
         _cache["t"] = _cache["verif"] = time.time()
         _cache["version"] = version
@@ -278,13 +290,18 @@ def superposer_statuts(conn, onglets_nommes):
                     ligne["motif_ecart"] = motifs[cle]
 
 
-def generer_page(conn):
-    """Postgres -> HTML, en reutilisant le moteur du dashboard tel quel."""
+def lire_donnees(conn):
+    """Tout ce que la page a besoin de LIRE en base, puis on rend la main.
+
+    Volontairement courte : c'est la seule portion qui doit s'executer avec
+    une connexion ouverte. Tout ce qui suit est du calcul pur (cf.
+    `rendre_page`), et une connexion ne doit pas traverser un calcul."""
+    lignes = lire_onglets_pg(conn)
     (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
      lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
      lignes_ungm, analyses_attrib, lignes_alertes,
      lignes_miga, lignes_ifc, lignes_idb, lignes_bmp,
-     lignes_proparco, lignes_dfc) = lire_onglets_pg(conn)
+     lignes_proparco, lignes_dfc) = lignes
     superposer_statuts(conn, [
         ("ted_radar", lignes_ted), ("bm_radar", lignes_bm),
         ("prive_radar", lignes_prive), ("attributions_radar", lignes_attrib),
@@ -294,6 +311,46 @@ def generer_page(conn):
         ("ifc_radar", lignes_ifc), ("idb_radar", lignes_idb),
         ("bm_projets_radar", lignes_bmp),
         ("proparco_radar", lignes_proparco), ("dfc_radar", lignes_dfc)])
+    # Project Intelligence : DEUX lectures de plus, qui etaient restees dans
+    # la phase de calcul. Elles y rouvraient la connexion bien apres que les
+    # autres lectures soient finies -- c'est-a-dire au pire moment.
+    try:
+        projets_suivis = [_normaliser_projet(d)
+                          for d in _onglet(conn, "projets_radar")
+                          if isinstance(d, dict) and d.get("project_id")]
+    except Exception as e:
+        print("(app) projets indisponibles ({}).".format(str(e)[:80]))
+        projets_suivis = []
+    try:
+        cand_projets = [_normaliser_candidat(d)
+                        for d in _onglet(conn, "projets_candidats")
+                        if isinstance(d, dict) and d.get("nom")]
+    except Exception as e:
+        print("(app) candidats projets indisponibles ({}).".format(str(e)[:80]))
+        cand_projets = []
+    return tuple(lignes) + (projets_suivis, cand_projets)
+
+
+def generer_page(conn):
+    """Postgres -> HTML. CONSERVEE pour les appels existants et les tests :
+    elle lit puis rend, en gardant la connexion le temps de la lecture seule.
+
+    Le chemin servi aux utilisateurs passe par `lire_donnees` + `rendre_page`,
+    qui separent explicitement les deux phases."""
+    return rendre_page(lire_donnees(conn))
+
+
+def rendre_page(lignes):
+    """Donnees -> HTML. AUCUN acces base : fonction de calcul pur.
+
+    C'est ce qui garantit qu'aucune connexion n'est retenue pendant les
+    quelques secondes de construction des leads, des opportunites, des comptes
+    et du rendu."""
+    (lignes_ted, lignes_bm, lignes_prive, lignes_attrib, enrichissement,
+     lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
+     lignes_ungm, analyses_attrib, lignes_alertes,
+     lignes_miga, lignes_ifc, lignes_idb, lignes_bmp,
+     lignes_proparco, lignes_dfc, projets_suivis, cand_projets) = lignes
     leads = dash.construire_leads(
         lignes_ted, lignes_bm, lignes_prive, enrichissement, lignes_attrib,
         lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_ungm,
@@ -318,6 +375,12 @@ def generer_page(conn):
         # deja pour son compte, un double appel doublerait le boost.
         leads = radar_cockpit.appliquer_geo(leads, lignes_alertes)
         sante = radar_cockpit.etat_sante(leads)
+        # `sante_detaillee` ouvre SES PROPRES connexions. Appelee depuis
+        # `generer_cockpit`, elle le faisait pendant que la connexion de la
+        # page etait encore ouverte : deux connexions imbriquees par rendu,
+        # sur un plan gratuit qui n'en offre que quelques-unes. On la calcule
+        # ici, hors du `with`, et on passe le resultat.
+        detail = radar_cockpit.sante_detaillee(leads)
         suivi = {"url": os.environ.get("SUIVI_WEBAPP_URL", "") or "",
                  "token": os.environ.get("SUIVI_TOKEN", "") or "",
                  "api": True}
@@ -338,20 +401,6 @@ def generer_page(conn):
         # alors que le miroir Postgres etait correctement alimente (constate le
         # 24/08/2026). Ici on lit Postgres, pas le Sheet : c'est la source de
         # verite de l'app.
-        try:
-            projets_suivis = [_normaliser_projet(d)
-                              for d in _onglet(conn, "projets_radar")
-                              if isinstance(d, dict) and d.get("project_id")]
-        except Exception as e:
-            print("(app) projets indisponibles ({}).".format(str(e)[:80]))
-            projets_suivis = []
-        try:
-            cand_projets = [_normaliser_candidat(d)
-                            for d in _onglet(conn, "projets_candidats")
-                            if isinstance(d, dict) and d.get("nom")]
-        except Exception as e:
-            print("(app) candidats projets indisponibles ({}).".format(str(e)[:80]))
-            cand_projets = []
         print("(app) Project Intelligence : {} projet(s), {} candidat(s).".format(
             len(projets_suivis), len(cand_projets)))
         return radar_cockpit.generer_cockpit(leads, geo=geo, suivi=suivi,
@@ -360,6 +409,7 @@ def generer_page(conn):
                                              projets=projets_suivis,
                                              candidats_projets=cand_projets,
                                              sante=sante,
+                                             detail_sante=detail,
                                              geo_alertes=lignes_alertes)
     except Exception as e:
         print("(app) cockpit indisponible ({}), repli dashboard.".format(str(e)[:100]))
