@@ -52,10 +52,12 @@ import unicodedata
 
 import bitd_signaux as bitd
 
+import config_env
 
-JOURS = int(os.environ.get("SONDE_JOURS", "365"))
-MAX_ART = int(os.environ.get("SONDE_MAX_ART", "40"))
-PAUSE = float(os.environ.get("SONDE_PAUSE", "1.0"))
+
+JOURS = config_env.entier("SONDE_JOURS", "365")
+MAX_ART = config_env.entier("SONDE_MAX_ART", "40")
+PAUSE = config_env.reel("SONDE_PAUSE", "1.0")
 
 
 # ===========================================================================
