@@ -48,15 +48,17 @@ import projets_reference as ref
 import sources_reference as sref
 import ted_complet_v14 as ted
 
+import config_env
+
 
 PAYS_CIBLES = [p.strip().upper() for p in
                os.environ.get("SHADOW_PAYS", "TZA,COD,GIN").split(",") if p.strip()]
-MAX_ART = int(os.environ.get("SHADOW_MAX_ART", "20"))
-JOURS = int(os.environ.get("SHADOW_JOURS", "60"))
-TAILLE_LOT = int(os.environ.get("SHADOW_LOT", "10"))
-MAX_LOTS = int(os.environ.get("SHADOW_MAX_LOTS", "20"))
-MAX_TOKENS = int(os.environ.get("SHADOW_MAX_TOKENS", "2000"))
-PAUSE = float(os.environ.get("SHADOW_PAUSE", "1.0"))
+MAX_ART = config_env.entier("SHADOW_MAX_ART", "20")
+JOURS = config_env.entier("SHADOW_JOURS", "60")
+TAILLE_LOT = config_env.entier("SHADOW_LOT", "10")
+MAX_LOTS = config_env.entier("SHADOW_MAX_LOTS", "20")
+MAX_TOKENS = config_env.entier("SHADOW_MAX_TOKENS", "2000")
+PAUSE = config_env.reel("SHADOW_PAUSE", "1.0")
 # Mode diagnostic. Le premier run a produit 0 candidat sans qu'on puisse dire
 # si le modele avait REPONDU "aucun projet" ou si sa reponse n'avait pas ete
 # COMPRISE : le harnais ne journalisait pas les reponses brutes. C'est un
