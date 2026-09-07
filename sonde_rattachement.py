@@ -38,8 +38,10 @@ from collections import defaultdict
 
 import radar_dashboard as dash
 
+import config_env
 
-SEUIL = float(os.environ.get("SONDE_RATT_SEUIL", "0.30"))
+
+SEUIL = config_env.reel("SONDE_RATT_SEUIL", "0.30")
 SOURCES_AMONT = {"AMONT", "BM-PROJETS", "BM_PROJETS", "PROJETS", "BMP"}
 MOTS_VIDES = {
     "pour", "avec", "dans", "des", "les", "une", "aux", "sur", "par", "the",
