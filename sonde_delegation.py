@@ -43,6 +43,8 @@ import sys
 import urllib.parse
 import xml.etree.ElementTree as ET
 
+import config_env
+
 try:
     import requests
 except ImportError:
@@ -53,7 +55,7 @@ except ImportError:
 GNEWS_BASE = "https://news.google.com/rss/search"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/122.0 Safari/537.36")
-JOURS = int(os.environ.get("SONDE_DELEG_JOURS", "60"))
+JOURS = config_env.entier("SONDE_DELEG_JOURS", "60")
 DRYRUN = os.environ.get("SONDE_DELEG_DRYRUN") == "1"
 TIMEOUT = 30
 
