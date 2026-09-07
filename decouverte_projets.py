@@ -64,29 +64,31 @@ import projets_reference as ref
 import sources_reference as sref
 import ted_complet_v14 as ted
 
+import config_env
+
 
 ACTIVER = os.environ.get("RADAR_DECOUVERTE_PROJETS", "0") == "1"
 NOM_ONGLET = "projets_candidats"
 
-PAYS_PAR_RUN = int(os.environ.get("RADAR_DECOUVERTE_PROJ_PAYS", "6"))
-TAILLE_LOT = int(os.environ.get("RADAR_DECOUVERTE_PROJ_LOT", "10"))
-MAX_LOTS = int(os.environ.get("RADAR_DECOUVERTE_PROJ_MAX_LOTS", "30"))
-MAX_ARTICLES = int(os.environ.get("RADAR_DECOUVERTE_PROJ_MAX_ART", "20"))
-JOURS_FRAICHEUR = int(os.environ.get("RADAR_DECOUVERTE_PROJ_JOURS", "60"))
-PAUSE = float(os.environ.get("RADAR_DECOUVERTE_PROJ_PAUSE", "1.0"))
+PAYS_PAR_RUN = config_env.entier("RADAR_DECOUVERTE_PROJ_PAYS", "6")
+TAILLE_LOT = config_env.entier("RADAR_DECOUVERTE_PROJ_LOT", "10")
+MAX_LOTS = config_env.entier("RADAR_DECOUVERTE_PROJ_MAX_LOTS", "30")
+MAX_ARTICLES = config_env.entier("RADAR_DECOUVERTE_PROJ_MAX_ART", "20")
+JOURS_FRAICHEUR = config_env.entier("RADAR_DECOUVERTE_PROJ_JOURS", "60")
+PAUSE = config_env.reel("RADAR_DECOUVERTE_PROJ_PAUSE", "1.0")
 # Voir collecteur_projets : 400 tokens tronquent un lot de 10.
-MAX_TOKENS_LOT = int(os.environ.get("RADAR_PROJETS_MAX_TOKENS", "2000"))
+MAX_TOKENS_LOT = config_env.entier("RADAR_PROJETS_MAX_TOKENS", "2000")
 
 # Seuils de PROMOTION (un candidat devient un projet suivi).
-SEUIL_CONFIANCE = float(os.environ.get("RADAR_PROMO_CONFIANCE", "60"))
-SEUIL_SIGNAUX = int(os.environ.get("RADAR_PROMO_SIGNAUX", "3"))
-SEUIL_SOURCES = int(os.environ.get("RADAR_PROMO_SOURCES", "2"))
+SEUIL_CONFIANCE = config_env.reel("RADAR_PROMO_CONFIANCE", "60")
+SEUIL_SIGNAUX = config_env.entier("RADAR_PROMO_SIGNAUX", "3")
+SEUIL_SOURCES = config_env.entier("RADAR_PROMO_SOURCES", "2")
 
 # Mode DISCOVERY_BACKFILL (P9) : exploration de l'archive au lieu de la seule
 # fenetre courante. Desactive la fraicheur et decoupe la periode en tranches
 # trimestrielles datees (voir fenetres_backfill).
 BACKFILL = os.environ.get("DISCOVERY_BACKFILL", "0") == "1"
-BACKFILL_MOIS = int(os.environ.get("DISCOVERY_BACKFILL_MOIS", "18"))
+BACKFILL_MOIS = config_env.entier("DISCOVERY_BACKFILL_MOIS", "18")
 
 
 # ===========================================================================
@@ -967,7 +969,7 @@ def motifs_confiance(candidat):
 # nationaux (0.50+0.50=1.00) passent tout juste, un quotidien plus une presse
 # economique (0.50+0.65=1.15) passent nettement. Une source officielle seule
 # passe par l'autre voie (>= 0.85).
-SEUIL_POIDS = float(os.environ.get("RADAR_PROMO_POIDS", "1.00"))
+SEUIL_POIDS = config_env.reel("RADAR_PROMO_POIDS", "1.00")
 
 # Plancher de CONFIANCE LLM (0-100). Defaut mesure sur le shadow run du
 # 24/08/2026 : le candidat "Gasabo" -- une raffinerie rwandaise SANCTIONNEE
@@ -976,9 +978,9 @@ SEUIL_POIDS = float(os.environ.get("RADAR_PROMO_POIDS", "1.00"))
 # alors que le modele ne lui accordait que 25 % de confiance. Le poids des
 # sources ne doit JAMAIS racheter un rejet du modele : une information tres
 # relayee peut n'etre pas un projet du tout.
-SEUIL_CONFIANCE_LLM = float(os.environ.get("RADAR_PROMO_CONF_LLM", "40"))
+SEUIL_CONFIANCE_LLM = config_env.reel("RADAR_PROMO_CONF_LLM", "40")
 # Seuil de PERTINENCE COMMERCIALE (0-100). Voir pertinent_pour_amarante.
-SEUIL_PERTINENCE = float(os.environ.get("RADAR_PROMO_PERTINENCE", "60"))
+SEUIL_PERTINENCE = config_env.reel("RADAR_PROMO_PERTINENCE", "60")
 
 
 # Secteurs a fort deploiement expatrie. Un programme d'assainissement urbain
@@ -1193,8 +1195,8 @@ MOTS_COMMUNS = {"bridge", "tunnel", "station", "plant", "centrale", "route",
                 "cement", "steel", "hub", "city", "ville", "nord", "sud",
                 "north", "south", "east", "west", "phase", "delta"}
 
-MAX_VERIFICATIONS = int(os.environ.get("RADAR_VERIF_PRESSE_MAX", "8"))
-SEUIL_VERIFICATION = float(os.environ.get("RADAR_VERIF_PRESSE_SEUIL", "60"))
+MAX_VERIFICATIONS = config_env.entier("RADAR_VERIF_PRESSE_MAX", "8")
+SEUIL_VERIFICATION = config_env.reel("RADAR_VERIF_PRESSE_SEUIL", "60")
 
 
 def candidats_a_verifier(candidats, plafond=None, seuil=None):
@@ -1399,7 +1401,7 @@ def verifier_par_la_presse(candidats, fetch=None, session=None, plafond=None):
 
 # Au-dela de ce delai sans nouveau signal, une piste ne progresse plus. Elle
 # n'est pas fausse pour autant : elle sort simplement de la file d'arbitrage.
-JOURS_DORMANCE_CANDIDAT = int(os.environ.get("RADAR_CANDIDAT_DORMANCE", "180"))
+JOURS_DORMANCE_CANDIDAT = config_env.entier("RADAR_CANDIDAT_DORMANCE", "180")
 
 
 def _voie_ok(candidat, min_signaux, min_sources, seuil_poids):
@@ -1671,7 +1673,7 @@ def ligne_candidat(c, promu=False, aujourd=None):
     return [str(v.get(col, "")) for col in COLONNES]
 
 
-MAX_CANDIDATS_ONGLET = int(os.environ.get("RADAR_CANDIDATS_MAX", "400"))
+MAX_CANDIDATS_ONGLET = config_env.entier("RADAR_CANDIDATS_MAX", "400")
 
 
 def fusionner_candidats(existantes, nouvelles, plafond=None):
