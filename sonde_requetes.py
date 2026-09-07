@@ -45,11 +45,13 @@ import decouverte_projets as dp
 import pays_projets_reference as pref
 import ted_complet_v14 as ted
 
+import config_env
+
 
 PAYS = [p.strip().upper() for p in
         os.environ.get("SONDE_REQ_PAYS", "TZA,COD,GIN").split(",") if p.strip()]
-MAX = int(os.environ.get("SONDE_REQ_MAX", "20"))
-PAUSE = float(os.environ.get("SONDE_REQ_PAUSE", "1.0"))
+MAX = config_env.entier("SONDE_REQ_MAX", "20")
+PAUSE = config_env.reel("SONDE_REQ_PAUSE", "1.0")
 
 # Familles courtes de declencheurs : l'alternative a un unique groupe geant.
 FAMILLES = {
