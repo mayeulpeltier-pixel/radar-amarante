@@ -50,22 +50,24 @@ import projets_reference as ref
 import radar_resilience
 import ted_complet_v14 as ted
 
+import config_env
+
 
 ACTIVER = os.environ.get("RADAR_PROJETS", "0") == "1"
 NOM_ONGLET = "projets_radar"
 
-PROJETS_PAR_RUN = int(os.environ.get("RADAR_PROJETS_PAR_RUN", "6"))
-TAILLE_LOT = int(os.environ.get("RADAR_PROJETS_LOT", "10"))
-MAX_LOTS = int(os.environ.get("RADAR_PROJETS_MAX_LOTS", "40"))
-MAX_ARTICLES = int(os.environ.get("RADAR_PROJETS_MAX_ART", "25"))
-JOURS_FRAICHEUR = int(os.environ.get("RADAR_PROJETS_JOURS", "45"))
+PROJETS_PAR_RUN = config_env.entier("RADAR_PROJETS_PAR_RUN", "6")
+TAILLE_LOT = config_env.entier("RADAR_PROJETS_LOT", "10")
+MAX_LOTS = config_env.entier("RADAR_PROJETS_MAX_LOTS", "40")
+MAX_ARTICLES = config_env.entier("RADAR_PROJETS_MAX_ART", "25")
+JOURS_FRAICHEUR = config_env.entier("RADAR_PROJETS_JOURS", "45")
 # Backfill : fenetre large pour reconstruire l'historique (une fois), puis on
 # repasse en fenetre courte. La sonde a montre 10 a 14 ans d'archive dispo.
 BACKFILL = os.environ.get("RADAR_PROJETS_BACKFILL", "0") == "1"
-PAUSE = float(os.environ.get("RADAR_PROJETS_PAUSE", "1.0"))
+PAUSE = config_env.reel("RADAR_PROJETS_PAUSE", "1.0")
 # Un lot de 10 produit ~870 tokens de sortie (mesure du shadow run).
 # Le defaut historique de 400 tronquait la reponse et perdait le lot.
-MAX_TOKENS_LOT = int(os.environ.get("RADAR_PROJETS_MAX_TOKENS", "2000"))
+MAX_TOKENS_LOT = config_env.entier("RADAR_PROJETS_MAX_TOKENS", "2000")
 
 _LOCALES = {"fr": ("fr", "FR", "FR:fr"), "en": ("en", "US", "US:en")}
 
