@@ -52,6 +52,8 @@ import os
 import re
 import sys
 
+import config_env
+
 
 # ===========================================================================
 # COEUR TESTABLE : detection de montant dans un enregistrement / un texte.
@@ -149,7 +151,7 @@ def verdict(rap):
 # les "live_only" ne tournent qu'avec reseau (Actions).
 # ===========================================================================
 
-ECH = int(os.environ.get("SONDE_ECH", "40"))
+ECH = config_env.entier("SONDE_ECH", "40")
 
 
 def prober_bm_amont(fetch=None):
