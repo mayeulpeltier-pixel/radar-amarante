@@ -24,6 +24,7 @@ Tests OFFLINE : fonctions pures et generation HTML, aucune base, aucun reseau.
 """
 
 import json
+import datetime
 import re
 import unittest
 
@@ -48,9 +49,14 @@ def _lead(**kw):
 
 LEADS = [_lead(), _lead(pub="P2", pays="Ghana", zone="Afrique de l'Ouest")]
 
+# DATE RELATIVE (cf. test_cockpit_orphelins) : une date en dur sort de la
+# fenetre de fraicheur au bout de quinze jours et fait echouer le test pour
+# une raison qui n'a rien a voir avec ce qu'il verifie.
+_RECENT = (datetime.date.today() - datetime.timedelta(days=2)).isoformat()
+
 AGGRAVATION_GHANA = [{"pays_execution": "GHA", "pays_nom": "Ghana",
                       "severite": "4", "sens": "aggravation",
-                      "motif": "Troubles frontaliers", "date_maj": "2026-08-24"}]
+                      "motif": "Troubles frontaliers", "date_maj": _RECENT}]
 
 
 class TestPostureDynamique(unittest.TestCase):
@@ -91,7 +97,7 @@ class TestPostureDynamique(unittest.TestCase):
         """Le Sahel est deja au plafond : il ne doit pas sortir de l'echelle."""
         p = ck.postures(LEADS, [{"pays_execution": "MLI", "pays_nom": "Mali",
                                  "severite": "4", "sens": "aggravation",
-                                 "motif": "x", "date_maj": "2026-08-24"}])
+                                 "motif": "x", "date_maj": _RECENT}])
         self.assertLessEqual(p["Sahel"]["niveau"], 5.0)
 
     def test_un_allegement_ne_descend_jamais_une_posture(self):
@@ -99,14 +105,14 @@ class TestPostureDynamique(unittest.TestCase):
         de l'erreur."""
         p = ck.postures(LEADS, [{"pays_execution": "GHA", "pays_nom": "Ghana",
                                  "severite": "4", "sens": "amelioration",
-                                 "motif": "x", "date_maj": "2026-08-24"}])
+                                 "motif": "x", "date_maj": _RECENT}])
         self.assertEqual(p["Afrique de l'Ouest"]["boost"], 0.0)
 
     def test_pas_d_empilement_entre_deux_pays(self):
         """La plus forte aggravation gagne, on n'additionne pas."""
         deux = AGGRAVATION_GHANA + [{"pays_execution": "MLI", "pays_nom": "Mali",
                                      "severite": "2", "sens": "aggravation",
-                                     "motif": "y", "date_maj": "2026-08-24"}]
+                                     "motif": "y", "date_maj": _RECENT}]
         p = ck.postures(LEADS, deux)
         self.assertLessEqual(p["Afrique de l'Ouest"]["boost"], dash.BOOST_GEO_MAX)
 
@@ -115,7 +121,7 @@ class TestPostureDynamique(unittest.TestCase):
         radar n'a rien vu n'a pas de theatre a rehausser."""
         p = ck.postures(LEADS, [{"pays_execution": "PER", "pays_nom": "Pérou",
                                  "severite": "4", "sens": "aggravation",
-                                 "motif": "x", "date_maj": "2026-08-24"}])
+                                 "motif": "x", "date_maj": _RECENT}])
         self.assertTrue(all(v["boost"] == 0.0 for v in p.values()))
 
     def test_flag_off_fige_les_tuiles(self):
