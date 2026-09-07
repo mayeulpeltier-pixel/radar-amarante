@@ -21,6 +21,7 @@ double appel doublerait le boost. Un test le verrouille explicitement.
 Tests OFFLINE : generation HTML pure, aucune base, aucun reseau.
 """
 
+import datetime
 import json
 import re
 import unittest
@@ -45,9 +46,16 @@ def _lead(**kw):
     return base
 
 
+# DATE RELATIVE, PAS EN DUR. Ces tests codaient « 2026-08-24 » : ils passaient
+# le jour ou ils ont ete ecrits, et ont echoue deux semaines plus tard quand
+# l'alerte est sortie de la fenetre de fraicheur (BOOST_GEO_JOURS = 14). Un
+# test qui expire tout seul finit par etre desactive au lieu d'etre lu.
+# L'intention testee est « une aggravation RECENTE », on l'exprime telle quelle.
+_RECENT = (datetime.date.today() - datetime.timedelta(days=2)).isoformat()
+
 ALERTE_MALI = [{"pays_execution": "MLI", "pays_nom": "Mali", "severite": "4",
                 "sens": "aggravation", "motif": "Dégradation nord",
-                "date_maj": "2026-08-24"}]
+                "date_maj": _RECENT}]
 
 
 def _leads_du_html(html):
