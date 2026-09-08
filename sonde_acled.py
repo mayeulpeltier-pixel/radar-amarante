@@ -62,6 +62,10 @@ PAYS_TEST = "Ukraine"
 PAYS_MULTI = ["Mali", "Niger"]
 
 RESULTATS = []
+# Schema d'autorisation annonce par le serveur (« Bearer » en principe).
+# Conserve pour que le diagnostic du 403 puisse l'essayer tel quel plutot que
+# de supposer.
+TYPE_ANNONCE = {"valeur": ""}
 
 
 def _titre(t):
@@ -102,18 +106,19 @@ def obtenir_token(session):
         print("    reponse token NON JSON : {}".format(_plat(r.text, 150)))
         return None
     tok = j.get("access_token")
+    TYPE_ANNONCE["valeur"] = str(j.get("token_type") or "")
     print("    token_type={} | expires_in={} | access_token={}".format(
         j.get("token_type"), j.get("expires_in"),
         "recu ({} car.)".format(len(tok)) if tok else "ABSENT"))
     return tok
 
 
-def interroger(session, token, **filtres):
+def interroger(session, token, schema="Bearer", **filtres):
     params = {"_format": "json"}
     params.update(filtres)
     try:
         r = session.get(DATA_URL, params=params,
-                        headers={"Authorization": "Bearer " + token},
+                        headers={"Authorization": schema + " " + token},
                         timeout=TIMEOUT)
     except Exception as e:
         print("    exception reseau (data) : {}".format(_plat(e, 80)))
@@ -121,12 +126,72 @@ def interroger(session, token, **filtres):
     print("    statut data HTTP {} | {}".format(r.status_code, _plat(r.url, 120)))
     if r.status_code >= 400:
         print("    corps (apercu) : {}".format(_plat(r.text, 200)))
+        # EN-TETES DE REPONSE : c'est souvent la que l'API dit POURQUOI elle
+        # refuse (WWW-Authenticate porte le scope manquant, X-* le quota).
+        interessants = {k: v for k, v in r.headers.items()
+                        if k.lower().startswith(("www-", "x-", "retry-"))}
+        if interessants:
+            print("    en-tetes : {}".format(_plat(interessants, 200)))
         return None
     try:
         return r.json()
     except Exception:
         print("    reponse data NON JSON : {}".format(_plat(r.text, 150)))
         return None
+
+
+def diagnostiquer_403(session, token, token_type):
+    """POURQUOI le 403 ? Fonction de DISCRIMINATION, pas de contournement.
+
+    Un « Access denied » avec un token VALIDE ne veut pas dire la meme chose
+    selon ce qui le declenche. Sans distinguer, on ne sait pas s'il faut
+    corriger le code, la requete, ou le compte -- et on part reecrire du code
+    qui n'a rien a se reprocher.
+
+    Quatre hypotheses, de la moins couteuse a corriger a la plus :
+      1. le SCHEMA d'autorisation n'est pas « Bearer » (le serveur a annonce
+         un `token_type` : on l'essaie tel quel) ;
+      2. ce sont les FILTRES qui sont refuses (requete minimale, sans pays ni
+         dates : si elle passe, le probleme est dans les parametres) ;
+      3. le compte n'a pas de DROIT DE LECTURE (tout est refuse, y compris la
+         requete minimale) -- c'est alors une demarche a faire sur le site,
+         pas une ligne de code a changer ;
+      4. l'endpoint a bouge.
+
+    Aucune ecriture, aucune tentative de contournement : on etablit un fait."""
+    _titre("B-bis. DIAGNOSTIC DU REFUS (403)")
+    constats = []
+
+    # 1. Le serveur a annonce un token_type : le respecter plutot que
+    #    supposer « Bearer ».
+    if token_type and token_type.lower() != "bearer":
+        print("  le serveur annonce token_type={!r}, on l'essaie".format(token_type))
+        if interroger(session, token, schema=token_type, limit=1) is not None:
+            constats.append("le schema d'autorisation n'est pas Bearer mais "
+                            "{!r}".format(token_type))
+            _verdict("403", True, "schema d'autorisation a corriger")
+            return constats
+
+    # 2. Requete MINIMALE : aucun filtre, un seul enregistrement.
+    print("  requete minimale (aucun filtre, limit=1)")
+    minimal = interroger(session, token, limit=1)
+    if minimal is not None:
+        constats.append("la requete MINIMALE passe : ce sont les filtres "
+                        "(country / event_date) qui sont refuses")
+        _verdict("403", True, "filtres a revoir, compte OK")
+        return constats
+
+    # 3. Tout est refuse, y compris sans filtre : c'est le COMPTE.
+    constats.append(
+        "meme sans aucun filtre, l'API refuse : le compte est authentifie "
+        "mais n'a PAS de droit de lecture sur les donnees")
+    constats.append(
+        "ce n'est pas un probleme de code. Sur acleddata.com, verifie que le "
+        "compte a bien une cle d'acces ACTIVE et que les conditions "
+        "d'utilisation ont ete acceptees ; l'acces aux donnees est accorde "
+        "separement de la creation du compte")
+    _verdict("403", False, "compte sans droit de lecture (demarche cote ACLED)")
+    return constats
 
 
 def _fenetre():
@@ -223,13 +288,27 @@ def main():
     session = requests.Session()
     session.headers.update({"User-Agent": "radar-amarante-sonde/1.0"})
     token = sonde_a(session)
+    diagnostic = []
     if token:
         sonde_b(session, token)
         sonde_c(session, token)
+        # Si la lecture des donnees a echoue alors que le token est valide,
+        # on ne s'arrete pas a « a creuser » : on cherche POURQUOI. Une sonde
+        # qui constate sans discriminer laisse repartir vers du code qui n'a
+        # rien a se reprocher.
+        if any(nom in ("data", "agregation") and not ok
+               for nom, ok, _ in RESULTATS):
+            diagnostic = diagnostiquer_403(session, token,
+                                           TYPE_ANNONCE["valeur"])
 
     _titre("SYNTHESE")
     for nom, ok, detail in RESULTATS:
         print("  {:12} {:12} {}".format(nom, "OK" if ok else "a creuser", detail))
+
+    if diagnostic:
+        _titre("CE QUE CE REFUS SIGNIFIE")
+        for c in diagnostic:
+            print("  - {}".format(c))
 
     print("\nSUITE : si OAuth + data + agregation sont verts, j'ecris")
     print("`acled_conflit.py` -- collecteur decorrele : OAuth (token cache +")
