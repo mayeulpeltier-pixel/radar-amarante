@@ -218,5 +218,93 @@ class TestAucuneEcriture(unittest.TestCase):
             self.assertIn("sys.exit(0)", f.read())
 
 
+class TestVoieCookie(unittest.TestCase):
+    """Le 403 sur TOUTES les requêtes OAuth laisse deux explications, qui
+    n'appellent pas la même action :
+
+      a. le compte n'a pas de droit de lecture -> démarche côté ACLED ;
+      b. le jeton OAuth n'ouvre pas ce droit   -> on change de voie.
+
+    L'authentification par cookie utilise les MÊMES identifiants par une voie
+    entièrement différente. Elle tranche donc entre les deux -- et, si elle
+    passe, elle fournit la solution de rechange."""
+
+    class Rep:
+        def __init__(self, code, corps="", url="http://x"):
+            self.status_code = code
+            self.text = corps
+            self.url = url
+            self.headers = {}
+
+        def json(self):
+            import json
+            return json.loads(self.text)
+
+    class Session:
+        def __init__(self, monde):
+            self.monde = monde
+
+        def post(self, url, json=None, timeout=None):
+            if self.monde == "login_refuse":
+                return TestVoieCookie.Rep(403, REFUS)
+            return TestVoieCookie.Rep(
+                200, '{"current_user":{"uid":"42","name":"x"}}')
+
+        def get(self, url, params=None, timeout=None, headers=None):
+            return (TestVoieCookie.Rep(200, OK) if self.monde == "cookie_ok"
+                    else TestVoieCookie.Rep(403, REFUS))
+
+    def setUp(self):
+        sa.RESULTATS[:] = []
+
+    def test_cookie_accepte_designe_la_voie_oauth(self):
+        """Si les mêmes identifiants passent par cookie, le compte a bien le
+        droit de lire : c'est OAuth qui est refusé."""
+        self.assertIs(sa.sonde_cookie(self.Session("cookie_ok")), True)
+
+    def test_cookie_refuse_confirme_que_c_est_le_compte(self):
+        """Deux voies indépendantes refusées : le mode d'authentification est
+        hors de cause, aucun code n'y changera rien."""
+        self.assertIs(sa.sonde_cookie(self.Session("cookie_ko")), False)
+
+    def test_login_refuse_designe_les_identifiants(self):
+        """Troisième cas, distinct des deux autres : ce ne sont plus les
+        droits, ce sont les identifiants eux-mêmes."""
+        self.assertIsNone(sa.sonde_cookie(self.Session("login_refuse")))
+
+    def test_les_trois_retours_sont_distincts(self):
+        retours = []
+        for monde in ("cookie_ok", "cookie_ko", "login_refuse"):
+            sa.RESULTATS[:] = []
+            retours.append(sa.sonde_cookie(self.Session(monde)))
+        self.assertEqual(len(set(map(repr, retours))), 3)
+
+    def test_une_session_neuve_est_utilisee(self):
+        """La session OAuth porte un en-tête Authorization : la réutiliser
+        rendrait la voie cookie non indépendante, donc sans valeur de preuve."""
+        with open("sonde_acled.py", encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("sonde_cookie(requests.Session())", src)
+
+    def test_reseau_coupe_ne_leve_pas(self):
+        class Morte:
+            def post(self, *a, **k):
+                raise OSError("reseau coupe")
+        self.assertIsNone(sa.sonde_cookie(Morte()))
+
+    def test_la_voie_cookie_reste_en_lecture_seule(self):
+        """Le POST sert au login, jamais à écrire des données."""
+        import ast
+        with open("sonde_acled.py", encoding="utf-8") as f:
+            arbre = ast.parse(f.read())
+        bloc = [n for n in ast.walk(arbre)
+                if isinstance(n, ast.FunctionDef) and n.name == "sonde_cookie"]
+        self.assertEqual(len(bloc), 1)
+        verbes = {n.func.attr for n in ast.walk(bloc[0])
+                  if isinstance(n, ast.Call)
+                  and isinstance(n.func, ast.Attribute)}
+        self.assertFalse(verbes & {"put", "patch", "delete"})
+
+
 if __name__ == "__main__":
     unittest.main()
