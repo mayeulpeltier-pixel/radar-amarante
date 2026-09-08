@@ -194,6 +194,69 @@ def diagnostiquer_403(session, token, token_type):
     return constats
 
 
+LOGIN_URL = "https://acleddata.com/user/login?_format=json"
+
+
+def sonde_cookie(session_neuve):
+    """Voie d'authentification n°2 : session par COOKIE (doc ACLED).
+
+    POURQUOI CE SECOND TEST
+    -----------------------
+    Le 403 sur toutes les requetes OAuth, meme sans filtre, laisse DEUX
+    explications possibles, et elles n'appellent pas la meme action :
+
+      a. le compte n'a pas de droit de lecture  -> demarche cote ACLED ;
+      b. le jeton OAuth n'ouvre pas ce droit    -> on change de voie.
+
+    L'authentification par cookie utilise les MEMES identifiants par une voie
+    entierement differente (POST /user/login, puis session). Elle tranche donc
+    entre les deux :
+      - cookie refuse aussi  -> c'est le COMPTE, aucun code n'y changera rien ;
+      - cookie accepte       -> c'est la voie OAuth, et on a deja la solution
+                                de rechange sous la main.
+
+    C'est aussi la voie que la doc ACLED recommande pour un acces « simple ».
+    Si elle marche, le collecteur peut l'utiliser : une session vaut un jeton.
+
+    Lecture seule, comme le reste."""
+    _titre("D. VOIE DE SECOURS : authentification par COOKIE")
+    try:
+        r = session_neuve.post(LOGIN_URL, json={"name": EMAIL, "pass": MDP},
+                               timeout=TIMEOUT)
+    except Exception as e:
+        print("    exception reseau (login) : {}".format(_plat(e, 80)))
+        _verdict("cookie", False, "login injoignable")
+        return None
+    print("    statut login HTTP {}".format(r.status_code))
+    if r.status_code != 200:
+        print("    corps (apercu) : {}".format(_plat(r.text, 200)))
+        _verdict("cookie", False,
+                 "login refuse : les identifiants eux-memes sont en cause")
+        return None
+    try:
+        uid = (r.json().get("current_user") or {}).get("uid")
+        print("    session ouverte pour uid={}".format(uid))
+    except Exception:
+        print("    reponse login non JSON")
+
+    try:
+        d = session_neuve.get(DATA_URL, params={"_format": "json", "limit": 1},
+                              timeout=TIMEOUT)
+    except Exception as e:
+        print("    exception reseau (data cookie) : {}".format(_plat(e, 80)))
+        _verdict("cookie", False, "data injoignable")
+        return None
+    print("    statut data HTTP {} (via cookie)".format(d.status_code))
+    if d.status_code >= 400:
+        print("    corps (apercu) : {}".format(_plat(d.text, 200)))
+        _verdict("cookie", False,
+                 "refuse AUSSI par cookie : le compte n'a pas le droit de lire")
+        return False
+    _verdict("cookie", True,
+             "la voie COOKIE fonctionne : le probleme est la voie OAuth")
+    return True
+
+
 def _fenetre():
     fin = date.today()
     debut = fin - timedelta(days=FENETRE_JOURS)
@@ -300,6 +363,21 @@ def main():
                for nom, ok, _ in RESULTATS):
             diagnostic = diagnostiquer_403(session, token,
                                            TYPE_ANNONCE["valeur"])
+            # Session NEUVE : la precedente porte l'en-tete Authorization du
+            # test OAuth, et on veut une voie vraiment independante.
+            cookie = sonde_cookie(requests.Session())
+            if cookie is True:
+                diagnostic = [
+                    "la voie COOKIE fonctionne avec les MEMES identifiants : "
+                    "le compte a bien le droit de lire, c'est la voie OAuth "
+                    "qui est refusee",
+                    "le collecteur peut donc utiliser la session par cookie "
+                    "(POST /user/login puis GET), c'est la voie que la doc "
+                    "ACLED recommande pour un acces simple"]
+            elif cookie is False:
+                diagnostic.append(
+                    "confirme par la voie COOKIE, independante d'OAuth : le "
+                    "refus ne vient PAS du mode d'authentification")
 
     _titre("SYNTHESE")
     for nom, ok, detail in RESULTATS:
