@@ -1,0 +1,41 @@
+name: Rattrapage statuts orphelins
+
+# Correction PONCTUELLE, lancee a la main. Elle repare les statuts ecrits avec
+# un onglet vide avant le correctif P3.4 du 26/08/2026 : ils sont bien en base,
+# mais `superposer_statuts` ne les retrouve jamais (la cle de relecture est
+# (onglet, publication_number)).
+#
+# Le mode SONDE est le defaut : le premier lancement compte et montre la
+# repartition, sans rien ecrire. On lit le rapport, PUIS on relance avec
+# appliquer=true. Meme discipline que le back-fill des dates.
+#
+# Ne PAS planifier : une fois la reparation passee, il n'y a plus rien a
+# reparer, et le rejouer ne ferait que du bruit dans les journaux.
+on:
+  workflow_dispatch:
+    inputs:
+      appliquer:
+        description: "Écrire réellement en base (sinon : sonde seule)"
+        type: boolean
+        default: false
+
+jobs:
+  rattrapage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Installer les dépendances
+        run: pip install -r requirements-radar.txt
+
+      - name: Rattrapage
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python rattrapage_statuts.py ${{ inputs.appliquer && '--appliquer' || '' }}
