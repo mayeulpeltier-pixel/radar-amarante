@@ -875,7 +875,7 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .fmono{width:42px;height:42px;border-radius:10px;background:var(--amarante-soft);color:var(--amarante);display:grid;place-items:center;font-family:var(--display);font-weight:700;font-size:16px;flex:none}
 .fname{font-family:var(--display);font-weight:600;font-size:15px;line-height:1.25}
 .fmeta{font-size:11.5px;color:var(--ink-3);font-family:var(--mono);margin-top:3px}
-.fstats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0;padding:12px 0;border-top:1px solid var(--line-2);border-bottom:1px solid var(--line-2)}
+.fstats{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin:14px 0;padding:12px 0;border-top:1px solid var(--line-2);border-bottom:1px solid var(--line-2)}
 .fstat{text-align:center}.fstat .n{font-family:var(--display);font-weight:600;font-size:19px}.fstat .l{font-size:10px;color:var(--ink-3);font-family:var(--mono);text-transform:uppercase;margin-top:2px}
 .fchips{display:flex;flex-wrap:wrap;gap:6px}
 .fchip{font-size:10.5px;font-family:var(--mono);font-weight:600;padding:2px 8px;border-radius:5px;background:var(--surface-2);color:var(--ink-2);border:1px solid var(--line)}
@@ -997,8 +997,13 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
 .sd-bar{display:inline-flex;align-items:flex-end;width:24px;height:36px;margin-right:3px;background:var(--line-2);border-radius:3px;cursor:help;vertical-align:bottom}
 .sd-bar span{display:block;width:100%;background:var(--amarante);border-radius:3px}
 .post-up{display:block;font-family:var(--mono);font-size:9.5px;font-weight:700;color:var(--red);text-transform:none;letter-spacing:0;margin-top:2px;cursor:help;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fprio{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);margin-top:8px;padding-top:7px;border-top:1px solid var(--line-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:help}
 .fmeta-sect{color:var(--ink-2);font-weight:600}
 .fmeta-warn{color:var(--amber);font-weight:700;cursor:help}
+th.tri-on{color:var(--amarante)}
+th.tri-on .ar{opacity:1;font-weight:700}
+th[data-sort],th[data-asort],th[data-psort]{cursor:pointer;user-select:none}
+th[data-sort]:hover,th[data-asort]:hover,th[data-psort]:hover{color:var(--ink)}
 .ech{display:block;font-family:var(--mono);font-size:9px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.04em;margin-top:1px;cursor:help}
 .mb.montee{background:var(--green-soft);color:var(--green)}
 .mb.montee.critique{background:var(--red-soft);color:var(--red)}
@@ -1197,14 +1202,14 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
         <div class="seg" id="af-etr"><button data-e="" class="on">Tous</button><button data-e="1">Étrangers</button><button data-e="renouv">Renouvellement</button></div>
         <button class="chip-clear" onclick="resetAttrib()">Réinitialiser</button>
       </div>
-      <div class="tbl-wrap"><table><thead><tr><th data-asort="titulaire">Titulaire<span class="ar">↕</span></th><th>Marché gagné</th><th data-asort="ts">Détecté<span class="ar">↕</span></th><th data-asort="zone">Théâtre<span class="ar">↕</span></th><th data-asort="pays_tit">Origine<span class="ar">↕</span></th><th data-asort="valeur">Montant<span class="ar">↕</span></th><th>Statut</th></tr></thead><tbody id="tbody-attrib"></tbody></table></div>
+      <div class="tbl-wrap"><table><thead><tr><th data-asort="titulaire">Titulaire<span class="ar">↕</span></th><th>Marché gagné</th><th data-asort="ts">Détecté<span class="ar">↕</span></th><th data-asort="zone">Théâtre<span class="ar">↕</span></th><th data-asort="pays_tit">Origine<span class="ar">↕</span></th><th data-asort="valeur">Montant<span class="ar">↕</span></th><th data-asort="score" title="Calcul déterministe : risque de la zone + secteur + valeur. Ne se compare pas au score d'un avis.">Score<span class="ar">↕</span></th><th>Statut</th></tr></thead><tbody id="tbody-attrib"></tbody></table></div>
       <div style="padding:12px 4px;font-family:var(--mono);font-size:12px;color:var(--ink-3)" id="attrib-count"></div>
     </section>
     <section class="view" id="v-firmo">
       <div class="opps-bar"><div class="opps-intro">Chaque entreprise, dédupliquée par entité (une même société regroupée quelles que soient ses variantes de nom) : marchés gagnés, signaux de déploiement et comptes suivis, réunis. Clique une fiche pour son historique 360.</div></div>
       <div class="filters">
         <label class="search" style="max-width:240px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><input id="ff-q" placeholder="Rechercher une entreprise..."></label>
-        <div class="facet"><select id="ff-tri"><option value="activite">Activité récente</option><option value="marches">Marchés gagnés</option><option value="signaux">Signaux</option><option value="valeur">Valeur</option><option value="theatres">Présence</option></select></div>
+        <div class="facet"><select id="ff-tri"><option value="priorite">Priorité commerciale</option><option value="activite">Activité récente</option><option value="marches">Marchés gagnés</option><option value="signaux">Signaux</option><option value="valeur">Valeur</option><option value="theatres">Présence</option></select><button class="chip-toggle" id="ff-sens" onclick="inverserTriFirmo()" title="Inverser l'ordre">↓ décroissant</button></div>
         <div class="seg" id="ff-etr"><button data-e="" class="on">Toutes</button><button data-e="1">Étrangères</button></div>
         <button class="chip-toggle" id="ff-suivis" onclick="toggleSuivis()">👁 Suivies</button>
         <span class="chip-clear" id="ff-count"></span>
@@ -1216,7 +1221,10 @@ tbody tr{transition:.1s;cursor:pointer}tbody tr:hover{background:var(--surface-2
         <div class="doss-explain-ic">📁</div>
         <div><b>Un dossier suit un même projet Banque Mondiale à travers ses phases</b> : étude amont, avis d'appel d'offres, puis attribution. Le rattachement est automatique via l'identifiant projet BM (<span class="mono-inline">P######</span>), sans rapprochement de texte. Par défaut, seuls les dossiers <b>multi-phases</b> sont affichés (là où on voit le marché évoluer). Chaque ligne de la frise est cliquable.</div>
       </div>
-      <div class="filters"><div class="seg" id="d-mp"><button data-m="1" class="on">Suivi actif (2+ phases)</button><button data-m="">Tous (dont mono-phase)</button></div><span class="chip-clear" id="d-count"></span></div>
+      <div class="filters"><div class="seg" id="d-mp"><button data-m="1" class="on">Suivi actif (2+ phases)</button><button data-m="">Tous (dont mono-phase)</button></div>
+        <div class="facet"><select id="d-tri"><option value="score">Meilleur score</option><option value="phases">Avancement</option><option value="signaux">Nombre de signaux</option><option value="titre">Nom du projet</option></select></div>
+        <button class="chip-toggle" id="d-sens" onclick="inverserTriDoss()" title="Inverser l'ordre">↓ décroissant</button>
+        <span class="chip-clear" id="d-count"></span></div>
       <div id="doss-body"></div>
     </section>
     <section class="view" id="v-proj">
@@ -1585,6 +1593,20 @@ const SECT_COLORS={"Génie civil / BTP":"#8E2649","Eau / assainissement":"#33628
 // etre verte dans un tableau et rouge sur la carte, comme c'etait le cas.
 const PRIO_COLOR={contacter:"#8E2649",surveiller:"#B07419",ignorer:"#8B93A2"};
 const PRIO_LBL={contacter:"À contacter",surveiller:"À surveiller",ignorer:"À écarter"};
+// INDICATEUR DE TRI (08/09/2026). Les trois tables etaient triables, et les
+// quinze fleches « ↕ » restaient IDENTIQUES quelle que soit la colonne active :
+// impossible de savoir sur quoi la liste etait triee, ni dans quel sens. Un tri
+// invisible revient a ne pas avoir de tri -- on reclique au hasard pour
+// deviner.
+// Une seule fonction pour les trois tables : trois variantes divergeraient.
+function majTri(selecteur, attribut, cle, dir){
+  document.querySelectorAll(selecteur).forEach(th=>{
+    const actif = th.dataset[attribut] === cle;
+    th.classList.toggle("tri-on", actif);
+    const f = th.querySelector(".ar");
+    if(f) f.textContent = actif ? (dir > 0 ? "▲" : "▼") : "↕";
+  });
+}
 // Les collecteurs stockent des enums (« court_terme », « fort »). Elles
 // fuyaient telles quelles dans le tiroir : on les traduit a l'affichage, sans
 // jamais toucher a la donnee stockee.
@@ -1857,6 +1879,7 @@ function renderTable(){
   }).join("")||'<tr><td colspan="7" class="empty">Aucun marché ne correspond à ces filtres. Essaie « Tout » ou réinitialise.</td></tr>';
   const val=rows.reduce((s,l)=>s+l.valeur,0);
   const nNeuf=rows.filter(estNouveau).length;
+  majTri("thead th[data-sort]", "sort", state.sort, state.dir);
   document.getElementById("tbl-count").textContent=rows.length+" marché"+(rows.length>1?"s":"")
     +(nNeuf?" · "+nNeuf+" nouveau"+(nNeuf>1?"x":"")+" ce run":"")
     +(val?" · "+fmtEur(val)+" de montants chiffrés":"");
@@ -1907,8 +1930,9 @@ function renderAttrib(){
     // « attribué » n'est pas une priorite : pastille NEUTRE. Elle etait rendue
     // avec la classe « contacter », qui porte la couleur d'un lead a traiter.
     const st=l.renouv==="imminent"?'<span class="mb renouv">renouv. imminent</span>':l.renouv==="a_venir"?'<span class="mb renouv">renouv. à venir</span>':'<span class="pill neutre">attribué</span>';
-    return `<tr onclick="openDrawer(${l.id})"><td><strong>${esc(l.titulaire||"—")}</strong>${inc}</td><td><div class="t-title" style="max-width:240px">${esc(l.titre)}</div></td><td class="t-date">${relDate(l)}</td><td>${l.zone}<div class="t-sub">${l.pays}</div></td><td>${l.pays_tit?`<span class="tag-orig">${esc(l.pays_tit)}</span>${l.etranger?' <span class="flag">étr.</span>':""}`:'<span class="t-sub">origine n.c.</span>'}</td><td class="t-val">${fmtEur(l.valeur)}</td><td>${neuf}${st}</td></tr>`;
-  }).join("")||`<tr><td colspan="7" class="empty">${tous.length?"Aucune attribution ne correspond à ces filtres.":"Aucune attribution collectée pour l'instant."}</td></tr>`;
+    return `<tr onclick="openDrawer(${l.id})"><td><strong>${esc(l.titulaire||"—")}</strong>${inc}</td><td><div class="t-title" style="max-width:240px">${esc(l.titre)}</div></td><td class="t-date">${relDate(l)}</td><td>${l.zone}<div class="t-sub">${l.pays}</div></td><td>${l.pays_tit?`<span class="tag-orig">${esc(l.pays_tit)}</span>${l.etranger?' <span class="flag">étr.</span>':""}`:'<span class="t-sub">origine n.c.</span>'}</td><td class="t-val">${fmtEur(l.valeur)}</td><td>${celluleScore(l)}</td><td>${neuf}${st}</td></tr>`;
+  }).join("")||`<tr><td colspan="8" class="empty">${tous.length?"Aucune attribution ne correspond à ces filtres.":"Aucune attribution collectée pour l'instant."}</td></tr>`;
+  majTri("thead th[data-asort]", "asort", attribState.sort, attribState.dir);
   const sansOrig=at.filter(l=>!l.pays_tit).length;
   document.getElementById("attrib-count").textContent=at.length+" attribution"+(at.length>1?"s":"")
     +(sansOrig?" · "+sansOrig+" sans origine identifiée":"");
@@ -2066,7 +2090,16 @@ function ouvrirMotifPerte(l){
 function rechercherEnt(nom){closeDrawer();state.q=nom;document.getElementById("search").value=nom;go("opps");renderTable();}
 // --- ENTREPRISES 360 : dedup transverse par entite (ent_cle), toutes sources ---
 const TACT_LBL={delegation_mission:"délégation / mission",recrutement_local:"recrutement",contrat_export:"contrat export",implantation:"implantation",livraison_mise_en_service:"mise en service",formation_mco:"formation / MCO",essais_demonstration:"essais",incident:"incident",autre:"signal"};
-let firmoState={tri:"activite",etr:"",suivis:false,q:""};
+// `tri` demarre sur la PRIORITE COMMERCIALE : c'est la question que l'onglet
+// doit repondre en premier (« lesquels valent d'etre travailles »), pas
+// « lesquels ont bouge recemment ».
+let firmoState={tri:"priorite",etr:"",suivis:false,q:"",dir:1};
+function inverserTriFirmo(){
+  firmoState.dir=-firmoState.dir;
+  const b=document.getElementById("ff-sens");
+  if(b)b.textContent=firmoState.dir>0?"↓ décroissant":"↑ croissant";
+  renderFirmo();
+}
 // Cle canonique : ent_cle precalcule serveur (source de verite). Repli minuscules.
 function cleEnt(nom,entcle){return (entcle||"").trim()||String(nom||"").trim().toLowerCase();}
 const WL_CLES=new Set(WATCHLIST.map(w=>cleEnt(w.entreprise,w.ent_cle)).filter(Boolean));
@@ -2109,13 +2142,30 @@ function entreprises(){
   });
 }
 function toggleSuivis(){firmoState.suivis=!firmoState.suivis;document.getElementById("ff-suivis").classList.toggle("on",firmoState.suivis);renderFirmo();}
+// Couleur de la priorite : la meme echelle que partout ailleurs dans l'app.
+// Un vert a 40 et un rouge a 80 selon l'ecran rendrait les chiffres illisibles.
+function prioCouleur(n){return n>=70?"var(--green)":n>=45?"var(--amber)":"var(--ink-3)";}
 function renderFirmo(){
   let ent=entreprises();
   if(firmoState.etr)ent=ent.filter(e=>e.etranger);
   if(firmoState.suivis)ent=ent.filter(e=>e.suivi);
   if(firmoState.q){const q=firmoState.q.toLowerCase();ent=ent.filter(e=>e.nom.toLowerCase().includes(q));}
-  const t=firmoState.tri;
-  ent.sort((a,b)=>t==="valeur"?b.valeur-a.valeur:t==="theatres"?b.zones.size-a.zones.size:t==="marches"?b.marches.length-a.marches.length:t==="signaux"?b.signaux.length-a.signaux.length:(b.lastTs-a.lastTs)||(b.activite-a.activite));
+  // TRI PAR PRIORITE COMMERCIALE (08/09/2026). L'onglet proposait valeur,
+  // theatres, marches, signaux -- que des VOLUMES. Aucun ne dit si le compte
+  // vaut d'etre travaille : une entreprise a 12 marches en France vaut moins
+  // qu'une entreprise a 2 marches au Sahel avec des expatries. La priorite
+  // existait deja (comptes.priorite_compte, P2.5), elle n'etait ni affichee
+  // ni triable.
+  const cle=(e)=>(COMPTES[e.cle]||{}).priorite||0;
+  const val=(e)=>{const t=firmoState.tri;
+    return t==="valeur"?e.valeur:t==="theatres"?e.zones.size
+      :t==="marches"?e.marches.length:t==="signaux"?e.signaux.length
+      :t==="activite"?e.lastTs:cle(e);};
+  const d=firmoState.dir;
+  // Depart de tri stable : a valeur egale, la priorite commerciale departage,
+  // puis le nom. Sans cela l'ordre changeait d'un rendu a l'autre et donnait
+  // l'impression que la liste bougeait toute seule.
+  ent.sort((a,b)=>((val(b)-val(a))*d)||(cle(b)-cle(a))||a.nom.localeCompare(b.nom));
   const nSuivis=ent.filter(e=>e.suivi).length;
   document.getElementById("ff-count").textContent=ent.length+" entreprise"+(ent.length>1?"s":"")+" · "+nSuivis+" suivie"+(nSuivis>1?"s":"");
   document.getElementById("firmo-grid").innerHTML=ent.map(e=>{
@@ -2125,7 +2175,8 @@ function renderFirmo(){
     return `<div class="fcard" onclick="openFiche('${e.cle.replace(/'/g,"\\'")}')">
       <div class="fcard-top"><div class="fmono">${ini}</div><div style="min-width:0"><div class="fname">${esc(e.nom)}</div><div class="fmeta">${e.origine?esc(e.origine)+(e.originesAutres.length?'<span class="fmeta-warn" title="Sources divergentes : '+esc(e.originesAutres.join(", "))+'"> ?</span>':""):"origine n.c."}${e.secteurSuivi?' · <span class="fmeta-sect">'+esc(e.secteurSuivi)+'</span>':""}</div></div></div>
       <div class="fbadges">${b||'<span class="fbadge zero">à qualifier</span>'}</div>
-      <div class="fstats"><div class="fstat"><div class="n">${e.marches.length}</div><div class="l">gagnés</div></div><div class="fstat"><div class="n">${e.signaux.length}</div><div class="l">signaux</div></div><div class="fstat"><div class="n">${z.length}</div><div class="l">théâtres</div></div><div class="fstat"><div class="n">${e.valeur?fmtEur(e.valeur):"—"}</div><div class="l">valeur</div></div></div>
+      <div class="fstats"><div class="fstat"><div class="n" style="color:${prioCouleur(cle(e))}">${cle(e)||"—"}</div><div class="l">priorité</div></div><div class="fstat"><div class="n">${e.marches.length}</div><div class="l">gagnés</div></div><div class="fstat"><div class="n">${e.signaux.length}</div><div class="l">signaux</div></div><div class="fstat"><div class="n">${z.length}</div><div class="l">théâtres</div></div><div class="fstat"><div class="n">${e.valeur?fmtEur(e.valeur):"—"}</div><div class="l">valeur</div></div></div>
+      <div class="fprio" title="${esc(((COMPTES[e.cle]||{}).motifs||[]).join(" · "))}">${esc((((COMPTES[e.cle]||{}).motifs)||["priorité non calculée"])[0])}</div>
       <div class="fchips">${z.slice(0,3).map(x=>`<span class="fchip">${x}</span>`).join("")}${s.slice(0,2).map(x=>`<span class="fchip">${x}</span>`).join("")}${e.contact?'<span class="fchip" style="color:var(--green)">contact ✓</span>':""}</div>
     </div>`;
   }).join("")||'<div class="empty">Aucune entreprise pour ces filtres.</div>';
@@ -2318,6 +2369,7 @@ function renderProj(){
         +`<td class="t-date">${p.derniere?relDate({ts:p.ts,mois:p.derniere}):"n.c."}</td>`
         +`<td class="t-sub">${p.fDebut?esc(p.fDebut+"-"+p.fFin)+'<div class="t-sub">confiance '+esc(p.fConf)+'</div>':"—"}</td></tr>`;
     }).join("")||'<tr><td colspan="8" class="empty">Aucun projet suivi. Active le collecteur Project Intelligence (RADAR_PROJETS=1) pour peupler cette vue.</td></tr>';
+    majTri("thead th[data-psort]", "psort", projState.sort, projState.dir);
     document.getElementById("proj-count").textContent=ps.length+" projet"+(ps.length>1?"s":"")+(projState.top?" (top 20 par opportunité)":"");
   }catch(err){
     document.getElementById("tbody-proj").innerHTML='<tr><td colspan="8" class="empty">Affichage des projets indisponible ('+esc(err&&err.message)+').</td></tr>';
@@ -2385,7 +2437,22 @@ function renderGeo(){
   }).join("");
 }
 // --- DOSSIERS (ecosysteme) : projets BM suivis a travers leurs phases ---
-let dossState={mp:"1"};
+// Les dossiers etaient affiches dans l'ordre BRUT du serveur : le plus gros
+// projet pouvait etre en quinzieme position. « Meilleur score » par defaut,
+// comme partout ailleurs : l'onglet doit repondre a « lequel travailler ».
+let dossState={mp:"1",tri:"score",dir:1};
+function inverserTriDoss(){
+  dossState.dir=-dossState.dir;
+  const b=document.getElementById("d-sens");
+  if(b)b.textContent=dossState.dir>0?"↓ décroissant":"↑ croissant";
+  renderDoss();
+}
+// Score d'un dossier : le MEILLEUR de sa timeline. Un projet vaut ce que vaut
+// son signal le plus fort, pas la moyenne de ses signaux -- une moyenne
+// punirait un dossier riche en signaux faibles autour d'un signal majeur.
+function scoreDossier(d){
+  return Math.max(0, ...((d.timeline||[]).map(l=>+l.score||0)));
+}
 const PH_LBL={amont:"Amont",avis:"Appel d'offres",attribution:"Attribution"};
 const PH_ORD=["amont","avis","attribution"];
 function leadDeTimeline(tl){
@@ -2398,6 +2465,16 @@ function renderDoss(){
     if(dossState.mp)ds=ds.filter(d=>d.n_phases>=2);
     const multi=DOSSIERS.filter(d=>d.n_phases>=2).length;
     document.getElementById("d-count").textContent=ds.length+" dossier"+(ds.length>1?"s":"")+" · "+multi+" multi-phases";
+    const t=dossState.tri, dd=dossState.dir;
+    const val=(d)=>t==="phases"?(d.phases_presentes||[]).length
+      :t==="signaux"?(d.n_leads||0):t==="titre"?0:scoreDossier(d);
+    ds.sort((a,b)=>{
+      if(t==="titre")return (a.titre||"").localeCompare(b.titre||"")*dd;
+      // Depart stable : a valeur egale, le score puis le titre departagent,
+      // sinon l'ordre bouge d'un rendu a l'autre sans raison visible.
+      return ((val(b)-val(a))*dd)||(scoreDossier(b)-scoreDossier(a))
+             ||(a.titre||"").localeCompare(b.titre||"");
+    });
     const vide=dossState.mp
       ? 'Aucun dossier multi-phases pour l\'instant. Un dossier devient « multi-phases » quand au moins deux étapes d\'un même projet BM (amont, avis, attribution) sont détectées. Bascule sur « Tous » pour voir les projets à une seule phase.'
       : 'Aucun dossier constitué pour l\'instant. Les dossiers se remplissent au fil des runs, à mesure que les phases partagent le même identifiant projet BM.';
@@ -2516,7 +2593,9 @@ document.getElementById("ff-q").oninput=e=>{firmoState.q=e.target.value;renderFi
     const k=th.dataset.psort;projState.dir=(projState.sort===k)?-projState.dir:-1;
     projState.sort=k;renderProj();});
 })();
-(function(){document.getElementById("cnt-doss").textContent=DOSSIERS.filter(d=>d.n_phases>=2).length;document.querySelectorAll("#d-mp button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#d-mp button").forEach(x=>x.classList.remove("on"));b.classList.add("on");dossState.mp=b.dataset.m;renderDoss();});})();
+(function(){document.getElementById("cnt-doss").textContent=DOSSIERS.filter(d=>d.n_phases>=2).length;document.querySelectorAll("#d-mp button").forEach(b=>b.onclick=()=>{document.querySelectorAll("#d-mp button").forEach(x=>x.classList.remove("on"));b.classList.add("on");dossState.mp=b.dataset.m;renderDoss();});
+  const dt=document.getElementById("d-tri");
+  if(dt)dt.onchange=e=>{dossState.tri=e.target.value;renderDoss();};})();
 initFilters();initAttribFiltres();go("overview");
 </script>
 </body>
