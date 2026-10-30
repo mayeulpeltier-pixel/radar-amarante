@@ -1,0 +1,53 @@
+name: Sonde DECP IE (IE-1)
+# Diagnostic ponctuel, DECLENCHEMENT MANUEL UNIQUEMENT (workflow_dispatch).
+# Ne touche a RIEN : ni Google Sheet, ni Postgres, ni etat, ni dashboard.
+# N'appelle AUCUN LLM (cout zero). Lit les DECP consolidees (decp.info,
+# Parquet quotidien sur data.gouv.fr, ~230 Mo) et repond a six questions :
+#   1. volume et montants des marches IE attribues ;
+#   2. echeances a venir (24 mois) et recentes (6 mois) : renouvellements ;
+#   3. portefeuille Amarante (tous SIRET, titres opaques compris) ;
+#   4. portefeuilles ADIT, Decidento, Explore (leurs acheteurs = prospects) ;
+#   5. rappel sur AURA, Nice, Hauts-de-France, Nouvelle-Aquitaine ;
+#   6. couverture (duree et titulaire connus).
+# Verdicts : EXPLOITABLE, LIMITE, COUVERTURE A VERIFIER, INFAISABLE,
+# NON CONCLU (fichier non charge : pas un verdict).
+#
+# DuckDB est installe ICI seulement (sonde jetable) : il n'entre pas dans
+# requirements-radar.txt, et le test de chargement se saute dans la CI
+# principale.
+#
+# UTILISATION : Actions > "Sonde DECP IE (IE-1)" > Run workflow.
+# RESULTAT : onglet Summary + artefact "sonde-decp-ie" (rapport.md, marches.csv).
+on:
+  workflow_dispatch:
+jobs:
+  sonde-decp-ie:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer DuckDB (sonde uniquement)
+        run: pip install duckdb==1.1.3
+      - name: Telecharger les DECP consolidees (Parquet)
+        run: |
+          curl -fL --retry 3 --retry-delay 10 -o decp.parquet \
+            "https://www.data.gouv.fr/api/1/datasets/r/11cea8e8-df3e-4ed1-932b-781e2635e432"
+          ls -lh decp.parquet
+      - name: Sonder les DECP sur le lexique IE
+        env:
+          SONDE_DECP_FICHIER: decp.parquet
+          SONDE_SORTIE: sonde_decp_ie_sortie
+        run: python sonde_decp_ie.py
+      - name: Conserver le rapport
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonde-decp-ie
+          path: sonde_decp_ie_sortie/
+          if-no-files-found: warn
+          retention-days: 30
