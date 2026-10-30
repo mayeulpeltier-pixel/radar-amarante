@@ -37,6 +37,19 @@ MODE VERIFICATION (a utiliser au premier run)
     structure BRUTE des premieres lignes. C'est ce second point qui permet de
     corriger le parseur sur donnees reelles si l'interpretation deraille.
 
+CHANGEMENT DU PORTAIL (constate le 30/10/2026)
+-----------------------------------------------
+Toutes les requetes recevaient HTTP 400 ("0 ligne | 60 pays interroges dont 0
+avec des avis"), en silence : un pays en erreur etait saute sans message.
+Deux exigences nouvelles, relevees dans le script du portail (UNGM.js,
+ungmcommon) et verifiees par appels reels :
+  1. JETON ANTI-FALSIFICATION : la page publique porte un champ cache
+     __RequestVerificationToken ; le portail le renvoie dans l'en-tete
+     RequestVerificationToken (avec le cookie pose par la meme page). Sans
+     lui : HTTP 400.
+  2. PageSize <= 15 (la valeur du portail) : 20, 25, 30, 50 -> HTTP 400.
+Les erreurs HTTP sont desormais comptees et affichees.
+
 Interrupteur : RADAR_UNGM=0 desactive la collecte.
 Fenetre      : RADAR_UNGM_JOURS (defaut 45 jours de publication).
 
@@ -66,11 +79,16 @@ LIEN_AVIS = "https://www.ungm.org/Public/Notice/{}"
 
 JOURS_FENETRE = int(os.environ.get("RADAR_UNGM_JOURS", "45"))
 PAGES_MAX = int(os.environ.get("RADAR_UNGM_PAGES", "8"))
-TAILLE_PAGE = int(os.environ.get("RADAR_UNGM_TAILLE", "50"))
+# Plafond impose par le portail depuis octobre 2026 (au-dela : HTTP 400). Une
+# variable d'environnement plus grande est ramenee a 15 plutot que de casser.
+TAILLE_MAX_PORTAIL = 15
+TAILLE_PAGE = min(int(os.environ.get("RADAR_UNGM_TAILLE", "15")), TAILLE_MAX_PORTAIL)
 BUDGET_LLM = int(os.environ.get("RADAR_UNGM_BUDGET", "60"))
 # Collecte pays par pays : nombre de pays interroges et pages par pays.
 PAYS_MAX = int(os.environ.get("RADAR_UNGM_PAYS_MAX", "60"))
-PAGES_PAR_PAYS = int(os.environ.get("RADAR_UNGM_PAGES_PAYS", "3"))
+# 6 pages de 15 (90 avis) au lieu de 3 de 50 : la pagination s'arrete d'elle-
+# meme des qu'une page sort de la fenetre de publication (voir collecte_par_pays).
+PAGES_PAR_PAYS = int(os.environ.get("RADAR_UNGM_PAGES_PAYS", "6"))
 # Garde-temps : cette boucle fait une requete par pays. Sans borne, elle
 # pourrait manger le budget du job (45 min) et tuer dashboard et digest.
 MINUTES_MAX = float(os.environ.get("RADAR_UNGM_MINUTES", "12"))
@@ -101,11 +119,54 @@ ENTETES = {
     "Referer": PAGE_PUBLIQUE,
 }
 
-# Charge utile validee par la sonde (HTTP 200, ~95 Ko de lignes).
+# --- Jeton anti-falsification (exige depuis octobre 2026) ------------------
+RE_JETON = re.compile(
+    r'name="__RequestVerificationToken"[^>]*\bvalue="([^"]+)"', re.I)
+_JETON = {"valeur": ""}
+
+
+def lire_jeton(html_page):
+    """Jeton du premier formulaire de la page publique, '' si absent."""
+    m = RE_JETON.search(str(html_page or ""))
+    return m.group(1) if m else ""
+
+
+def retenir_jeton(html_page):
+    """Memorise le jeton lu dans la page publique. Garde l'ancien si la page
+    n'en contient pas (une page degradee ne doit pas effacer un bon jeton)."""
+    jeton = lire_jeton(html_page)
+    if jeton:
+        _JETON["valeur"] = jeton
+    return jeton
+
+
+def assurer_jeton(session):
+    """Charge la page publique si aucun jeton n'est encore connu. Le cookie
+    associe reste dans `session` (requests.Session) : la recherche doit
+    passer par la MEME session."""
+    if _JETON["valeur"]:
+        return _JETON["valeur"]
+    try:
+        rep = session.get(PAGE_PUBLIQUE, headers=ENTETES, timeout=45)
+        return retenir_jeton(rep.text)
+    except Exception as e:
+        print("(ungm) jeton anti-falsification illisible ({}).".format(e))
+        return ""
+
+
+def entetes_recherche():
+    """En-tetes d'un POST de recherche : ceux de la page + JSON + jeton."""
+    entetes = dict(ENTETES, **{"Content-Type": "application/json"})
+    if _JETON["valeur"]:
+        entetes["RequestVerificationToken"] = _JETON["valeur"]
+    return entetes
+
+
+# Charge utile du formulaire public (BuildOptions, verifie le 30/10/2026).
 def charge_recherche(page=0, taille=None):
     return {
         "PageIndex": page,
-        "PageSize": taille or TAILLE_PAGE,
+        "PageSize": min(taille or TAILLE_PAGE, TAILLE_MAX_PORTAIL),
         "Title": "", "Description": "", "Reference": "",
         "NoticeTypes": [], "Agencies": [], "Countries": [], "UNSPSCs": [],
         "SortField": "DatePublished", "SortAscending": False,
@@ -367,6 +428,7 @@ def charger_pays_ungm(session=None, fetch=None):
     except Exception as e:
         print("(ungm) liste des pays illisible ({}).".format(e))
         return {}
+    retenir_jeton(html)     # meme page, meme session : le jeton de recherche
 
     table = {}
     for valeur, libelle in RE_OPTION.findall(html or ""):
@@ -574,6 +636,8 @@ def collecte(session=None, fetch=None):
     session = session or ted.session_robuste()
     lignes, stats = [], {"pages": 0, "lignes": 0, "arret": "plafond de pages"}
     vus = set()
+    if fetch is None:
+        assurer_jeton(session)
     for page in range(PAGES_MAX):
         try:
             if fetch is not None:
@@ -582,7 +646,7 @@ def collecte(session=None, fetch=None):
                 rep = session.post(
                     ENDPOINT_RECHERCHE,
                     data=_json.dumps(charge_recherche(page)).encode("utf-8"),
-                    headers=dict(ENTETES, **{"Content-Type": "application/json"}),
+                    headers=entetes_recherche(),
                     timeout=45)
                 if rep.status_code >= 400:
                     print("(ungm) page {} : HTTP {}, arret.".format(page, rep.status_code))
@@ -609,6 +673,16 @@ def collecte(session=None, fetch=None):
     return lignes, stats
 
 
+def page_hors_fenetre(lot):
+    """Vrai si la DERNIERE ligne d'une page (la plus ancienne, tri par date de
+    publication decroissante) sort de la fenetre. Les pages suivantes seraient
+    toutes hors fenetre : inutile de les demander."""
+    if not lot:
+        return False
+    d = interpreter_ligne(lot[-1].get("cellules") or []).get("date_publication")
+    return bool(d) and not dans_la_fenetre(d)
+
+
 def collecte_par_pays(session=None, fetch=None, table_pays=None):
     """Interroge UNGM PAYS PAR PAYS. Chaque ligne obtenue est etiquetee avec le
     pays demande : l'attribution est certaine, plus aucune devinette.
@@ -622,10 +696,13 @@ def collecte_par_pays(session=None, fetch=None, table_pays=None):
     cibles = pays_a_interroger(table)
     lignes, vus = [], set()
     stats = {"pays_interroges": 0, "pays_avec_avis": 0, "lignes": 0,
-             "requetes": 0, "arret": "termine"}
+             "requetes": 0, "arret": "termine", "erreurs_http": {},
+             "arrets_fenetre": 0}
     if not cibles:
         stats["arret"] = "aucun pays exploitable"
         return lignes, stats
+    if fetch is None:
+        assurer_jeton(session)
 
     debut = _time.time()
     for iso, ident in cibles:
@@ -644,10 +721,14 @@ def collecte_par_pays(session=None, fetch=None, table_pays=None):
                     rep = session.post(
                         ENDPOINT_RECHERCHE,
                         data=_json.dumps(charge).encode("utf-8"),
-                        headers=dict(ENTETES, **{"Content-Type": "application/json"}),
+                        headers=entetes_recherche(),
                         timeout=45)
                     stats["requetes"] += 1
                     if rep.status_code >= 400:
+                        # Compte, au lieu de sauter en silence : c'est ce
+                        # silence qui a masque la panne d'octobre 2026.
+                        code = str(rep.status_code)
+                        stats["erreurs_http"][code] = stats["erreurs_http"].get(code, 0) + 1
                         break
                     texte = rep.text
             except Exception:
@@ -660,6 +741,9 @@ def collecte_par_pays(session=None, fetch=None, table_pays=None):
             lignes.extend(nouvelles)
             if len(lot) < TAILLE_PAGE or not nouvelles:
                 break                      # derniere page pour ce pays
+            if page_hors_fenetre(lot):
+                stats["arrets_fenetre"] += 1
+                break                      # tri par date decroissante : la suite est plus ancienne
         if len(lignes) > avant:
             stats["pays_avec_avis"] += 1
     stats["lignes"] = len(lignes)
@@ -876,6 +960,9 @@ def main():
               "{} requetes (arret : {}).".format(
                   stats["lignes"], stats["pays_interroges"],
                   stats["pays_avec_avis"], stats["requetes"], stats["arret"]))
+        print("  jeton anti-falsification : {} | erreurs HTTP : {}".format(
+            "present" if _JETON["valeur"] else "ABSENT",
+            stats["erreurs_http"] or "aucune"))
     else:
         # Repli : le formulaire a change. On collecte globalement et on devine
         # le pays, ce qui est moins fiable mais vaut mieux que rien.
