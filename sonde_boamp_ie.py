@@ -1,131 +1,113 @@
 # -*- coding: utf-8 -*-
 """
-Radar Amarante - Sonde jetable IE-0 : le BOAMP porte-t-il assez de marches
-d'intelligence economique pour justifier un collecteur dedie ?
+Radar Amarante - Sonde jetable IE-1 : que disent les DECP (donnees
+essentielles de la commande publique) du marche de l'intelligence economique ?
 
-Diagnostic ponctuel, declenchement MANUEL (workflow sonde_boamp_ie.yml).
+Diagnostic ponctuel, declenchement MANUEL (workflow sonde_decp_ie.yml).
 Ne touche a RIEN : ni Google Sheet, ni Postgres, ni etat, ni dashboard.
 N'appelle AUCUN LLM (cout zero).
 
-Cinq questions, une reponse chiffree chacune :
-  1. VOLUME     : combien d'avis IE sur la fenetre (avis de marche / resultats) ?
-  2. BRUIT      : quelle part releve du sondage, de la statistique, du tourisme ?
-  3. RAPPEL     : retrouve-t-on les marches de reference (AURA 24-80762,
-                  Nice 24-99592) ? S'ils manquent, le lexique est faux.
-  4. CONCURRENCE: qui sont les titulaires des marches IE attribues ?
-  5. CPV        : sous quels codes ces marches sont-ils publies ?
+Source : DECP consolidees de decp.info (Colin Maudry), publiees chaque jour
+ouvre sur data.gouv.fr en Parquet, licence ouverte. Une ligne par marche,
+par version (modification) et par titulaire. Schema verifie dans
+reference/schema_base.json du depot ColinMaudry/decp-processing.
 
-Perimetre = decision D1 du 30/10/2026 : IE + Conformite. Les etudes
-geopolitiques et observatoires sont classes HORS PERIMETRE (reserves a la
-future lentille Analyste), sans exclusion par mot-cle du titre : un
-"observatoire de la securite economique" reste de l'IE.
+Six questions :
+  1. VOLUME       : combien de marches IE attribues, par an, pour quels montants ?
+  2. RENOUVELLEMENT : lesquels arrivent a echeance dans les 24 mois (ou viennent
+                    d'expirer) ? C'est la sortie commerciale principale.
+  3. AMARANTE     : quel portefeuille, sous quels SIRET, avec quelle part de
+                    titres que le lexique ne voit pas (titres opaques) ?
+  4. CONCURRENTS  : portefeuilles d'ADIT, Decidento, Explore ; leurs acheteurs
+                    sont des prospects IE prouves.
+  5. RAPPEL       : retrouve-t-on AURA, Nice, Hauts-de-France, Nouvelle-Aquitaine ?
+  6. COUVERTURE   : part des marches IE avec une duree et un titulaire connus.
 
-Methode : recherche plein texte cote serveur (API Opendatasoft de la DILA,
-sans cle, licence ouverte 2.0), puis CONFIRMATION LOCALE de l'expression
-exacte. La recherche serveur ratisse large (mots dans n'importe quel ordre) ;
-seule la confirmation locale compte dans les chiffres. L'ecart entre les deux
-mesure le bruit serveur, utile pour dimensionner le futur collecteur.
+Lexique = IE-0 corrige (probite, integrite des tiers, veille sectorielle,
+exclusion due diligence immobiliere, revue de presse en terme ambigu).
+Perimetre D1 : IE + Conformite, etudes geopolitiques hors perimetre.
 """
 
 import csv
 import datetime
-import json
 import os
 import re
-import time
 import unicodedata
-from collections import Counter
-
-try:  # import resilient : module absent -> pas de validation de division CPV
-    import cpv_reference
-    DIVISIONS_CPV = set(cpv_reference.DIVISIONS)
-except Exception:  # pragma: no cover - depend de l'environnement
-    DIVISIONS_CPV = set()
+from collections import Counter, defaultdict
 
 # ===========================================================================
 # CONFIGURATION
 # ===========================================================================
-URL_RECORDS = ("https://boamp-datadila.opendatasoft.com/api/explore/v2.1/"
-               "catalog/datasets/boamp/records")
-LIEN_AVIS = "https://www.boamp.fr/pages/avis/?q=idweb:{}"
-PAGE = 100            # plafond Opendatasoft par appel
-FENETRE_ODS = 10000   # offset + limit ne peut pas depasser cette valeur
-PAUSE = 0.3           # politesse entre deux pages
-
-
-def _entier_env(nom, defaut):
-    try:
-        return int(os.environ.get(nom) or defaut)
-    except ValueError:
-        return defaut
-
-
-# 32 mois par defaut : la fenetre doit couvrir les references de 2024
-# (AURA avis initial avril 2024, attribution juillet 2024, Nice septembre 2024).
-MOIS = _entier_env("SONDE_MOIS", 32)
-MAX_PAR_TERME = _entier_env("SONDE_MAX_PAR_TERME", 1000)
-SORTIE = os.environ.get("SONDE_SORTIE") or "sonde_boamp_ie_sortie"
-
-# Seuil de faisabilite (hypothese a discuter) : au moins 2 avis de marche par
-# mois dont le TITRE porte un terme fort, soit environ 24 AO exploitables / an.
-SEUIL_RYTHME_FAISABLE = 2.0
+URL_DECP_PARQUET = ("https://www.data.gouv.fr/api/1/datasets/r/"
+                    "11cea8e8-df3e-4ed1-932b-781e2635e432")
+FICHIER = os.environ.get("SONDE_DECP_FICHIER") or "decp.parquet"
+SORTIE = os.environ.get("SONDE_SORTIE") or "sonde_decp_ie_sortie"
+HORIZON_MOIS = 24        # echeances a venir prises en compte
+RETRO_MOIS = 6           # echeances recentes : remise en concurrence en cours
 
 # ===========================================================================
-# LEXIQUE (perimetre D1 : IE + Conformite)
+# LEXIQUE (IE-0 corrige)
 # ===========================================================================
-# (requete serveur, motif local normalise, niveau)
-#   fort      : un terme suffit a retenir l'avis
-#   a_mesurer : terme ambigu, compte a part pour en mesurer le bruit
 TERMES = [
-    ("intelligence économique", "intelligence economique", "fort"),
-    ("intelligence stratégique", "intelligence strategique", "fort"),
-    ("sécurité économique", "securite economique", "fort"),
-    ("renseignement économique", "renseignement economique", "fort"),
-    ("veille stratégique", "veille strategique", "fort"),
-    ("veille concurrentielle", "veille concurrentielle", "fort"),
-    ("veille économique", "veille economique", "fort"),
-    ("due diligence", "due diligence", "fort"),
-    ("diligence raisonnable", "diligence raisonnable", "fort"),
-    ("évaluation des tiers", "evaluation des tiers", "fort"),
-    ("cartographie des acteurs", "cartographie des acteurs", "fort"),
-    ("anticorruption", "anticorruption", "fort"),
-    ("anti-corruption", "anti-corruption", "fort"),
-    ("Sapin II", "sapin ii", "fort"),
-    ("Sapin 2", "sapin 2", "fort"),
-    ("OSINT", "osint", "fort"),
-    ("veille technologique", "veille technologique", "a_mesurer"),
-    ("veille réglementaire", "veille reglementaire", "a_mesurer"),
-    ("études sectorielles", "etudes sectorielles", "a_mesurer"),
-    ("intelligence territoriale", "intelligence territoriale", "a_mesurer"),
+    ("intelligence economique", "fort"),
+    ("intelligence strategique", "fort"),
+    ("securite economique", "fort"),
+    ("renseignement economique", "fort"),
+    ("veille strategique", "fort"),
+    ("veille concurrentielle", "fort"),
+    ("veille economique", "fort"),
+    ("veille sectorielle", "fort"),
+    ("due diligence", "fort"),
+    ("diligence raisonnable", "fort"),
+    ("evaluation des tiers", "fort"),
+    ("integrite des tiers", "fort"),
+    ("cartographie des acteurs", "fort"),
+    ("anticorruption", "fort"),
+    ("anti-corruption", "fort"),
+    ("probite", "fort"),
+    ("sapin ii", "fort"),
+    ("sapin 2", "fort"),
+    ("osint", "fort"),
+    ("veille technologique", "a_mesurer"),
+    ("veille reglementaire", "a_mesurer"),
+    ("etudes sectorielles", "a_mesurer"),
+    ("intelligence territoriale", "a_mesurer"),
+    ("revue de presse", "a_mesurer"),
+    ("veille media", "a_mesurer"),
 ]
-
-# Bruit connu des CPV 79311000 / 79300000 (sous-chaines, sur le TITRE).
 BRUIT = ("sondage", "satisfaction", "touris", "statistique", "barometre",
          "frequentation", "panel", "enquete telephonique", "recensement",
          "comptage", "evaluation de politique", "evaluation des politiques",
-         "evaluation du programme", "evaluation d'impact")
-
-# Perimetre Analyste (decision D1) : hors IE SAUF si le titre porte aussi un
-# terme du noyau IE.
+         "evaluation du programme", "evaluation d'impact", "hackathon")
+# Exclusions par combinaison : (terme present, ET sous-chaine presente).
+BRUIT_COMBINE = (("due diligence", "immobili"),)
 ANALYSTE = ("observatoire", "geopolitique", "geostrategique", "prospective")
 NOYAU_IE = ("intelligence economique", "intelligence strategique",
             "securite economique", "due diligence", "anticorruption",
             "anti-corruption")
 
-# Verite terrain : marches IE reels, publies au BOAMP.
-REFERENCES = {
-    "24-80762": "AURA Entreprises, cellule d'intelligence strategique "
-                "(attribution, gagne par Amarante)",
-    "24-39524": "AURA Entreprises, cellule d'intelligence strategique "
-                "(avis de marche initial)",
-    "24-99592": "Metropole Nice Cote d'Azur, prestations d'IE (avis de marche)",
-}
+# Titulaires surveilles (mot entier dans le nom). KPMG et EY sont exclus :
+# trop d'activite hors IE, ils apparaissent quand meme dans le classement
+# des titulaires de marches IE.
+AMARANTE = "amarante"
+CONCURRENTS = ("adit", "decidento", "explore")
+
+# Verite terrain (IE-0) : (libelle, mots requis dans l'acheteur, motif objet).
+REFERENCES = [
+    ("AURA Entreprises, cellule d'intelligence strategique (2024)",
+     ("auvergne",), "intelligence strategique"),
+    ("Metropole Nice Cote d'Azur, prestations d'IE (2025)",
+     ("nice",), "intelligence economique"),
+    ("Region Hauts-de-France, dispositif d'IE (2025)",
+     ("hauts",), "intelligence economique"),
+    ("Region Nouvelle-Aquitaine, feuille de route IE (2026)",
+     ("aquitaine",), "intelligence economique"),
+]
 
 # ===========================================================================
-# TEXTE
+# TEXTE ET CLASSEMENT
 # ===========================================================================
 def normaliser_texte(s):
-    """Minuscules, sans accents, apostrophes unifiees, espaces compactes."""
     s = unicodedata.normalize("NFKD", str(s or ""))
     s = "".join(c for c in s if not unicodedata.combining(c))
     s = s.replace("’", "'").replace("‘", "'").lower()
@@ -133,386 +115,341 @@ def normaliser_texte(s):
 
 
 def _contient_mot(texte_n, motif):
-    """Motif present en mot entier (pas 'osint' dans 'cosinus')."""
     return re.search(r"(?<![a-z0-9])" + re.escape(motif) + r"(?![a-z0-9])",
                      texte_n) is not None
 
 
-def _contient_un(texte_n, sous_chaines):
-    return any(x in texte_n for x in sous_chaines)
+def termes_trouves(texte_n):
+    return [(m, n) for m, n in TERMES if _contient_mot(texte_n, m)]
 
 
-def termes_trouves(texte_n, termes=TERMES):
-    """Liste (motif, niveau) des termes du lexique presents dans le texte."""
-    return [(m, n) for _, m, n in termes if _contient_mot(texte_n, m)]
-
-
-def classer(objet_n, corps_n):
-    """Classe d'un avis. Ordre de priorite :
-    hors_analyste > bruit > fort_objet > fort_corps > a_mesurer > sans_terme."""
-    t_objet = termes_trouves(objet_n)
-    t_corps = termes_trouves(corps_n)
-    if _contient_un(objet_n, ANALYSTE) and not any(
-            _contient_mot(objet_n, m) for m in NOYAU_IE):
+def classer(objet):
+    """hors_analyste > bruit > ie > a_mesurer > sans_terme."""
+    o = normaliser_texte(objet)
+    t = termes_trouves(o)
+    if any(x in o for x in ANALYSTE) and not any(_contient_mot(o, m) for m in NOYAU_IE):
         return "hors_analyste"
-    if _contient_un(objet_n, BRUIT):
+    if any(x in o for x in BRUIT) or any(
+            _contient_mot(o, a) and b in o for a, b in BRUIT_COMBINE):
         return "bruit"
-    if any(n == "fort" for _, n in t_objet):
-        return "fort_objet"
-    if any(n == "fort" for _, n in t_corps):
-        return "fort_corps"
-    if t_objet or t_corps:
+    if any(n == "fort" for _, n in t):
+        return "ie"
+    if t:
         return "a_mesurer"
     return "sans_terme"
 
 
-CLASSES_RETENUES = ("fort_objet", "fort_corps")
+def regex_sql(motifs):
+    """Regex RE2 (DuckDB) pour le pre-filtre serveur. \\b est une frontiere
+    ASCII : correcte ici car le texte est passe par strip_accents."""
+    return r"\b(" + "|".join(re.escape(m) for m in motifs) + r")\b"
+
 
 # ===========================================================================
-# EXTRACTION DEFENSIVE (les champs BOAMP varient selon les schemas d'avis)
+# CHARGEMENT (DuckDB, import paresseux : les tests n'en dependent pas)
 # ===========================================================================
-def _premier(rec, *cles):
-    """Premiere valeur non vide parmi plusieurs noms de champs possibles."""
-    for c in cles:
-        v = rec.get(c)
-        if isinstance(v, dict):
-            v = v.get("libelle") or v.get("valeur") or ""
-        if isinstance(v, (list, tuple)):
-            v = " ; ".join(str(x) for x in v if x)
-        if v not in (None, "", []):
-            return str(v).strip()
+COLONNES_UTILES = ("uid", "id", "objet", "acheteur_id", "acheteur_nom",
+                   "acheteur_region_nom", "titulaire_id", "titulaire_nom",
+                   "montant", "montant_rationalise", "codeCPV", "procedure",
+                   "dureeMois", "dureeRestanteMois", "offresRecues",
+                   "dateNotification", "donneesActuelles", "modification_id")
+
+
+def charger(chemin=FICHIER):
+    """Renvoie (lignes, colonnes_presentes, nb_lignes_total). Pre-filtre :
+    objet qui matche le lexique OU titulaire surveille. Les colonnes absentes
+    du fichier sont simplement ignorees (le schema publie peut evoluer)."""
+    import duckdb
+    con = duckdb.connect()
+    desc = con.execute("DESCRIBE SELECT * FROM read_parquet(?)", [chemin]).fetchall()
+    presentes = [d[0] for d in desc]
+    cols = [c for c in COLONNES_UTILES if c in presentes]
+    total = con.execute("SELECT count(*) FROM read_parquet(?)", [chemin]).fetchone()[0]
+    rx_objet = regex_sql([m for m, _ in TERMES])
+    rx_tit = regex_sql((AMARANTE,) + CONCURRENTS)
+    conds = ["(regexp_matches(lower(strip_accents(coalesce(CAST(objet AS VARCHAR), ''))), ?)"
+             " OR regexp_matches(lower(strip_accents(coalesce(CAST(titulaire_nom AS VARCHAR), ''))), ?))"]
+    if "donneesActuelles" in presentes:
+        conds.append("coalesce(donneesActuelles, true)")
+    q = "SELECT {} FROM read_parquet(?) WHERE {}".format(
+        ", ".join('"{}"'.format(c) for c in cols), " AND ".join(conds))
+    cur = con.execute(q, [chemin, rx_objet, rx_tit])
+    noms = [d[0] for d in cur.description]
+    lignes = [dict(zip(noms, r)) for r in cur.fetchall()]
+    return lignes, presentes, total
+
+
+# ===========================================================================
+# AGREGATION PAR MARCHE
+# ===========================================================================
+def _date(v):
+    if isinstance(v, datetime.datetime):
+        return v.date()
+    if isinstance(v, datetime.date):
+        return v
+    try:
+        return datetime.date.fromisoformat(str(v)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _nombre(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f else None  # ecarte NaN
+
+
+def ajouter_mois(d, mois):
+    m = d.month - 1 + int(mois)
+    annee, mois_ = d.year + m // 12, m % 12 + 1
+    jours = [31, 29 if annee % 4 == 0 and (annee % 100 != 0 or annee % 400 == 0) else 28,
+             31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mois_ - 1]
+    return datetime.date(annee, mois_, min(d.day, jours))
+
+
+def _montant(l):
+    """Montant rationalise (aberrations corrigees par decp.info), sinon declare."""
+    m = _nombre(l.get("montant_rationalise"))
+    return m if m is not None else _nombre(l.get("montant"))
+
+
+def _cle(l):
+    return l.get("uid") or "{}|{}|{}".format(l.get("acheteur_id"), l.get("id"),
+                                             normaliser_texte(l.get("objet"))[:80])
+
+
+def _titulaire_surveille(nom_n):
+    if _contient_mot(nom_n, AMARANTE):
+        return "amarante"
+    for c in CONCURRENTS:
+        if _contient_mot(nom_n, c):
+            return c
     return ""
 
 
-def texte_donnees(d):
-    """Le champ `donnees` est un blob JSON (eForms ou ancien schema), parfois
-    serialise en chaine. On le rend en texte lisible, accents compris."""
-    if not d:
-        return ""
-    if isinstance(d, str):
-        try:
-            d = json.loads(d)
-        except (ValueError, TypeError):
-            return d
-    try:
-        return json.dumps(d, ensure_ascii=False)
-    except (TypeError, ValueError):
-        return str(d)
-
-
-_RE_CPV = (
-    re.compile(r"cpv[^0-9]{0,60}?(?<!\d)(\d{8})(?!\d)", re.I),
-    re.compile(r"(?<!\d)(\d{8})(?!\d)[^0-9]{0,60}?cpv", re.I),
-)
-
-
-def extraire_cpv(texte):
-    """Codes CPV (8 chiffres) proches du mot 'cpv', dedoublonnes, dans
-    l'ordre d'apparition. Un SIRET (14 chiffres) n'est jamais capture."""
-    vus = []
-    for rx in _RE_CPV:
-        for m in rx.finditer(texte or ""):
-            code = m.group(1)
-            if DIVISIONS_CPV and code[:2] not in DIVISIONS_CPV:
-                continue
-            if code not in vus:
-                vus.append(code)
-    return vus
-
-
-def normaliser(rec):
-    """Avis brut -> dict compact. Le corps du texte n'est PAS conserve
-    (memoire) : classification et detections sont faites ici."""
-    idweb = _premier(rec, "idweb", "id")
-    objet = _premier(rec, "objet", "objet_complet", "titre_marche")
-    brut = texte_donnees(rec.get("donnees"))
-    corps = " ".join([objet, _premier(rec, "descripteur_libelle"), brut])
-    objet_n, corps_n = normaliser_texte(objet), normaliser_texte(corps)
-    nature = _premier(rec, "nature_libelle", "nature", "type_avis")
-    titulaire = _premier(rec, "titulaire", "titulaires", "nom_titulaire")
-    champ_cpv = _premier(rec, "code_cpv", "cpv")
-    cpv = extraire_cpv("cpv " + champ_cpv) if champ_cpv else []
-    cpv += [c for c in extraire_cpv(brut) if c not in cpv]
-    return {
-        "idweb": idweb,
-        "date": _premier(rec, "dateparution", "date_parution")[:10],
-        "nature": nature,
-        "resultat": _contient_un(normaliser_texte(nature),
-                                 ("resultat", "attribution")),
-        "procedure": _premier(rec, "procedure_libelle", "type_procedure",
-                              "procedure_categorise"),
-        "acheteur": _premier(rec, "nomacheteur", "acheteur", "nom_acheteur"),
-        "objet": objet[:300],
-        "titulaire": titulaire[:300],
-        "cpv": cpv,
-        "termes_objet": [m for m, _ in termes_trouves(objet_n)],
-        "termes_corps": [m for m, _ in termes_trouves(corps_n)],
-        "classe": classer(objet_n, corps_n),
-        "amarante": "amarante" in normaliser_texte(titulaire) or (
-            "amarante risk intelligence" in corps_n
-            or "amarante international" in corps_n),
-        "lien": _premier(rec, "url_avis") or (LIEN_AVIS.format(idweb) if idweb else ""),
-    }
-
-
-# ===========================================================================
-# COLLECTE (API Opendatasoft v2.1)
-# ===========================================================================
-def construire_where(requete, depuis):
-    """Recherche plein texte + borne de date (ODSQL)."""
-    return "\"{}\" AND dateparution >= date'{}'".format(
-        requete.replace('"', ""), depuis.isoformat())
-
-
-def _fetch_http(url, params):
-    import requests
-    derniere = None
-    for tentative in range(2):
-        try:
-            rep = requests.get(url, params=params, timeout=60)
-            if rep.status_code in (429, 500, 502, 503, 504) and tentative == 0:
-                time.sleep(3)
-                continue
-            if rep.status_code >= 400:
-                raise RuntimeError("HTTP {} : {}".format(
-                    rep.status_code, rep.text[:300]))
-            return rep.json()
-        except (requests.ConnectionError, requests.Timeout) as e:
-            derniere = e
-            time.sleep(3)
-    raise RuntimeError("API BOAMP injoignable ({})".format(derniere))
-
-
-def collecter(depuis, fetch=None, termes=TERMES, max_par_terme=None):
-    """Interroge chaque terme, pagine, dedoublonne par idweb.
-    Les erreurs sont COLLECTEES, jamais levees : un terme en echec
-    n'interrompt pas la sonde."""
-    fetch = fetch or _fetch_http
-    plafond = MAX_PAR_TERME if max_par_terme is None else max_par_terme
-    avis, par_terme, erreurs, champs = {}, {}, [], []
-    for requete, _, niveau in termes:
-        lus, total, offset = 0, None, 0
-        try:
-            while lus < plafond and offset + PAGE <= FENETRE_ODS:
-                params = {"where": construire_where(requete, depuis),
-                          "order_by": "dateparution desc",
-                          "limit": min(PAGE, plafond - lus), "offset": offset}
-                rep = fetch(URL_RECORDS, params) or {}
-                if total is None:
-                    total = rep.get("total_count")
-                resultats = rep.get("results") or []
-                if resultats and not champs:
-                    champs = sorted(resultats[0].keys())
-                for r in resultats:
-                    a = normaliser(r)
-                    if a["idweb"] and a["idweb"] not in avis:
-                        avis[a["idweb"]] = a
-                lus += len(resultats)
-                offset += PAGE
-                if len(resultats) < params["limit"]:
-                    break
-                time.sleep(PAUSE)
-        except Exception as e:  # noqa: BLE001 - sonde : on journalise tout
-            erreurs.append("{} : {}".format(requete, e))
-        par_terme[requete] = {"total": total, "lus": lus, "niveau": niveau}
-    return {"avis": list(avis.values()), "par_terme": par_terme,
-            "erreurs": erreurs, "champs": champs}
-
-
-def evaluer_rappel(avis, fetch=None, references=REFERENCES):
-    """Pour chaque reference : captee par le lexique ? Sinon, on la
-    recherche directement pour savoir si elle existe et POURQUOI elle a
-    echappe (objet, classe)."""
-    fetch = fetch or _fetch_http
-    index = {a["idweb"]: a for a in avis}
-    rappel = {}
-    for idweb, libelle in references.items():
-        if idweb in index:
-            a = index[idweb]
-            rappel[idweb] = {"libelle": libelle, "existe": True,
-                             "captee": a["classe"] in CLASSES_RETENUES,
-                             "classe": a["classe"], "objet": a["objet"]}
-            continue
-        entree = {"libelle": libelle, "existe": None, "captee": False,
-                  "classe": None, "objet": ""}
-        try:
-            rep = fetch(URL_RECORDS, {"where": "idweb=\"{}\"".format(idweb),
-                                      "limit": 1}) or {}
-            res = rep.get("results") or []
-            entree["existe"] = bool(res)
-            if res:
-                a = normaliser(res[0])
-                entree.update(classe=a["classe"], objet=a["objet"])
-        except Exception as e:  # noqa: BLE001
-            entree["erreur"] = str(e)
-        rappel[idweb] = entree
-    return rappel
+def agreger(lignes, aujourd=None):
+    """Lignes (marche x version x titulaire) -> marches. Montant = maximum
+    (repete a l'identique sur chaque co-titulaire, ne jamais le sommer)."""
+    aujourd = aujourd or datetime.date.today()
+    par_cle = defaultdict(list)
+    for l in lignes:
+        par_cle[_cle(l)].append(l)
+    marches = []
+    for cle, ls in par_cle.items():
+        # Version la plus recente si plusieurs modifications survivent au filtre.
+        ls.sort(key=lambda x: _nombre(x.get("modification_id")) or 0)
+        der = ls[-1]
+        titulaires, ids, paires, surveilles = [], [], [], set()
+        for l in ls:
+            nom = str(l.get("titulaire_nom") or "").strip()
+            tid = str(l.get("titulaire_id") or "").strip()
+            if nom and nom not in titulaires:
+                titulaires.append(nom)
+            if tid and tid not in ids:
+                ids.append(tid)
+            if (nom or tid) and (nom, tid) not in paires:
+                paires.append((nom, tid))
+            s = _titulaire_surveille(normaliser_texte(nom))
+            if s:
+                surveilles.add(s)
+        montants = [_montant(l) for l in ls]
+        montants = [m for m in montants if m is not None]
+        montant = max(montants) if montants else None
+        notif = _date(der.get("dateNotification"))
+        duree = _nombre(der.get("dureeMois"))
+        fin = ajouter_mois(notif, duree) if notif and duree and duree > 0 else None
+        restant = None
+        if fin:
+            restant = (fin.year - aujourd.year) * 12 + (fin.month - aujourd.month)
+        marches.append({
+            "cle": cle,
+            "objet": str(der.get("objet") or "")[:300],
+            "classe": classer(der.get("objet")),
+            "termes": [m for m, _ in termes_trouves(normaliser_texte(der.get("objet")))],
+            "acheteur": str(der.get("acheteur_nom") or "").strip(),
+            "acheteur_id": str(der.get("acheteur_id") or "").strip(),
+            "region": str(der.get("acheteur_region_nom") or "").strip(),
+            "titulaires": titulaires,
+            "titulaire_ids": ids,
+            "paires": paires,
+            "surveilles": sorted(surveilles),
+            "montant": montant,
+            "cpv": str(der.get("codeCPV") or ""),
+            "procedure": str(der.get("procedure") or ""),
+            "offres": _nombre(der.get("offresRecues")),
+            "notification": notif,
+            "duree_mois": duree,
+            "fin": fin,
+            "mois_restants": restant,
+        })
+    return marches
 
 
 # ===========================================================================
 # ANALYSE ET VERDICT
 # ===========================================================================
-def _titulaires(champ):
-    return [t.strip() for t in re.split(r"[;\n]", champ or "") if t.strip()]
+def _mediane(valeurs):
+    v = sorted(x for x in valeurs if x is not None)
+    if not v:
+        return None
+    n = len(v)
+    return v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2.0
 
 
-def analyser(avis, mois=MOIS):
-    classes = Counter(a["classe"] for a in avis)
-    retenus = [a for a in avis if a["classe"] in CLASSES_RETENUES]
-    marches = [a for a in retenus if not a["resultat"]]
-    resultats = [a for a in retenus if a["resultat"]]
-    marches_titre = [a for a in marches if a["classe"] == "fort_objet"]
+def evaluer_rappel(marches, references=REFERENCES):
+    res = []
+    for libelle, mots, motif in references:
+        trouves = [m for m in marches
+                   if all(x in normaliser_texte(m["acheteur"]) for x in mots)
+                   and _contient_mot(normaliser_texte(m["objet"]), motif)]
+        res.append({"libelle": libelle, "trouve": bool(trouves),
+                    "marches": trouves[:3]})
+    return res
+
+
+def analyser(marches, aujourd=None):
+    aujourd = aujourd or datetime.date.today()
+    ie = [m for m in marches if m["classe"] == "ie"]
+    debut = ajouter_mois(aujourd, -RETRO_MOIS)
+    horizon = ajouter_mois(aujourd, HORIZON_MOIS)
+    renouv = sorted([m for m in ie if m["fin"] and debut <= m["fin"] <= horizon],
+                    key=lambda m: m["fin"])
+    portefeuilles = {}
+    for nom in (AMARANTE,) + CONCURRENTS:
+        lot = [m for m in marches if nom in m["surveilles"]]
+        portefeuilles[nom] = {
+            "marches": sorted(lot, key=lambda m: m["notification"] or datetime.date.min,
+                              reverse=True),
+            "ie": sum(1 for m in lot if m["classe"] == "ie"),
+            "opaques": sum(1 for m in lot if m["classe"] == "sans_terme"),
+            "ids": sorted({i for m in lot for n, i in m["paires"]
+                           if i and _titulaire_surveille(normaliser_texte(n)) == nom}),
+            "acheteurs": Counter(m["acheteur"] for m in lot if m["acheteur"]),
+        }
     return {
-        "total": len(avis),
-        "classes": classes,
-        "retenus": retenus,
-        "nb_marches": len(marches),
-        "nb_resultats": len(resultats),
-        "nb_marches_titre": len(marches_titre),
-        "rythme_mensuel": round(len(marches_titre) / float(max(mois, 1)), 2),
-        "termes_titre": Counter(m for a in retenus for m in a["termes_objet"]),
-        "cpv": Counter(c for a in retenus for c in a["cpv"][:1]),
-        "acheteurs": Counter(a["acheteur"] for a in retenus if a["acheteur"]),
-        "titulaires": Counter(t for a in resultats
-                              for t in _titulaires(a["titulaire"])),
-        "sans_titulaire": sum(1 for a in resultats if not a["titulaire"]),
-        "amarante": [a for a in avis if a["amarante"]],
+        "total": len(marches),
+        "classes": Counter(m["classe"] for m in marches),
+        "ie": ie,
+        "par_annee": Counter(m["notification"].year for m in ie if m["notification"]),
+        "montant_median": _mediane(m["montant"] for m in ie),
+        "offres_mediane": _mediane(m["offres"] for m in ie),
+        "duree_connue": sum(1 for m in ie if m["duree_mois"]),
+        "titulaire_connu": sum(1 for m in ie if m["titulaires"]),
+        "renouvellements": renouv,
+        "titulaires_ie": Counter(t for m in ie for t in m["titulaires"]),
+        "acheteurs_ie": Counter(m["acheteur"] for m in ie if m["acheteur"]),
+        "portefeuilles": portefeuilles,
+        "termes": Counter(t for m in ie for t in m["termes"]),
     }
 
 
-def verdict(rap, rappel, erreurs=None):
-    """(code, explication). Lecon ADB : un echantillon vide n'est pas un
-    verdict, c'est une sonde qui n'a pas pu conclure."""
-    if rap["total"] == 0:
-        motif = "aucun avis collecte"
-        if erreurs:
-            motif += " ({} erreur(s) d'acces)".format(len(erreurs))
-        return ("NON CONCLU", motif)
-    existantes = [r for r in rappel.values() if r.get("existe")]
-    captees = [r for r in rappel.values() if r.get("captee")]
-    if existantes and not captees:
-        return ("LEXIQUE A REVOIR",
-                "{} reference(s) presente(s) au BOAMP, aucune captee".format(
-                    len(existantes)))
-    if rap["rythme_mensuel"] >= SEUIL_RYTHME_FAISABLE:
-        return ("FAISABLE", "{} avis de marche IE par mois (titre)".format(
-            rap["rythme_mensuel"]))
-    if rap["nb_marches"] > 0:
-        return ("MARGINAL", "{} avis de marche IE par mois (titre), sous le "
-                "seuil de {}".format(rap["rythme_mensuel"], SEUIL_RYTHME_FAISABLE))
-    return ("INFAISABLE", "avis collectes mais aucun avis de marche IE confirme")
+def verdict(rap, rappel, charge_ok=True):
+    if not charge_ok or rap["total"] == 0:
+        return ("NON CONCLU", "fichier DECP non charge ou aucune ligne retenue")
+    if not rap["ie"]:
+        return ("INFAISABLE", "aucun marche IE dans les DECP")
+    if not any(r["trouve"] for r in rappel):
+        return ("COUVERTURE A VERIFIER",
+                "{} marches IE mais aucune reference retrouvee".format(len(rap["ie"])))
+    part = rap["duree_connue"] / float(len(rap["ie"]))
+    if part >= 0.5 and rap["renouvellements"]:
+        return ("EXPLOITABLE", "{} marches IE, duree connue pour {:.0f} %, "
+                "{} echeance(s) dans la fenetre".format(
+                    len(rap["ie"]), 100 * part, len(rap["renouvellements"])))
+    return ("LIMITE", "{} marches IE, duree connue pour {:.0f} %, {} echeance(s) "
+            "dans la fenetre".format(len(rap["ie"]), 100 * part,
+                                     len(rap["renouvellements"])))
 
 
 # ===========================================================================
 # RAPPORT
 # ===========================================================================
-LIBELLES_CLASSES = {
-    "fort_objet": "Terme fort dans le titre (retenu)",
-    "fort_corps": "Terme fort dans le corps seulement (retenu, a surveiller)",
-    "a_mesurer": "Terme ambigu seulement (non retenu)",
-    "bruit": "Bruit connu : sondage, statistique, tourisme (non retenu)",
-    "hors_analyste": "Hors perimetre, futur pole Analyste (non retenu)",
-    "sans_terme": "Bruit serveur : mots disperses, expression absente",
-}
+def _eur(v):
+    if v is None:
+        return "n.c."
+    return "{:,.0f} EUR".format(v).replace(",", " ")
 
 
-def _top(compteur, n=15):
-    return compteur.most_common(n)
+def _ligne_marche(m):
+    return "| {} | {} | {} | {} | {} | {} |".format(
+        m["fin"].isoformat() if m["fin"] else "?", m["acheteur"][:45],
+        m["objet"][:80].replace("|", "/"), " ; ".join(m["titulaires"])[:60],
+        _eur(m["montant"]), int(m["duree_mois"]) if m["duree_mois"] else "?")
 
 
-def rapport_markdown(collecte, rap, rappel, v, depuis, aujourd):
-    L = []
-    L.append("# Sonde BOAMP IE (IE-0)")
-    L.append("")
-    L.append("Fenetre : {} au {} ({} mois). Plafond : {} avis par terme.".format(
-        depuis.isoformat(), aujourd.isoformat(), MOIS, MAX_PAR_TERME))
-    L.append("")
-    L.append("## Verdict : {}".format(v[0]))
-    L.append("")
-    L.append(v[1])
-    L.append("")
-    L.append("## Rappel sur la verite terrain")
-    L.append("")
-    L.append("| idweb | Reference | Existe | Captee | Classe | Objet |")
-    L.append("|---|---|---|---|---|---|")
-    for idweb, r in rappel.items():
-        existe = {True: "oui", False: "non", None: "?"}[r.get("existe")]
-        L.append("| {} | {} | {} | {} | {} | {} |".format(
-            idweb, r["libelle"], existe, "oui" if r["captee"] else "NON",
-            r.get("classe") or "-", (r.get("objet") or "-")[:90]))
-    L.append("")
-    L.append("## Volume")
-    L.append("")
-    L.append("- Avis uniques collectes (avant confirmation locale) : {}".format(rap["total"]))
-    L.append("- Retenus IE : {} (avis de marche {}, resultats {})".format(
-        len(rap["retenus"]), rap["nb_marches"], rap["nb_resultats"]))
-    L.append("- Avis de marche avec terme fort dans le titre : {} soit {} par mois".format(
-        rap["nb_marches_titre"], rap["rythme_mensuel"]))
-    L.append("")
-    L.append("## Repartition par classe")
-    L.append("")
-    for cle, lib in LIBELLES_CLASSES.items():
-        n = rap["classes"].get(cle, 0)
-        part = 100.0 * n / rap["total"] if rap["total"] else 0
-        L.append("- {} : {} ({:.0f} %)".format(lib, n, part))
-    L.append("")
-    L.append("## Par terme (serveur puis confirmation dans les titres retenus)")
-    L.append("")
-    L.append("| Terme | Niveau | Total serveur | Lus | Titres retenus |")
-    L.append("|---|---|---|---|---|")
-    for requete, motif, niveau in TERMES:
-        pt = collecte["par_terme"].get(requete, {})
-        L.append("| {} | {} | {} | {} | {} |".format(
-            requete, niveau, pt.get("total"), pt.get("lus", 0),
-            rap["termes_titre"].get(motif, 0)))
-    for titre, cle in (("CPV principaux des avis retenus", "cpv"),
-                       ("Acheteurs recurrents", "acheteurs"),
-                       ("Titulaires des marches IE attribues", "titulaires")):
-        L.append("")
-        L.append("## " + titre)
-        L.append("")
-        top = _top(rap[cle])
-        if not top:
-            L.append("- (aucun)")
-        for nom, n in top:
-            libelle = nom
-            if cle == "cpv" and DIVISIONS_CPV:
-                libelle = "{} ({})".format(nom, cpv_reference.division_lisible(nom))
-            L.append("- {} : {}".format(libelle, n))
-    if rap["nb_resultats"]:
-        L.append("")
-        L.append("Resultats sans champ titulaire exploitable : {} / {}.".format(
-            rap["sans_titulaire"], rap["nb_resultats"]))
-    L.append("")
-    L.append("## Mentions d'Amarante")
-    L.append("")
-    if not rap["amarante"]:
-        L.append("- (aucune)")
-    for a in rap["amarante"]:
-        L.append("- {} {} | {} | {}".format(a["idweb"], a["date"], a["acheteur"],
-                                            a["objet"][:90]))
-    L.append("")
-    L.append("## Diagnostic technique")
-    L.append("")
-    L.append("- Champs disponibles : {}".format(", ".join(collecte["champs"]) or "(inconnus)"))
-    L.append("- Erreurs : {}".format(len(collecte["erreurs"])))
-    for e in collecte["erreurs"][:20]:
-        L.append("  - " + e)
+def rapport_markdown(rap, rappel, v, total_lignes, colonnes, aujourd):
+    L = ["# Sonde DECP IE (IE-1)", "",
+         "Date : {}. Lignes DECP lues : {}. Marches retenus au pre-filtre : {}.".format(
+             aujourd.isoformat(), total_lignes, rap["total"]), "",
+         "## Verdict : {}".format(v[0]), "", v[1], "",
+         "## Rappel sur la verite terrain", ""]
+    for r in rappel:
+        if r["trouve"]:
+            m = r["marches"][0]
+            L.append("- OUI : {} -> {} | {} | {}".format(
+                r["libelle"], m["acheteur"], _eur(m["montant"]),
+                " ; ".join(m["titulaires"])[:80]))
+        else:
+            L.append("- NON : {}".format(r["libelle"]))
+    L += ["", "## Volume des marches IE attribues", ""]
+    L.append("- Marches IE : {} (duree connue : {}, titulaire connu : {})".format(
+        len(rap["ie"]), rap["duree_connue"], rap["titulaire_connu"]))
+    L.append("- Montant median declare : {}".format(_eur(rap["montant_median"])))
+    L.append("- Offres recues (mediane) : {}".format(
+        rap["offres_mediane"] if rap["offres_mediane"] is not None else "n.c."))
+    for an in sorted(rap["par_annee"]):
+        L.append("- {} : {} marche(s)".format(an, rap["par_annee"][an]))
+    L += ["", "## Classes au pre-filtre", ""]
+    for k, n in rap["classes"].most_common():
+        L.append("- {} : {}".format(k, n))
+    L += ["", "## Echeances : de {} mois passes a {} mois a venir".format(
+        RETRO_MOIS, HORIZON_MOIS), "",
+        "| Fin estimee | Acheteur | Objet | Titulaire(s) | Montant | Duree (mois) |",
+        "|---|---|---|---|---|---|"]
+    for m in rap["renouvellements"][:60]:
+        L.append(_ligne_marche(m))
+    if not rap["renouvellements"]:
+        L.append("| (aucune) | | | | | |")
+    for nom in (AMARANTE,) + CONCURRENTS:
+        p = rap["portefeuilles"][nom]
+        L += ["", "## Portefeuille {}".format(nom.upper()), "",
+              "- Marches : {} (dont IE : {}, titres opaques : {})".format(
+                  len(p["marches"]), p["ie"], p["opaques"]),
+              "- Identifiants titulaire : {}".format(", ".join(p["ids"]) or "(aucun)")]
+        top = p["acheteurs"].most_common(10)
+        if top:
+            L.append("- Acheteurs : " + " ; ".join("{} ({})".format(a, n) for a, n in top))
+        if p["marches"]:
+            L += ["", "| Fin estimee | Acheteur | Objet | Titulaire(s) | Montant | Duree (mois) |",
+                  "|---|---|---|---|---|---|"]
+            for m in p["marches"][:25]:
+                L.append(_ligne_marche(m))
+    for titre, cle in (("Titulaires des marches IE", "titulaires_ie"),
+                       ("Acheteurs IE recurrents", "acheteurs_ie"),
+                       ("Termes declencheurs", "termes")):
+        L += ["", "## " + titre, ""]
+        top = rap[cle].most_common(20)
+        L += ["- {} : {}".format(k, n) for k, n in top] or ["- (aucun)"]
+    L += ["", "## Diagnostic technique", "",
+          "- Colonnes du fichier : {}".format(", ".join(colonnes) or "(inconnues)")]
     return "\n".join(L) + "\n"
 
 
-COLONNES_CSV = ("idweb", "date", "nature", "classe", "acheteur", "objet",
-                "termes_objet", "termes_corps", "cpv", "titulaire", "procedure",
-                "amarante", "lien")
+COLONNES_CSV = ("classe", "fin", "mois_restants", "notification", "duree_mois",
+                "acheteur", "acheteur_id", "region", "objet", "titulaires",
+                "titulaire_ids", "surveilles", "montant", "offres", "cpv",
+                "procedure", "termes")
 
 
-def ecrire_csv(avis, chemin):
+def ecrire_csv(marches, chemin):
     with open(chemin, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f, delimiter=";")
         w.writerow(COLONNES_CSV)
-        for a in sorted(avis, key=lambda x: (x["classe"], x["date"]), reverse=False):
-            w.writerow([" | ".join(a[c]) if isinstance(a[c], list) else a[c]
-                        for c in COLONNES_CSV])
+        for m in sorted(marches, key=lambda x: (x["classe"], str(x["fin"] or ""))):
+            w.writerow([" | ".join(m[c]) if isinstance(m[c], list)
+                        else ("" if m[c] is None else m[c]) for c in COLONNES_CSV])
 
 
 # ===========================================================================
@@ -520,25 +457,27 @@ def ecrire_csv(avis, chemin):
 # ===========================================================================
 def main():
     aujourd = datetime.date.today()
-    depuis = aujourd - datetime.timedelta(days=int(round(MOIS * 30.44)))
-    print("Sonde BOAMP IE : {} termes, fenetre depuis {}".format(
-        len(TERMES), depuis.isoformat()))
-    collecte = collecter(depuis)
-    rappel = evaluer_rappel(collecte["avis"])
-    rap = analyser(collecte["avis"])
-    v = verdict(rap, rappel, collecte["erreurs"])
-    md = rapport_markdown(collecte, rap, rappel, v, depuis, aujourd)
+    try:
+        lignes, colonnes, total = charger(FICHIER)
+        ok = True
+    except Exception as e:  # noqa: BLE001 - sonde : on journalise
+        print("(erreur) Chargement DECP impossible : {}".format(e))
+        lignes, colonnes, total, ok = [], [], 0, False
+    marches = agreger(lignes, aujourd=aujourd)
+    rap = analyser(marches, aujourd=aujourd)
+    rappel = evaluer_rappel(marches)
+    v = verdict(rap, rappel, charge_ok=ok)
+    md = rapport_markdown(rap, rappel, v, total, colonnes, aujourd)
     print(md)
-
     os.makedirs(SORTIE, exist_ok=True)
     with open(os.path.join(SORTIE, "rapport.md"), "w", encoding="utf-8") as f:
         f.write(md)
-    ecrire_csv(collecte["avis"], os.path.join(SORTIE, "avis.csv"))
+    ecrire_csv(marches, os.path.join(SORTIE, "marches.csv"))
     resume = os.environ.get("GITHUB_STEP_SUMMARY")
     if resume:
         with open(resume, "a", encoding="utf-8") as f:
             f.write(md)
-    print("Sorties ecrites dans {}/ (rapport.md, avis.csv).".format(SORTIE))
+    print("Sorties ecrites dans {}/ (rapport.md, marches.csv).".format(SORTIE))
 
 
 if __name__ == "__main__":
