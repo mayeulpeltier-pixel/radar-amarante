@@ -52,6 +52,13 @@ class TestPrefiltreSurIntitulesReels(unittest.TestCase):
                          "hors_analyste")
         self.assertEqual(L.prefiltre("Observatoire de la sécurité économique")[0], "ie_titre")
 
+    def test_evenements_cyber_ecartes(self):
+        # IE-6 (30/10) : Limoges Metropole, "organisation d'un CTF OSINT".
+        for titre in ("1A RENCONTRES PROFESSIONNELLES DE LA CYBER LOT 2 ORGANISATION D UN CTF OSINT",
+                      "RENCONTRES PROFESSIONNELLES DE LA CYBERSECURITE (EN 2 LOTS) - OSINT"):
+            self.assertEqual(L.prefiltre(titre)[0], "bruit", titre)
+        self.assertEqual(L.prefiltre("Rapports OSINT sur les migrations")[0], "ie_titre")
+
     def test_ambigus_et_vides(self):
         self.assertEqual(L.prefiltre("Revue de presse quotidienne")[0], "a_mesurer")
         self.assertEqual(L.prefiltre("Business intelligence dashboard licences")[0], "a_mesurer")
