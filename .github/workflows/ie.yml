@@ -47,7 +47,7 @@ jobs:
         run: pip install -r requirements-radar.txt
       # Barriere : les tests du volet IE d'abord. S'ils cassent, rien ne tourne.
       - name: Tester le volet IE
-        run: python -m unittest test_lentille_ie test_collecteur_ie -v
+        run: python -m unittest test_lentille_ie test_collecteur_ie test_echeances_ie -v
       - name: Reconstituer la cle de service Google
         id: cle
         run: |
@@ -77,3 +77,25 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python collecteur_ie.py
+      # Echeances (IE-6) : marches IE deja attribues dont la fin approche, tires
+      # des DECP consolidees (~230 Mo, Parquet). Aucun appel LLM. Isole : un
+      # echec ici n'annule pas les leads ecrits a l'etape precedente.
+      # DuckDB est installe ICI seulement, version figee.
+      - name: Telecharger les DECP consolidees
+        id: decp
+        if: always() && steps.cle.outcome == 'success'
+        run: |
+          pip install duckdb==1.1.3
+          curl -fL --retry 3 --retry-delay 10 -o decp.parquet \
+            "https://www.data.gouv.fr/api/1/datasets/r/11cea8e8-df3e-4ed1-932b-781e2635e432"
+          ls -lh decp.parquet
+      - name: Calculer les echeances IE
+        if: always() && steps.decp.outcome == 'success'
+        env:
+          RADAR_IE: "1"
+          RADAR_IE_DEBUG: ${{ github.event.inputs.debug || '0' }}
+          RADAR_IE_DECP_FICHIER: decp.parquet
+          IE_SHEET_ID: ${{ secrets.IE_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python echeances_ie.py
