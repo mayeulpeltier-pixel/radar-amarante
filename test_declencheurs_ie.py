@@ -69,6 +69,38 @@ class TestPage(unittest.TestCase):
         self.assertEqual(e[1]["societe"], "HSBC Bank plc")
 
 
+class TestCorrectifsDuPremierRun(unittest.TestCase):
+    """Run debug du 30/10 : SARL GUD mal nommee, IDEMIA figee apres un 502,
+    scans de corruption (ADP Ingenierie) invisibles pour ARISE."""
+
+    def test_titre_sans_entre(self):
+        self.assertEqual(D.societe("CJIP validee le 17 mai 2024 ... conclue procureure "
+                                   "de la Republique et la SARL GUD"), "SARL GUD")
+
+    def test_erreur_reseau_rend_la_lecture_incomplete(self):
+        def get_502(url, binaire=False):
+            if "CONV" in url:
+                raise RuntimeError("502 Server Error: Proxy Error")
+            return url.encode()
+        e = {"societe": "IDEMIA", "pdfs": {"communique": "CP", "convention": "CONV"}}
+        D.lire_cjip(e, get=get_502, lire_pdf=lambda b: TEXTE_FISCAL, pause=0)
+        self.assertEqual(D.statut(e), "incomplet")
+        self.assertFalse(D.visible_arise(dict(e, statut="incomplet")))
+
+    def test_programme_confirme_reste_definitif_malgre_une_erreur(self):
+        def get_502(url, binaire=False):
+            if "CONV" in url:
+                raise RuntimeError("502")
+            return url.encode()
+        e = {"societe": "PMC", "pdfs": {"communique": "PMC_CP", "convention": "CONV"}}
+        D.lire_cjip(e, get=get_502, lire_pdf=lire, pause=0)
+        self.assertEqual(D.statut(e), "programme_afa")
+
+    def test_scan_illisible_montre_a_arise(self):
+        e = {"statut": "illisible"}
+        self.assertTrue(D.visible_arise(e))
+
+
 class TestLectureEtStatut(unittest.TestCase):
 
     def test_texte_pdf_coupe(self):
