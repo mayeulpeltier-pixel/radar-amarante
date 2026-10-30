@@ -1,0 +1,79 @@
+name: Radar IE (ARISE)
+# Collecteur IE (chantier IE-4) : appels d'offres d'intelligence economique et
+# de conformite publies au BOAMP, lus par la lentille IE, restitues a ARISE
+# dans un classeur Google Sheet A PART (secret IE_SHEET_ID), jamais dans le
+# Sheet Operations. Workflow SEPARE de radar.yml : un echec ici n'affecte pas
+# la collecte Operations, et inversement.
+#
+# Quand : lundi et jeudi 06h40 UTC (apres le radar Operations), ou a la main.
+#
+# PREMIER LANCEMENT : Run workflow avec debug = 1. La collecte et le
+# pre-filtre tournent, la file qui partirait au LLM s'affiche dans l'onglet
+# Summary, et RIEN n'est ecrit ni facture. Relancer ensuite avec debug = 0.
+#
+# SECRETS : GOOGLE_SERVICE_ACCOUNT_JSON, ANTHROPIC_API_KEY, DATABASE_URL
+# (deja en place) et IE_SHEET_ID (nouveau : identifiant du classeur ARISE,
+# partage en Editeur avec l'adresse client_email du compte de service).
+on:
+  schedule:
+    - cron: "40 6 * * 1,4"
+  workflow_dispatch:
+    inputs:
+      debug:
+        description: "1 = collecte et pre-filtre seulement, sans LLM ni ecriture"
+        required: false
+        default: "0"
+      jours:
+        description: "Fenetre de publication en jours (defaut 30)"
+        required: false
+        default: "30"
+
+concurrency:
+  group: radar-ie
+  cancel-in-progress: false
+
+jobs:
+  radar-ie:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer les dependances
+        run: pip install -r requirements-radar.txt
+      # Barriere : les tests du volet IE d'abord. S'ils cassent, rien ne tourne.
+      - name: Tester le volet IE
+        run: python -m unittest test_lentille_ie test_collecteur_ie -v
+      - name: Reconstituer la cle de service Google
+        id: cle
+        run: |
+          echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > service_account.json
+          python - <<'PY'
+          import json, sys
+          try:
+              with open("service_account.json", encoding="utf-8") as f:
+                  cle = json.load(f)
+          except Exception as e:
+              sys.exit("Secret GOOGLE_SERVICE_ACCOUNT_JSON absent ou illisible : {}".format(e))
+          manquants = [c for c in ("type", "project_id", "private_key", "client_email")
+                       if not cle.get(c)]
+          if manquants:
+              sys.exit("Cle de service incomplete : " + ", ".join(manquants))
+          print("Partager le classeur ARISE avec :", cle["client_email"])
+          PY
+      - name: Collecter les appels d'offres IE
+        if: steps.cle.outcome == 'success'
+        env:
+          RADAR_IE: "1"
+          RADAR_IE_DEBUG: ${{ github.event.inputs.debug || '0' }}
+          RADAR_IE_JOURS: ${{ github.event.inputs.jours || '30' }}
+          RADAR_IE_BUDGET: "30"
+          IE_SHEET_ID: ${{ secrets.IE_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python collecteur_ie.py
