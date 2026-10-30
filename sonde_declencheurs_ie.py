@@ -35,13 +35,15 @@ import unicodedata
 import xml.etree.ElementTree as ET
 from urllib.parse import quote_plus
 
+import config_env   # regle du depot : une entree de workflow vide ne casse rien
+
 URL_CJIP = ("https://www.justice.gouv.fr/documentation/ressources/"
             "conventions-judiciaires-dinteret-public")
 URL_RSS = "https://news.google.com/rss/search?q={}&hl=fr&gl=FR&ceid=FR:fr"
 UA = {"User-Agent": "Mozilla/5.0 (compatible; RadarAmarante-sonde/1.0)"}
 SORTIE = os.environ.get("SONDE_SORTIE") or "sonde_declencheurs_ie_sortie"
-ANNEES = int(os.environ.get("SONDE_ANNEES") or 2)
-MAX_PDF = int(os.environ.get("SONDE_MAX_PDF") or 40)
+ANNEES = config_env.entier("SONDE_ANNEES", 2)
+MAX_PDF = config_env.entier("SONDE_MAX_PDF", 40)
 PAUSE = 0.5
 
 REQUETES_PRESSE = [

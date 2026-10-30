@@ -163,9 +163,14 @@ def interroger(session, url, charge, encodage="json", timeout=45):
         else:
             corps = charge
             ctype = "application/x-www-form-urlencoded"
-        rep = session.post(url, data=corps,
-                           headers=dict(ENTETES, **{"Content-Type": ctype}),
-                           timeout=timeout)
+        entetes = dict(ENTETES, **{"Content-Type": ctype})
+        # Jeton anti-falsification exige par le portail depuis octobre 2026
+        # (sans lui : HTTP 400). Il est lu par ungm.charger_pays_ungm, qui
+        # passe par la MEME session (cookie associe). Voir ungm_radar.py.
+        jeton = ungm.assurer_jeton(session)
+        if jeton:
+            entetes["RequestVerificationToken"] = jeton
+        rep = session.post(url, data=corps, headers=entetes, timeout=timeout)
         return rep.status_code, (rep.text or "")
     except Exception as e:
         return 0, "exception: {}".format(e)
