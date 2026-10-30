@@ -104,10 +104,10 @@ class TestFenetreEtVues(unittest.TestCase):
               montant=4.5e6),
             # Hors fenetre (fin 2029) : nulle part.
             l("NICE", "DA - PRESTATION INTELLIGENCE ECONOMIQUE", "ADIT", "44874736000015",
-              notif="2025-09-25", duree=48),
+              aid="20003019500115", notif="2025-09-25", duree=48),
             # Expire il y a 3 mois : remise en concurrence en cours, retenu.
             l("TIS", "Prévention des risques d’atteinte à la probité", "ADIT",
-              "44874736000015", notif="2024-07-12", duree=24),
+              "44874736000015", aid="25310098600046", notif="2024-07-12", duree=24),
         ]
         return E.regrouper(ls, AUJ)
 
@@ -151,6 +151,58 @@ class TestFenetreEtVues(unittest.TestCase):
     def test_ecritures_sans_configuration(self):
         self.assertIn("absent", E.ecrire_pg(None, [{}]))
         self.assertIn("non configure", E.ecrire_sheet(None, [["x"]]))
+
+
+class TestSuccessions(unittest.TestCase):
+    """IE-6.1 : France Travail (fin 05/2026) deja reattribue en 08/2026
+    s'affichait comme une echeance a preparer au premier run."""
+
+    FT = "22222222200011"
+
+    def _ft(self):
+        return E.regrouper([
+            l("FT1", "Services d'informations, de surveillance, de conformité et veille économique",
+              "DECIDENTO", "79523702300036", aid=self.FT, notif="2022-05-04", duree=48),
+            l("FT2", "Prestations de Veille Economique Locale et de Veille Sectorielle",
+              "DECIDENTO", "79523702300036", aid=self.FT, notif="2026-07-29", duree=48),
+        ], AUJ)
+
+    def test_marche_deja_reattribue_exclu_de_la_vue_arise(self):
+        base, arise = E.retenir(self._ft(), AUJ)
+        ancien = [p for p in base if p["uids"] == ["FT1"]][0]
+        self.assertTrue(ancien["renouvele"])
+        self.assertEqual(ancien["successeur"], "https://colibre.fr/marches/FT2")
+        self.assertNotIn("FT1", [p["uids"][0] for p in arise])
+
+    def test_lots_paralleles_ne_sont_pas_une_succession(self):
+        # AFA : deux accords notifies a 10 jours d'ecart, tous deux echus en 2027.
+        procs = E.regrouper([
+            l("A1", OBJ_AFA, "ADIT", "44874736000015", aid=ACH_AFA, notif="2023-02-06"),
+            l("B1", OBJ_AFA + ".", "ALFRED BPO", "4" * 14, aid=ACH_AFA, notif="2023-02-16",
+              duree=48)], AUJ)
+        base, arise = E.retenir(procs, AUJ)
+        self.assertFalse(any(p["renouvele"] for p in base))
+        self.assertEqual(len(arise), 2)
+
+    def test_meme_acheteur_autre_sujet_autre_titulaire_pas_une_succession(self):
+        procs = E.regrouper([
+            l("R1", "Veille stratégique sur les filières", "CABINET A", "5" * 14,
+              aid="23750007900312", notif="2023-03-10", duree=48),
+            l("R2", "Formation à la sécurité économique des PME", "CABINET B", "6" * 14,
+              aid="23750007900312", notif="2026-09-01", duree=36)], AUJ)
+        base, arise = E.retenir(procs, AUJ)
+        self.assertFalse([p for p in base if p["renouvele"]])
+        self.assertIn("R1", [p["uids"][0] for p in arise])
+
+    def test_fourniture_d_informations_est_un_outil(self):
+        self.assertTrue(E.est_outil("22022-Fourniture d’informations de veille stratégique "
+                                    "sur les entreprises"))
+
+    def test_colonnes_pg_incluent_la_succession(self):
+        p = E.retenir(self._ft(), AUJ)[0][0]
+        v = E.valeurs_pg(p)
+        self.assertEqual(len(v), len(E.COLONNES_PG))
+        self.assertIn("renouvele", E.COLONNES_PG)
 
 
 try:
