@@ -134,7 +134,7 @@ def societe(titre, pdfs):
     partie = re.split(r"conclue entre", titre, maxsplit=1, flags=re.I)[-1]
     m = re.search(r"\bet (?:la |le |les |l')?(?:soci[ée]t[ée]s? )?(.+)$", partie)
     if m and len(m.group(1)) < 120:
-        return m.group(1).strip(" .")
+        return m.group(1).strip(" .-")
     for p in pdfs:
         parties = [x.strip() for x in p["libelle"].split(" - ")]
         if len(parties) >= 3:
@@ -154,7 +154,10 @@ def mise_en_ligne(pdfs):
 
 _RE_AFA = re.compile(r"agence fran[cç]aise anti-?corruption|\bafa\b", re.I)
 _RE_PROGRAMME = re.compile(r"programme de mise en conformit", re.I)
-_RE_DUREE = re.compile(r"dur[ée]e (?:maximale )?de (\d+|deux|trois|quatre|dix-huit|vingt-quatre|trente-six) (ans|mois)", re.I)
+_RE_DUREE = re.compile(r"(?:dur[ée]e|p[ée]riode) (?:maximale )?de (\d+|deux|trois|quatre|dix-huit|vingt-quatre|trente-six) (ans|mois)", re.I)
+# Sous ce seuil, le PDF est juge ILLISIBLE (scan signe sans couche texte) :
+# ce n'est pas une absence de programme, c'est une absence de lecture.
+MIN_CARACTERES = 500
 _NOMBRES = {"deux": 2, "trois": 3, "quatre": 4, "dix-huit": 18, "vingt-quatre": 24,
             "trente-six": 36}
 
@@ -182,9 +185,11 @@ def _get(url, binaire=False, session=None):
 
 
 def texte_pdf(contenu):
+    """Toutes les pages (plafond 80) : la clause de programme figure souvent
+    en fin de convention. Le premier run ne lisait que 15 pages."""
     from pypdf import PdfReader
     lecteur = PdfReader(io.BytesIO(contenu))
-    return " ".join((p.extract_text() or "") for p in lecteur.pages[:15])
+    return " ".join((p.extract_text() or "") for p in lecteur.pages[:80])
 
 
 def sonder_cjip(aujourd, get=None, lire_pdf=None):
@@ -199,18 +204,31 @@ def sonder_cjip(aujourd, get=None, lire_pdf=None):
     recentes = [e for e in entrees if e["validation"] and e["validation"] >= limite]
     lus = 0
     for e in recentes:
-        e["analyse"] = None
+        e["analyse"], e["lecture"] = None, "non lu"
         if e["domaine"] != "FINANCIER" or lus >= MAX_PDF:
             continue
-        conv = [p for p in e["pdfs"] if p["type"] == "convention"]
-        if not conv:
+        # Communique de presse d'abord : court, en texte, et il annonce le
+        # programme en clair (cas PMC). Convention ensuite, en complement.
+        ordre = ([p for p in e["pdfs"] if p["type"] == "communique"]
+                 + [p for p in e["pdfs"] if p["type"] == "convention"])
+        textes = []
+        for doc in ordre:
+            try:
+                t = lire_pdf(get(doc["url"], binaire=True))
+            except Exception as ex:  # noqa: BLE001
+                erreurs.append("{} ({}) : {}".format(e["societe"][:40], doc["type"],
+                                                     str(ex)[:100]))
+                continue
+            finally:
+                time.sleep(PAUSE)
+            if len(t or "") >= MIN_CARACTERES:
+                textes.append((doc["type"], t))
+        lus += 1
+        if not textes:
+            e["lecture"] = "illisible"
             continue
-        try:
-            e["analyse"] = analyser_convention(lire_pdf(get(conv[0]["url"], binaire=True)))
-            lus += 1
-        except Exception as ex:  # noqa: BLE001
-            erreurs.append("{} : {}".format(e["societe"][:40], str(ex)[:100]))
-        time.sleep(PAUSE)
+        e["lecture"] = "+".join(d for d, _ in textes)
+        e["analyse"] = analyser_convention(" ".join(t for _, t in textes))
     return recentes, erreurs
 
 
@@ -256,6 +274,7 @@ def sonder_presse(get=None, requetes=REQUETES_PRESSE):
 def stats_cjip(entrees):
     fin = [e for e in entrees if e["domaine"] == "FINANCIER"]
     analysees = [e for e in fin if e.get("analyse")]
+    illisibles = [e for e in fin if e.get("lecture") == "illisible"]
     avec_prog = [e for e in analysees if e["analyse"]["programme"] and e["analyse"]["afa"]]
     delais = [(e["mise_en_ligne"] - e["validation"].replace(day=1)).days // 30
               for e in entrees if e["mise_en_ligne"] and e["validation"]]
@@ -263,6 +282,7 @@ def stats_cjip(entrees):
     for e in fin:
         par_an[e["validation"].year] = par_an.get(e["validation"].year, 0) + 1
     return {"total": len(entrees), "financieres": fin, "analysees": analysees,
+            "illisibles": illisibles,
             "avec_programme": avec_prog, "par_an": par_an,
             "delai_median_mois": sorted(delais)[len(delais) // 2] if delais else None}
 
@@ -270,6 +290,10 @@ def stats_cjip(entrees):
 def verdict_cjip(st):
     if st["total"] == 0:
         return ("NON CONCLU", "page non lue ou structure non reconnue")
+    if st["financieres"] and len(st["illisibles"]) * 2 > len(st["financieres"]):
+        return ("NON CONCLU", "{} CJIP financieres sur {} illisibles (scans sans "
+                "texte) : il faudrait de l'OCR".format(len(st["illisibles"]),
+                                                       len(st["financieres"])))
     n = len(st["avec_programme"])
     if n >= 3:
         return ("EXPLOITABLE", "{} CJIP financiere(s) imposent un programme sous "
@@ -299,13 +323,14 @@ def rapport(cj, cj_err, presse, presse_err, aujourd):
              ", ".join("{} : {}".format(a, n) for a, n in sorted(st["par_an"].items())) or "-"),
          "- Delai median validation -> mise en ligne : {} mois".format(
              st["delai_median_mois"] if st["delai_median_mois"] is not None else "n.c."), "",
-         "| Validation | Societe | Programme AFA | Duree | Convention |",
-         "|---|---|---|---|---|"]
+         "- PDF illisibles (scans) : {}".format(len(st["illisibles"])), "",
+         "| Validation | Societe | Lu | Programme AFA | Duree | Convention |",
+         "|---|---|---|---|---|---|"]
     for e in sorted(st["financieres"], key=lambda x: x["validation"], reverse=True):
         a = e.get("analyse") or {}
         conv = next((p["url"] for p in e["pdfs"] if p["type"] == "convention"), "")
-        L.append("| {} | {} | {} | {} | {} |".format(
-            e["validation"], e["societe"][:60],
+        L.append("| {} | {} | {} | {} | {} | {} |".format(
+            e["validation"], e["societe"][:60], e.get("lecture", "non lu"),
             "oui" if a.get("programme") and a.get("afa") else ("non" if a else "non lu"),
             "{} mois".format(a["duree_mois"]) if a.get("duree_mois") else "-", conv))
     L += ["", "## 2. Presse : {}".format(v2[0]), "", v2[1], ""]
