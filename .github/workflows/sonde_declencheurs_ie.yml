@@ -1,0 +1,43 @@
+name: Sonde declencheurs IE (IE-7)
+# Diagnostic ponctuel, DECLENCHEMENT MANUEL UNIQUEMENT (workflow_dispatch).
+# Ne touche a RIEN : ni Sheet, ni Postgres, ni etat. AUCUN appel LLM.
+# Mesure deux familles de declencheurs de demande privee :
+#   1. CJIP (justice.gouv.fr) : combien de CJIP financieres par an, combien
+#      imposent un programme de conformite sous controle de l'AFA (lecture
+#      des PDF), delai de mise en ligne ;
+#   2. Presse (Google News RSS) : volume et echantillon de six requetes.
+# UTILISATION : Actions > "Sonde declencheurs IE (IE-7)" > Run workflow.
+# RESULTAT : onglet Summary + artefact "sonde-declencheurs-ie".
+on:
+  workflow_dispatch:
+    inputs:
+      annees:
+        description: "Annees de CJIP lues (defaut 2 : annee en cours et precedente)"
+        required: false
+        default: "2"
+jobs:
+  sonde-declencheurs-ie:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer les dependances radar
+        run: pip install -r requirements-radar.txt
+      - name: Sonder CJIP et presse
+        env:
+          SONDE_ANNEES: ${{ github.event.inputs.annees }}
+          SONDE_SORTIE: sonde_declencheurs_ie_sortie
+        run: python sonde_declencheurs_ie.py
+      - name: Conserver le rapport
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonde-declencheurs-ie
+          path: sonde_declencheurs_ie_sortie/
+          if-no-files-found: warn
+          retention-days: 30
