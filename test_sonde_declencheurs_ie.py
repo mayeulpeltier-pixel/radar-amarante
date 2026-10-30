@@ -34,7 +34,7 @@ PAGE = """
 
 TEXTE_CONVENTION = ("La societe s'engage a mettre en oeuvre un programme de mise en "
                     "conformite d'une duree de trois ans sous le controle de l'Agence "
-                    "francaise anticorruption.")
+                    "francaise anticorruption. ") + "Considerant les faits. " * 40
 
 RSS = """<?xml version="1.0"?><rss><channel>
 <item><title>CJIP : la societe X paie 5 MEUR - Le Monde</title><link>http://a/1</link>
@@ -98,7 +98,8 @@ class TestSondeCJIP(unittest.TestCase):
         entrees, erreurs = S.sonder_cjip(AUJ, get=get, lire_pdf=lambda b: TEXTE_CONVENTION)
         self.assertEqual(erreurs, [])
         self.assertEqual(len(entrees), 2)          # 2023 hors fenetre de 2 ans
-        self.assertEqual(len(lus), 1)              # environnementale non lue
+        self.assertEqual(len(lus), 2)              # CP + convention de PMC ; ni OV ni ENV
+        self.assertIn("_CP_", lus[0])              # communique lu en premier
         st = S.stats_cjip(entrees)
         self.assertEqual(len(st["avec_programme"]), 1)
         self.assertEqual(S.verdict_cjip(st)[0], "MARGINAL")
@@ -119,8 +120,42 @@ class TestSondeCJIP(unittest.TestCase):
             raise ValueError("PDF corrompu")
 
         entrees, erreurs = S.sonder_cjip(AUJ, get=get, lire_pdf=lire)
-        self.assertEqual(len(erreurs), 1)
+        self.assertEqual(len(erreurs), 2)          # CP et convention
         self.assertEqual(len(entrees), 2)
+
+
+class TestLectureIllisible(unittest.TestCase):
+    """Defaut du premier run (30/10) : 0 programme AFA sur 12, alors que le
+    communique PMC l'annonce. Un scan sans texte ne doit plus se lire comme
+    une absence de programme."""
+
+    def setUp(self):
+        S.PAUSE = 0.0
+
+    def _get(self, url, binaire=False):
+        return PAGE if not binaire else b"pdf"
+
+    def test_scan_sans_texte_est_illisible_et_non_conclu(self):
+        entrees, _ = S.sonder_cjip(AUJ, get=self._get, lire_pdf=lambda b: "")
+        fin = [e for e in entrees if e["domaine"] == "FINANCIER"][0]
+        self.assertEqual(fin["lecture"], "illisible")
+        self.assertIsNone(fin["analyse"])
+        self.assertEqual(S.verdict_cjip(S.stats_cjip(entrees))[0], "NON CONCLU")
+
+    def test_programme_trouve_dans_le_seul_communique(self):
+        def lire(contenu):
+            lire.n += 1
+            return TEXTE_CONVENTION if lire.n == 1 else ""
+        lire.n = 0
+        entrees, _ = S.sonder_cjip(AUJ, get=self._get, lire_pdf=lire)
+        fin = [e for e in entrees if e["domaine"] == "FINANCIER"][0]
+        self.assertEqual(fin["lecture"], "communique")
+        self.assertTrue(fin["analyse"]["programme"])
+
+    def test_periode_au_lieu_de_duree(self):
+        a = S.analyser_convention("programme de mise en conformite pendant une periode de "
+                                  "deux ans sous le controle de l'AFA")
+        self.assertEqual(a["duree_mois"], 24)
 
 
 class TestPresse(unittest.TestCase):
