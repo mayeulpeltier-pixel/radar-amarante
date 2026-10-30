@@ -154,7 +154,7 @@ def mise_en_ligne(pdfs):
 
 _RE_AFA = re.compile(r"agence fran[cç]aise anti-?corruption|\bafa\b", re.I)
 _RE_PROGRAMME = re.compile(r"programme de mise en conformit", re.I)
-_RE_DUREE = re.compile(r"(?:dur[ée]e|p[ée]riode) (?:maximale )?de (\d+|deux|trois|quatre|dix-huit|vingt-quatre|trente-six) (ans|mois)", re.I)
+_RE_DUREE = re.compile(r"(?:dur[ée]e|p[ée]riode) (?:maximale )?de (\d+|deux|trois|quatre|dix-huit|vingt-quatre|trente-six)(?: \(\d+\))? (ans|mois)", re.I)
 # Sous ce seuil, le PDF est juge ILLISIBLE (scan signe sans couche texte) :
 # ce n'est pas une absence de programme, c'est une absence de lecture.
 MIN_CARACTERES = 500
@@ -163,8 +163,14 @@ _NOMBRES = {"deux": 2, "trois": 3, "quatre": 4, "dix-huit": 18, "vingt-quatre": 
 
 
 def analyser_convention(texte):
-    """Texte de la convention -> {afa, programme, duree_mois}."""
-    t = texte or ""
+    """Texte de la convention -> {afa, programme, duree_mois}.
+
+    Le texte extrait d'un PDF coupe les lignes n'importe ou : "Agence
+    francaise\nanticorruption", "con-\nformite". Sans normalisation, la
+    sonde du 30/10 lisait le programme mais ratait l'AFA (PMC, Exclusive
+    Networks, Klubb a "non" alors que leur communique l'annonce)."""
+    t = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", texte or "")
+    t = re.sub(r"\s+", " ", t)
     duree = None
     m = _RE_DUREE.search(t) if _RE_PROGRAMME.search(t) else None
     if m:
@@ -324,14 +330,15 @@ def rapport(cj, cj_err, presse, presse_err, aujourd):
          "- Delai median validation -> mise en ligne : {} mois".format(
              st["delai_median_mois"] if st["delai_median_mois"] is not None else "n.c."), "",
          "- PDF illisibles (scans) : {}".format(len(st["illisibles"])), "",
-         "| Validation | Societe | Lu | Programme AFA | Duree | Convention |",
-         "|---|---|---|---|---|---|"]
+         "| Validation | Societe | Lu | Programme | AFA citee | Duree | Convention |",
+         "|---|---|---|---|---|---|---|"]
     for e in sorted(st["financieres"], key=lambda x: x["validation"], reverse=True):
         a = e.get("analyse") or {}
         conv = next((p["url"] for p in e["pdfs"] if p["type"] == "convention"), "")
-        L.append("| {} | {} | {} | {} | {} | {} |".format(
+        oui_non = (lambda v: "oui" if v else "non") if a else (lambda v: "non lu")
+        L.append("| {} | {} | {} | {} | {} | {} | {} |".format(
             e["validation"], e["societe"][:60], e.get("lecture", "non lu"),
-            "oui" if a.get("programme") and a.get("afa") else ("non" if a else "non lu"),
+            oui_non(a.get("programme")), oui_non(a.get("afa")),
             "{} mois".format(a["duree_mois"]) if a.get("duree_mois") else "-", conv))
     L += ["", "## 2. Presse : {}".format(v2[0]), "", v2[1], ""]
     for q, items in presse.items():
