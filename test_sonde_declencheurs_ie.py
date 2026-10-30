@@ -152,6 +152,19 @@ class TestLectureIllisible(unittest.TestCase):
         self.assertEqual(fin["lecture"], "communique")
         self.assertTrue(fin["analyse"]["programme"])
 
+    def test_texte_pdf_coupe_en_fin_de_ligne(self):
+        # Cas reel PMC : retours a la ligne et cesure dans l'extraction.
+        t = ("La CJIP prevoit enfin la mise en place d'un programme de mise en\n"
+             "con-\nformite d'une duree de trois ans au sein du groupe sous le\n"
+             "controle de l'Agence francaise\nanticorruption.")
+        self.assertEqual(S.analyser_convention(t),
+                         {"afa": True, "programme": True, "duree_mois": 36})
+
+    def test_duree_avec_chiffre_entre_parentheses(self):
+        a = S.analyser_convention("programme de mise en conformite pour une duree de "
+                                  "deux (2) ans, sous le controle de l'AFA")
+        self.assertEqual(a["duree_mois"], 24)
+
     def test_periode_au_lieu_de_duree(self):
         a = S.analyser_convention("programme de mise en conformite pendant une periode de "
                                   "deux ans sous le controle de l'AFA")
@@ -190,6 +203,7 @@ class TestPresse(unittest.TestCase):
         self.assertIn("## 1. CJIP : MARGINAL", md)
         self.assertIn("PERIPHERIQUES ET MATERIELS DE CONTROLE SAS", md)
         self.assertIn("36 mois", md)
+        self.assertIn("| oui | oui |", md)
 
 
 if __name__ == "__main__":
