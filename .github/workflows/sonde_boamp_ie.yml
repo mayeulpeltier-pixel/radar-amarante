@@ -1,34 +1,29 @@
-name: Sonde BOAMP IE (IE-0)
+name: Sonde DECP IE (IE-1)
 # Diagnostic ponctuel, DECLENCHEMENT MANUEL UNIQUEMENT (workflow_dispatch).
 # Ne touche a RIEN : ni Google Sheet, ni Postgres, ni etat, ni dashboard.
-# N'appelle AUCUN LLM (cout zero). Repond a cinq questions avant de decider
-# de construire le collecteur BOAMP IE (chantier IE-4) :
-#   1. volume d'avis IE sur la fenetre (avis de marche / resultats) ;
-#   2. part de bruit (sondages, statistiques, tourisme) ;
-#   3. rappel sur la verite terrain (AURA 24-80762 et 24-39524, Nice 24-99592) ;
-#   4. titulaires des marches IE attribues (carte concurrentielle) ;
-#   5. codes CPV sous lesquels ces marches sont publies.
-# Verdicts possibles : FAISABLE, MARGINAL, INFAISABLE, LEXIQUE A REVOIR,
-# NON CONCLU (echantillon vide : pas un verdict).
+# N'appelle AUCUN LLM (cout zero). Lit les DECP consolidees (decp.info,
+# Parquet quotidien sur data.gouv.fr, ~230 Mo) et repond a six questions :
+#   1. volume et montants des marches IE attribues ;
+#   2. echeances a venir (24 mois) et recentes (6 mois) : renouvellements ;
+#   3. portefeuille Amarante (tous SIRET, titres opaques compris) ;
+#   4. portefeuilles ADIT, Decidento, Explore (leurs acheteurs = prospects) ;
+#   5. rappel sur AURA, Nice, Hauts-de-France, Nouvelle-Aquitaine ;
+#   6. couverture (duree et titulaire connus).
+# Verdicts : EXPLOITABLE, LIMITE, COUVERTURE A VERIFIER, INFAISABLE,
+# NON CONCLU (fichier non charge : pas un verdict).
 #
-# UTILISATION : Actions > "Sonde BOAMP IE (IE-0)" > Run workflow.
-# RESULTAT : resume de l'execution (onglet Summary) + artefact
-# "sonde-boamp-ie" (rapport.md, avis.csv) a telecharger en bas de la page.
+# DuckDB est installe ICI seulement (sonde jetable) : il n'entre pas dans
+# requirements-radar.txt, et le test de chargement se saute dans la CI
+# principale.
+#
+# UTILISATION : Actions > "Sonde DECP IE (IE-1)" > Run workflow.
+# RESULTAT : onglet Summary + artefact "sonde-decp-ie" (rapport.md, marches.csv).
 on:
   workflow_dispatch:
-    inputs:
-      mois:
-        description: "Profondeur en mois (defaut 32, couvre les references 2024)"
-        required: false
-        default: "32"
-      max_par_terme:
-        description: "Avis lus max par terme (defaut 1000)"
-        required: false
-        default: "1000"
 jobs:
-  sonde-boamp-ie:
+  sonde-decp-ie:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Recuperer le code
         uses: actions/checkout@v4
@@ -36,19 +31,23 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Installer les dependances radar
-        run: pip install -r requirements-radar.txt
-      - name: Sonder le BOAMP sur le lexique IE
+      - name: Installer DuckDB (sonde uniquement)
+        run: pip install duckdb==1.1.3
+      - name: Telecharger les DECP consolidees (Parquet)
+        run: |
+          curl -fL --retry 3 --retry-delay 10 -o decp.parquet \
+            "https://www.data.gouv.fr/api/1/datasets/r/11cea8e8-df3e-4ed1-932b-781e2635e432"
+          ls -lh decp.parquet
+      - name: Sonder les DECP sur le lexique IE
         env:
-          SONDE_MOIS: ${{ github.event.inputs.mois }}
-          SONDE_MAX_PAR_TERME: ${{ github.event.inputs.max_par_terme }}
-          SONDE_SORTIE: sonde_boamp_ie_sortie
-        run: python sonde_boamp_ie.py
+          SONDE_DECP_FICHIER: decp.parquet
+          SONDE_SORTIE: sonde_decp_ie_sortie
+        run: python sonde_decp_ie.py
       - name: Conserver le rapport
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sonde-boamp-ie
-          path: sonde_boamp_ie_sortie/
+          name: sonde-decp-ie
+          path: sonde_decp_ie_sortie/
           if-no-files-found: warn
           retention-days: 30
