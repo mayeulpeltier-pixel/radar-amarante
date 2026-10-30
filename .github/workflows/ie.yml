@@ -47,7 +47,7 @@ jobs:
         run: pip install -r requirements-radar.txt
       # Barriere : les tests du volet IE d'abord. S'ils cassent, rien ne tourne.
       - name: Tester le volet IE
-        run: python -m unittest test_lentille_ie test_collecteur_ie test_echeances_ie -v
+        run: python -m unittest test_lentille_ie test_collecteur_ie test_echeances_ie test_declencheurs_ie -v
       - name: Reconstituer la cle de service Google
         id: cle
         run: |
@@ -77,6 +77,17 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python collecteur_ie.py
+      # Declencheurs (IE-7) : CJIP financieres imposant un programme de
+      # conformite sous controle de l'AFA. Source justice.gouv.fr, aucun LLM.
+      - name: Collecter les declencheurs CJIP
+        if: always() && steps.cle.outcome == 'success'
+        env:
+          RADAR_IE: "1"
+          RADAR_IE_DEBUG: ${{ github.event.inputs.debug || '0' }}
+          IE_SHEET_ID: ${{ secrets.IE_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python declencheurs_ie.py
       # Echeances (IE-6) : marches IE deja attribues dont la fin approche, tires
       # des DECP consolidees (~230 Mo, Parquet). Aucun appel LLM. Isole : un
       # echec ici n'annule pas les leads ecrits a l'etape precedente.
