@@ -1,278 +1,211 @@
 # -*- coding: utf-8 -*-
-"""Sonde BOAMP IE (IE-0) : le COEUR (lexique, classement, extraction CPV,
-rappel, verdict) est teste offline, sur les intitules reels des marches de
-reference (AURA 24-80762, Nice 24-99592, observatoire du ministere des
-Armees 26-24709). Le prober est exerce avec un fetch injecte : aucun acces
-reseau."""
+"""Sonde DECP IE (IE-1) : lexique corrige, agregation par marche,
+echeances, portefeuilles, rappel et verdict testes offline sur des lignes
+reprises des marches reels identifies par IE-0. Le chargement DuckDB est
+exerce sur un petit Parquet genere a la volee, et se saute proprement si
+DuckDB n'est pas installe (cas de la CI principale : DuckDB n'est installe
+que par le workflow de la sonde)."""
 
-import json
+import datetime
 import os
 import shutil
 import tempfile
 import unittest
 
-import sonde_boamp_ie as s
+import sonde_decp_ie as s
+
+AUJ = datetime.date(2026, 10, 30)
 
 
-def rec(idweb, objet, nature="Avis de marché", donnees=None, titulaire=None,
-        acheteur="Acheteur test", date="2026-05-04"):
-    r = {"idweb": idweb, "objet": objet, "nature_libelle": nature,
-         "nomacheteur": acheteur, "dateparution": date}
-    if donnees is not None:
-        r["donnees"] = donnees
-    if titulaire is not None:
-        r["titulaire"] = titulaire
-    return r
+def ligne(uid, objet, titulaire="", tid="", acheteur="Acheteur", notif="2025-05-01",
+          duree=48, montant=100000.0, modif=0, rationalise=None):
+    return {"uid": uid, "objet": objet, "acheteur_nom": acheteur,
+            "acheteur_id": "1" * 14, "titulaire_nom": titulaire, "titulaire_id": tid,
+            "montant": montant, "montant_rationalise": rationalise,
+            "dateNotification": notif, "dureeMois": duree, "modification_id": modif,
+            "offresRecues": 3, "codeCPV": "79311000", "procedure": "Appel d'offres ouvert"}
 
 
-def classe_de(objet, corps=""):
-    return s.classer(s.normaliser_texte(objet),
-                     s.normaliser_texte(objet + " " + corps))
+class TestLexiqueCorrige(unittest.TestCase):
+
+    def test_termes_ajoutes_apres_ie0(self):
+        self.assertEqual(s.classer("Cartographie des risques d'atteintes à la probité"), "ie")
+        self.assertEqual(s.classer("Evaluation de l'intégrité des tiers : solution digitale"), "ie")
+        self.assertEqual(s.classer("Veille Economique Locale et Veille Sectorielle"), "ie")
+
+    def test_due_diligence_immobiliere_est_du_bruit(self):
+        self.assertEqual(s.classer('vérifications dites de "due diligence" immobilières'),
+                         "bruit")
+
+    def test_revue_de_presse_seule_est_ambigue(self):
+        self.assertEqual(s.classer("Revue de presse quotidienne"), "a_mesurer")
+        self.assertEqual(s.classer("Veille média, revue de presse et veille stratégique"), "ie")
+
+    def test_observatoire_hors_perimetre_sauf_noyau_ie(self):
+        self.assertEqual(s.classer("Observatoire du multilatéralisme en Indopacifique"),
+                         "hors_analyste")
+        self.assertEqual(s.classer("Observatoire de la sécurité économique"), "ie")
+
+    def test_titre_opaque(self):
+        self.assertEqual(s.classer("2025_000314_SGA_SDPAMG_BPI"), "sans_terme")
+
+    def test_regex_sql_echappe_et_borne(self):
+        rx = s.regex_sql(["anti-corruption", "sapin ii"])
+        self.assertTrue(rx.startswith(r"\b(") and rx.endswith(r")\b"))
+        self.assertIn(r"anti\-corruption", rx)
 
 
-class TestLexique(unittest.TestCase):
+class TestAgregation(unittest.TestCase):
 
-    def test_insensible_aux_accents_et_a_la_casse(self):
-        n = s.normaliser_texte("Prestations d’INTELLIGENCE ÉCONOMIQUE")
-        self.assertIn(("intelligence economique", "fort"), s.termes_trouves(n))
+    def test_cotitulaires_un_seul_marche_montant_non_somme(self):
+        ls = [ligne("U1", "Feuille de route en matière d'intelligence économique",
+                    "AMARANTE INTERNATIONAL", "11111111100011", montant=300000.0),
+              ligne("U1", "Feuille de route en matière d'intelligence économique",
+                    "ADIT", "22222222200022", montant=300000.0)]
+        m = s.agreger(ls, aujourd=AUJ)
+        self.assertEqual(len(m), 1)
+        self.assertEqual(m[0]["montant"], 300000.0)
+        self.assertEqual(m[0]["surveilles"], ["adit", "amarante"])
+        self.assertEqual(len(m[0]["titulaires"]), 2)
 
-    def test_mot_entier_seulement(self):
-        self.assertEqual(s.termes_trouves("calcul du cosinus"), [])
-        self.assertIn(("osint", "fort"), s.termes_trouves("rapports osint"))
+    def test_montant_rationalise_prioritaire(self):
+        m = s.agreger([ligne("U2", "Due diligence", montant=9e12, rationalise=50000.0)],
+                      aujourd=AUJ)
+        self.assertEqual(m[0]["montant"], 50000.0)
 
-    def test_sapin_seul_ne_suffit_pas(self):
-        self.assertEqual(s.termes_trouves("abattage d'un sapin"), [])
-        self.assertIn(("sapin ii", "fort"),
-                      s.termes_trouves(s.normaliser_texte("audit loi Sapin II")))
+    def test_derniere_modification_retenue(self):
+        ls = [ligne("U3", "Veille stratégique", duree=12, modif=0),
+              ligne("U3", "Veille stratégique", duree=24, modif=1)]
+        self.assertEqual(s.agreger(ls, aujourd=AUJ)[0]["duree_mois"], 24)
 
+    def test_fin_estimee_et_mois_restants(self):
+        m = s.agreger([ligne("U4", "Intelligence économique", notif="2025-05-15",
+                             duree=48)], aujourd=AUJ)[0]
+        self.assertEqual(m["fin"], datetime.date(2029, 5, 15))
+        self.assertEqual(m["mois_restants"], 31)
 
-class TestClassementSurLesReferences(unittest.TestCase):
+    def test_duree_absente_pas_de_fin(self):
+        m = s.agreger([ligne("U5", "Intelligence économique", duree=None)], aujourd=AUJ)[0]
+        self.assertIsNone(m["fin"])
 
-    def test_aura_cellule_intelligence_strategique(self):
-        self.assertEqual(classe_de("Cellule d'Intelligence Stratégique"),
-                         "fort_objet")
+    def test_ajouter_mois_fin_de_mois_et_negatif(self):
+        self.assertEqual(s.ajouter_mois(datetime.date(2024, 1, 31), 1),
+                         datetime.date(2024, 2, 29))
+        self.assertEqual(s.ajouter_mois(datetime.date(2026, 10, 30), -6),
+                         datetime.date(2026, 4, 30))
 
-    def test_nice_prestations_ie(self):
-        self.assertEqual(classe_de("24N0423 - Prestations d'intelligence économique"),
-                         "fort_objet")
-
-    def test_observatoire_armees_hors_perimetre(self):
-        # Decision D1 : reserve a la future lentille Analyste.
-        self.assertEqual(
-            classe_de("Observatoire du multilatéralisme en Indopacifique",
-                      "veille stratégique sur la zone"),
-            "hors_analyste")
-
-    def test_observatoire_securite_economique_reste_ie(self):
-        # Pas d'exclusion par mot-cle : le noyau IE l'emporte.
-        self.assertEqual(classe_de("Observatoire de la sécurité économique"),
-                         "fort_objet")
-
-    def test_sondage_touristique_est_du_bruit(self):
-        self.assertEqual(
-            classe_de("Enquête de satisfaction auprès des touristes",
-                      "veille économique du territoire"),
-            "bruit")
-
-    def test_terme_fort_dans_le_corps_seulement(self):
-        self.assertEqual(
-            classe_de("Accompagnement des PME à l'export",
-                      "prestations de veille stratégique et due diligence"),
-            "fort_corps")
-
-    def test_terme_ambigu_seulement(self):
-        self.assertEqual(classe_de("Logiciel de veille technologique"), "a_mesurer")
-
-    def test_aucun_terme(self):
-        self.assertEqual(classe_de("Fourniture de papier"), "sans_terme")
+    def test_mot_entier_pour_les_titulaires(self):
+        m = s.agreger([ligne("U6", "Veille stratégique", "EXPEDITION ADITIVE SA")],
+                      aujourd=AUJ)[0]
+        self.assertEqual(m["surveilles"], [])
 
 
-class TestExtraction(unittest.TestCase):
+class TestAnalyseEtVerdict(unittest.TestCase):
 
-    def setUp(self):
-        self._div = s.DIVISIONS_CPV
-        s.DIVISIONS_CPV = {"79", "73", "75"}
+    def _marches(self):
+        ls = [
+            # Echeance dans 8 mois : doit sortir en renouvellement.
+            ligne("A", "Cellule d'Intelligence Stratégique", "AMARANTE RISK INTELLIGENCE",
+                  "50987922700023", acheteur="AUVERGNE-RHONE-ALPES ENTREPRISES",
+                  notif="2024-07-04", duree=36),
+            # Echeance en 2029 : hors fenetre.
+            ligne("B", "24N0423 Prestations intelligence économique", "ADIT", "3",
+                  acheteur="METROPOLE NICE COTE D'AZUR", notif="2025-05-15", duree=48),
+            # Titre opaque gagne par Amarante.
+            ligne("C", "2025_000314_SGA_SDPAMG_BPI", "AMARANTE INTERNATIONAL", "4",
+                  acheteur="MINARM", notif="2026-10-01", duree=36),
+            # Expire il y a 3 mois : remise en concurrence probable en cours.
+            ligne("D", "Mise en place d'un dispositif conformité loi Sapin II",
+                  "CABINET X", "5", notif="2023-07-30", duree=36),
+        ]
+        return s.agreger(ls, aujourd=AUJ)
 
-    def tearDown(self):
-        s.DIVISIONS_CPV = self._div
+    def test_fenetre_des_echeances(self):
+        rap = s.analyser(self._marches(), aujourd=AUJ)
+        fins = [m["cle"] for m in rap["renouvellements"]]
+        self.assertEqual(fins, ["D", "A"])  # trie par date de fin
 
-    def test_cpv_texte_pdf(self):
-        t = "Nomenclature principale ( cpv ): 79311000 Services d'études"
-        self.assertEqual(s.extraire_cpv(t), ["79311000"])
+    def test_portefeuille_amarante_et_opaques(self):
+        rap = s.analyser(self._marches(), aujourd=AUJ)
+        p = rap["portefeuilles"]["amarante"]
+        self.assertEqual(len(p["marches"]), 2)
+        self.assertEqual(p["ie"], 1)
+        self.assertEqual(p["opaques"], 1)
+        self.assertEqual(p["ids"], ["4", "50987922700023"])
 
-    def test_cpv_eforms_code_avant_listname(self):
-        d = json.dumps({"ItemClassificationCode": {"#text": "79996000",
-                                                   "@listName": "cpv"}})
-        self.assertEqual(s.extraire_cpv(d), ["79996000"])
+    def test_rappel(self):
+        r = s.evaluer_rappel(self._marches())
+        trouves = {x["libelle"][:4]: x["trouve"] for x in r}
+        self.assertTrue(trouves["AURA"])
+        self.assertTrue(trouves["Metr"])
+        self.assertFalse(trouves["Regi"])
 
-    def test_siret_et_division_invalide_ignores(self):
-        t = "SIRET 50987922700023 cpv 12345678 ; cpv 73000000"
-        self.assertEqual(s.extraire_cpv(t), ["73000000"])
+    def test_verdicts(self):
+        marches = self._marches()
+        rap = s.analyser(marches, aujourd=AUJ)
+        self.assertEqual(s.verdict(rap, s.evaluer_rappel(marches))[0], "EXPLOITABLE")
+        vide = s.analyser([], aujourd=AUJ)
+        self.assertEqual(s.verdict(vide, [], charge_ok=False)[0], "NON CONCLU")
+        self.assertEqual(s.verdict(vide, [])[0], "NON CONCLU")
+        rap_rien = s.analyser([m for m in marches if m["classe"] != "ie"], aujourd=AUJ)
+        self.assertEqual(s.verdict(rap_rien, [])[0], "INFAISABLE")
+        rappel_vide = [{"libelle": "x", "trouve": False, "marches": []}]
+        self.assertEqual(s.verdict(rap, rappel_vide)[0], "COUVERTURE A VERIFIER")
 
-    def test_donnees_chaine_json_rendues_lisibles(self):
-        brut = json.dumps({"objet": "Due diligence étendue"})
-        self.assertIn("étendue", s.texte_donnees(brut))
-
-    def test_normaliser_resultat_et_amarante(self):
-        a = s.normaliser(rec("24-80762", "Cellule d'Intelligence Stratégique",
-                             nature="Résultat de marché",
-                             titulaire="AMARANTE RISK INTELLIGENCE"))
-        self.assertTrue(a["resultat"])
-        self.assertTrue(a["amarante"])
-        self.assertEqual(a["classe"], "fort_objet")
-        self.assertIn("24-80762", a["lien"])
-
-    def test_champs_absents_sans_exception(self):
-        a = s.normaliser({})
-        self.assertEqual(a["idweb"], "")
-        self.assertEqual(a["classe"], "sans_terme")
-
-
-class TestCollecteInjectee(unittest.TestCase):
-
-    def setUp(self):
-        s.PAUSE = 0.0
-        import datetime
-        self.depuis = datetime.date(2024, 3, 1)
-
-    def test_where_odsql(self):
-        w = s.construire_where("due diligence", self.depuis)
-        self.assertEqual(w, "\"due diligence\" AND dateparution >= date'2024-03-01'")
-
-    def test_dedoublonnage_entre_termes_et_champs(self):
-        termes = [("intelligence économique", "intelligence economique", "fort"),
-                  ("veille stratégique", "veille strategique", "fort")]
-        commun = rec("24-99592", "Prestations d'intelligence économique")
-
-        def fetch(url, params):
-            return {"total_count": 1, "results": [commun]}
-
-        c = s.collecter(self.depuis, fetch=fetch, termes=termes)
-        self.assertEqual(len(c["avis"]), 1)
-        self.assertIn("idweb", c["champs"])
-        self.assertEqual(c["par_terme"]["veille stratégique"]["total"], 1)
-
-    def test_pagination_respecte_le_plafond(self):
-        appels = []
-
-        def fetch(url, params):
-            appels.append(params["offset"])
-            base = params["offset"]
-            return {"total_count": 500,
-                    "results": [rec("26-{}".format(base + i), "Veille stratégique")
-                                for i in range(params["limit"])]}
-
-        termes = [("veille stratégique", "veille strategique", "fort")]
-        c = s.collecter(self.depuis, fetch=fetch, termes=termes, max_par_terme=250)
-        self.assertEqual(len(c["avis"]), 250)
-        self.assertEqual(appels, [0, 100, 200])
-
-    def test_terme_en_erreur_n_interrompt_pas(self):
-        termes = [("osint", "osint", "fort"),
-                  ("due diligence", "due diligence", "fort")]
-
-        def fetch(url, params):
-            if "osint" in params["where"]:
-                raise RuntimeError("HTTP 400")
-            return {"total_count": 1, "results": [rec("26-1", "Due diligence")]}
-
-        c = s.collecter(self.depuis, fetch=fetch, termes=termes)
-        self.assertEqual(len(c["erreurs"]), 1)
-        self.assertEqual(len(c["avis"]), 1)
-
-
-class TestRappel(unittest.TestCase):
-
-    def test_reference_captee_sans_appel_reseau(self):
-        avis = [s.normaliser(rec("24-80762", "Cellule d'Intelligence Stratégique"))]
-
-        def fetch(url, params):
-            raise AssertionError("aucun appel attendu")
-
-        r = s.evaluer_rappel(avis, fetch=fetch,
-                             references={"24-80762": "AURA"})
-        self.assertTrue(r["24-80762"]["captee"])
-
-    def test_reference_manquee_diagnostiquee(self):
-        def fetch(url, params):
-            self.assertIn("24-99592", params["where"])
-            return {"results": [rec("24-99592", "Mission d'aide à la décision")]}
-
-        r = s.evaluer_rappel([], fetch=fetch, references={"24-99592": "Nice"})
-        self.assertTrue(r["24-99592"]["existe"])
-        self.assertFalse(r["24-99592"]["captee"])
-        self.assertEqual(r["24-99592"]["classe"], "sans_terme")
-
-    def test_verification_directe_en_echec(self):
-        def fetch(url, params):
-            raise RuntimeError("503")
-
-        r = s.evaluer_rappel([], fetch=fetch, references={"24-1": "x"})
-        self.assertIsNone(r["24-1"]["existe"])
-        self.assertIn("erreur", r["24-1"])
-
-
-class TestVerdict(unittest.TestCase):
-
-    def _rap(self, nb_titre, mois=10, resultat=False):
-        avis = [s.normaliser(rec("26-{}".format(i), "Prestations d'intelligence économique",
-                                 nature="Résultat de marché" if resultat else "Avis de marché"))
-                for i in range(nb_titre)]
-        return s.analyser(avis, mois=mois)
-
-    def _rappel(self, existe=True, captee=True):
-        return {"x": {"libelle": "x", "existe": existe, "captee": captee}}
-
-    def test_echantillon_vide_nest_pas_un_verdict(self):
-        rap = s.analyser([], mois=10)
-        self.assertEqual(s.verdict(rap, {}, erreurs=["503"])[0], "NON CONCLU")
-        self.assertEqual(s.verdict(rap, {})[0], "NON CONCLU")
-
-    def test_reference_existante_non_captee(self):
-        self.assertEqual(s.verdict(self._rap(30), self._rappel(captee=False))[0],
-                         "LEXIQUE A REVOIR")
-
-    def test_faisable(self):
-        self.assertEqual(s.verdict(self._rap(20), self._rappel())[0], "FAISABLE")
-
-    def test_marginal(self):
-        self.assertEqual(s.verdict(self._rap(5), self._rappel())[0], "MARGINAL")
-
-    def test_infaisable_si_seulement_des_resultats(self):
-        self.assertEqual(s.verdict(self._rap(3, resultat=True), self._rappel())[0],
-                         "INFAISABLE")
-
-    def test_titulaires_comptes_sur_les_resultats(self):
-        avis = [s.normaliser(rec("24-80762", "Cellule d'Intelligence Stratégique",
-                                 nature="Résultat de marché",
-                                 titulaire="AMARANTE RISK INTELLIGENCE ; CABINET X"))]
-        rap = s.analyser(avis, mois=10)
-        self.assertEqual(rap["titulaires"]["AMARANTE RISK INTELLIGENCE"], 1)
-        self.assertEqual(len(rap["amarante"]), 1)
-
-
-class TestSorties(unittest.TestCase):
+    def test_limite_si_durees_inconnues(self):
+        ls = [ligne(str(i), "Intelligence économique", acheteur="REGION HAUTS DE FRANCE",
+                    duree=None) for i in range(3)]
+        marches = s.agreger(ls, aujourd=AUJ)
+        rap = s.analyser(marches, aujourd=AUJ)
+        self.assertEqual(s.verdict(rap, s.evaluer_rappel(marches))[0], "LIMITE")
 
     def test_rapport_et_csv(self):
-        import datetime
-        avis = [s.normaliser(rec("24-99592", "Prestations d'intelligence économique"))]
-        collecte = {"avis": avis, "par_terme": {}, "erreurs": [], "champs": ["idweb"]}
-        rap = s.analyser(avis, mois=10)
-        rappel = {"24-99592": {"libelle": "Nice", "existe": True, "captee": True,
-                               "classe": "fort_objet", "objet": avis[0]["objet"]}}
+        marches = self._marches()
+        rap = s.analyser(marches, aujourd=AUJ)
+        rappel = s.evaluer_rappel(marches)
         v = s.verdict(rap, rappel)
-        md = s.rapport_markdown(collecte, rap, rappel, v,
-                                datetime.date(2024, 3, 1), datetime.date(2026, 10, 30))
-        self.assertIn("## Verdict : MARGINAL", md)
-        self.assertIn("24-99592", md)
+        md = s.rapport_markdown(rap, rappel, v, 1000, ["uid"], AUJ)
+        self.assertIn("## Verdict : EXPLOITABLE", md)
+        self.assertIn("## Portefeuille AMARANTE", md)
         d = tempfile.mkdtemp()
         try:
-            chemin = os.path.join(d, "avis.csv")
-            s.ecrire_csv(avis, chemin)
+            chemin = os.path.join(d, "m.csv")
+            s.ecrire_csv(marches, chemin)
             with open(chemin, encoding="utf-8") as f:
-                lignes = f.read().splitlines()
-            self.assertEqual(len(lignes), 2)
-            self.assertTrue(lignes[0].startswith("idweb;"))
+                self.assertEqual(len(f.read().splitlines()), 5)
+        finally:
+            shutil.rmtree(d)
+
+
+try:
+    import duckdb  # noqa: F401
+    DUCKDB = True
+except ImportError:
+    DUCKDB = False
+
+
+@unittest.skipUnless(DUCKDB, "DuckDB absent : installe seulement par le workflow de la sonde")
+class TestChargementParquet(unittest.TestCase):
+
+    def test_prefiltre_lexique_titulaires_et_versions(self):
+        import duckdb
+        d = tempfile.mkdtemp()
+        try:
+            chemin = os.path.join(d, "decp.parquet")
+            con = duckdb.connect()
+            con.execute("""
+                CREATE TABLE t AS SELECT * FROM (VALUES
+                  ('U1', 'Prestations d''intelligence ÉCONOMIQUE', 'ADIT', true),
+                  ('U2', 'Fourniture de papier', 'PAPETERIE', true),
+                  ('U3', '2025_000314_SGA', 'AMARANTE INTERNATIONAL', true),
+                  ('U4', 'Veille stratégique', 'CABINET', false),
+                  ('U5', 'Travaux de voirie', 'EXPEDITION ADITIVE', true)
+                ) AS v(uid, objet, titulaire_nom, donneesActuelles)""")
+            con.execute("COPY t TO '{}' (FORMAT PARQUET)".format(chemin))
+            lignes, colonnes, total = s.charger(chemin)
+            self.assertEqual(total, 5)
+            self.assertEqual(sorted(l["uid"] for l in lignes), ["U1", "U3"])
+            self.assertIn("donneesActuelles", colonnes)
         finally:
             shutil.rmtree(d)
 
