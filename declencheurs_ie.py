@@ -103,7 +103,9 @@ def type_document(href, libelle):
 
 
 def societe(titre):
-    partie = re.split(r"conclue entre", titre, maxsplit=1, flags=re.I)[-1]
+    # "conclue entre le procureur ... et la societe X" ; certains titres
+    # omettent "entre" (cas reel : SARL GUD, 2024).
+    partie = re.split(r"conclue\s+(?:entre\s+)?", titre, maxsplit=1, flags=re.I)[-1]
     m = re.search(r"\bet (?:la |le |les |l')?(?:soci[ée]t[ée]s? )?(.+)$", partie)
     return m.group(1).strip(" .-") if m and len(m.group(1)) < 120 else ""
 
@@ -189,15 +191,21 @@ def lire_cjip(entree, get=None, lire_pdf=None, pause=PAUSE):
             time.sleep(pause)
     entree["lecture"] = "+".join(t for t, _ in textes) or "illisible"
     entree["analyse"] = analyser_texte(" ".join(t for _, t in textes)) if textes else None
+    # Un document non telecharge (erreur reseau, 502 constate sur IDEMIA) rend
+    # la lecture INCOMPLETE : sans ce drapeau, un "sans programme" provisoire
+    # devenait definitif, car la memoire ne relit jamais une CJIP connue.
+    entree["incomplet"] = bool(erreurs)
     return erreurs
 
 
 def statut(entree):
     a = entree.get("analyse")
     if not a:
-        return "illisible"
+        return "incomplet" if entree.get("incomplet") else "illisible"
     if a["programme"] and a["afa"]:
         return "programme_afa"
+    if entree.get("incomplet"):
+        return "incomplet"
     # L'un sans l'autre (Colas Rail Asia : AFA citee, programme non detecte) :
     # signal reel mais incomplet, a verifier a la main.
     if a["programme"] or a["afa"]:
@@ -245,13 +253,17 @@ def executer(aujourd=None, deja_vus=None, get=None, lire_pdf=None, pause=PAUSE):
 
 
 def visible_arise(e):
-    return e["statut"] in ("programme_afa", "a_verifier")
+    """Les scans illisibles sont MONTRES a ARISE : ce sont souvent des CJIP
+    anciennes de corruption (ADP Ingenierie, Seves/Sediver) qu'un humain lit
+    en deux minutes. Un statut incomplet attend la relecture du run suivant."""
+    return e["statut"] in ("programme_afa", "a_verifier", "illisible")
 
 
 def ligne_sheet(e, aujourd):
     a = e.get("analyse") or {}
     v = {"detecte_le": aujourd.isoformat(), "type": "CJIP",
-         "statut": {"programme_afa": "programme AFA", "a_verifier": "AFA citee, a verifier"}
+         "statut": {"programme_afa": "programme AFA", "a_verifier": "AFA citee, a verifier",
+                    "illisible": "PDF scanne, a verifier"}
          .get(e["statut"], e["statut"]),
          "societe": e["societe"], "validation": e["validation"].isoformat(),
          "duree_mois": a.get("duree_mois") or "",
@@ -291,16 +303,22 @@ def memoire_pg(url):
         with psycopg.connect(url, connect_timeout=15) as conn:
             with conn.cursor() as cur:
                 cur.execute(DDL)
-                cur.execute("SELECT cle FROM {} WHERE statut <> 'illisible'".format(TABLE))
+                cur.execute("SELECT cle FROM {} WHERE statut NOT IN {}".format(
+                    TABLE, STATUTS_A_RELIRE_SQL))
                 return {r[0] for r in cur.fetchall()}
     except Exception as e:  # noqa: BLE001
         print("  (info) memoire Postgres indisponible ({}).".format(str(e)[:120]))
         return None
 
 
+# Statuts provisoires : la CJIP est relue a chaque run, et sa ligne mise a
+# jour des qu'une lecture complete aboutit.
+STATUTS_A_RELIRE_SQL = "('illisible', 'incomplet')"
+
+
 def ecrire_pg(url, entrees):
-    """Ajout seul, SAUF pour une CJIP precedemment illisible : elle est relue
-    a chaque run et sa ligne est mise a jour si le PDF est enfin lisible."""
+    """Ajout seul, SAUF pour une CJIP au statut provisoire (illisible ou
+    incomplet) : sa ligne est mise a jour quand la lecture aboutit."""
     if not url:
         return "Postgres : DATABASE_URL absent."
     if not entrees:
@@ -309,7 +327,7 @@ def ecrire_pg(url, entrees):
         import psycopg
         maj = ", ".join("{0} = EXCLUDED.{0}".format(c) for c in COLONNES_PG[1:])
         sql = ("INSERT INTO {t} ({c}) VALUES ({v}) ON CONFLICT (cle) DO UPDATE SET {m} "
-               "WHERE {t}.statut = 'illisible'").format(
+               "WHERE {t}.statut IN {r}").format(r=STATUTS_A_RELIRE_SQL,
             t=TABLE, c=", ".join(COLONNES_PG), v=", ".join(["%s"] * len(COLONNES_PG)), m=maj)
         with psycopg.connect(url, connect_timeout=15) as conn:
             with conn.cursor() as cur:
