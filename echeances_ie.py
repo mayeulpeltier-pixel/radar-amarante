@@ -82,7 +82,17 @@ SURVEILLES = dict(AMARANTE, **CONCURRENTS)
 
 OUTIL = ("logiciel", "licence", "abonnement", "saas", "plateforme", "outil ",
          "outil d", "solution", "base de donnees", "tierce maintenance",
-         "maintenance applicative")
+         "maintenance applicative",
+         # IE-6 (30/10) : fourniture de donnees (Infolegale), pas une prestation.
+         "fourniture d'informations", "fourniture d informations",
+         "fourniture de donnees")
+# Un marche est juge DEJA RENOUVELE quand le meme acheteur a notifie un autre
+# marche de la meme expertise autour de sa fin. Constate au premier run : France
+# Travail (fin 05/2026) etait deja reattribue en 08/2026 et s'affichait comme
+# une echeance a preparer. La fenetre evite de confondre deux lots notifies a
+# quelques jours d'ecart (AFA : 06/02 et 16/02/2023), qui sont des marches
+# paralleles, pas une succession.
+FENETRE_SUCCESSION_MOIS = 12
 
 COLONNES_SHEET = [
     "detecte_le", "fin_estimee", "position", "acheteur", "objet",
@@ -246,12 +256,44 @@ def dans_fenetre(p, aujourd):
     return ajouter_mois(aujourd, -RETRO_MOIS) <= p["fin"] <= ajouter_mois(aujourd, HORIZON_MOIS)
 
 
+def marquer_successions(procs):
+    """Pose `renouvele` et `successeur` (lien) sur chaque procedure. Le
+    successeur doit partager un terme du lexique OU un titulaire : un meme
+    acheteur passe souvent plusieurs marches IE distincts (veille, puis
+    formation) qui ne se succedent pas. Cherche
+    dans TOUTES les procedures, y compris hors fenetre : le successeur d'un
+    marche echu finit souvent en 2030."""
+    par_acheteur = defaultdict(list)
+    for p in procs:
+        if p["acheteur_id"] and p["notification"]:
+            par_acheteur[p["acheteur_id"]].append(p)
+    for p in procs:
+        p["renouvele"], p["successeur"] = False, ""
+        if not (p["fin"] and p["acheteur_id"]):
+            continue
+        debut = ajouter_mois(p["fin"], -FENETRE_SUCCESSION_MOIS)
+        fin = ajouter_mois(p["fin"], FENETRE_SUCCESSION_MOIS)
+        for q in par_acheteur.get(p["acheteur_id"], []):
+            meme_sujet = (set(q["termes"]) & set(p["termes"])
+                          or set(q["sirens"]) & set(p["sirens"]))
+            if (q is not p and q["expertise"] == p["expertise"] and meme_sujet
+                    and q["notification"] > p["notification"]
+                    and debut <= q["notification"] <= fin
+                    and q["fin"] and q["fin"] > p["fin"]):
+                p["renouvele"], p["successeur"] = True, q["lien"]
+                break
+    return procs
+
+
 def retenir(procs, aujourd):
     """(en base, vue ARISE). En base : IE, Analyste et tout le portefeuille
-    surveille, dans la fenetre. Vue ARISE : IE seulement, hors outils."""
+    surveille, dans la fenetre. Vue ARISE : IE seulement, hors outils, hors
+    marches deja renouveles."""
+    marquer_successions(procs)
     base = [p for p in procs if dans_fenetre(p, aujourd)
             and (p["expertise"] in ("ie", "analyste") or p["position"] != "autre")]
-    arise = [p for p in base if p["expertise"] == "ie" and not p["outil"]]
+    arise = [p for p in base if p["expertise"] == "ie" and not p["outil"]
+             and not p["renouvele"]]
     rang = {"amarante_sortant": 0, "concurrent_suivi": 1, "autre": 2}
     arise.sort(key=lambda p: (p["fin"], rang[p["position"]]))
     return base, arise
@@ -282,17 +324,22 @@ DDL = """CREATE TABLE IF NOT EXISTS {t} (
     sirens TEXT, position TEXT, expertise TEXT, outil BOOLEAN, plafond REAL,
     montant_douteux BOOLEAN, nb_lots INTEGER, offres REAL, lien TEXT,
     maj_le TIMESTAMPTZ DEFAULT now())""".format(t=TABLE)
+# Colonnes ajoutees apres la creation de la table (IE-6.1) : ALTER idempotent,
+# la table existante du premier run est migree sans perte.
+MIGRATIONS = ("ALTER TABLE {t} ADD COLUMN IF NOT EXISTS renouvele BOOLEAN".format(t=TABLE),
+              "ALTER TABLE {t} ADD COLUMN IF NOT EXISTS successeur TEXT".format(t=TABLE))
 COLONNES_PG = ("cle", "fin_estimee", "notification", "duree_mois", "acheteur",
                "acheteur_id", "region", "objet", "titulaires", "sirens", "position",
                "expertise", "outil", "plafond", "montant_douteux", "nb_lots",
-               "offres", "lien")
+               "offres", "lien", "renouvele", "successeur")
 
 
 def valeurs_pg(p):
     return [p["cle"], p["fin"], p["notification"], p["duree_mois"], p["acheteur"],
             p["acheteur_id"], p["region"], p["objet"], " ; ".join(p["titulaires"]),
             " ; ".join(p["sirens"]), p["position"], p["expertise"], p["outil"],
-            p["plafond"], p["montant_douteux"], p["nb_lots"], p["offres"], p["lien"]]
+            p["plafond"], p["montant_douteux"], p["nb_lots"], p["offres"], p["lien"],
+            bool(p.get("renouvele")), p.get("successeur", "")]
 
 
 def ecrire_pg(url, procs):
@@ -309,6 +356,8 @@ def ecrire_pg(url, procs):
         with psycopg.connect(url, connect_timeout=15) as conn:
             with conn.cursor() as cur:
                 cur.execute(DDL)
+                for m in MIGRATIONS:
+                    cur.execute(m)
                 for p in procs:
                     cur.execute(sql, valeurs_pg(p))
         return "Postgres : {} procedure(s) a jour dans {}.".format(len(procs), TABLE)
@@ -373,6 +422,14 @@ def rapport_markdown(total, procs, base, arise, ecritures, debug):
         L_.append("| {} | {} | {} | {} | {} | {} | {} |".format(
             p["fin"], p["position"], p["acheteur"][:40], p["objet"][:70].replace("|", "/"),
             " ; ".join(p["titulaires"])[:50], _eur(p["plafond"]), p["lien"]))
+    renouv = [p for p in base if p.get("renouvele") and p["expertise"] == "ie"]
+    if renouv:
+        L_ += ["", "## Deja renouveles (exclus de la vue ARISE)", "",
+               "| Fin estimee | Acheteur | Objet | Successeur |", "|---|---|---|---|"]
+        for p in renouv:
+            L_.append("| {} | {} | {} | {} |".format(
+                p["fin"], p["acheteur"][:40], p["objet"][:70].replace("|", "/"),
+                p["successeur"]))
     port = [p for p in base if p["position"] == "amarante_sortant"]
     if port:
         L_ += ["", "## Portefeuille Amarante dans la fenetre (toutes expertises)", "",
