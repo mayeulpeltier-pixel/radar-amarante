@@ -87,7 +87,9 @@ TERMES = [
 BRUIT = ("sondage", "satisfaction", "touris", "statistique", "barometre",
          "frequentation", "panel", "enquete telephonique", "recensement",
          "comptage", "evaluation de politique", "evaluation des politiques",
-         "evaluation du programme", "evaluation d'impact", "hackathon")
+         "evaluation du programme", "evaluation d'impact", "hackathon",
+         # IE-6 (30/10) : organisation d'evenements cyber ("CTF OSINT").
+         "capture the flag", " ctf ", "rencontres professionnelles de la cyber")
 BRUIT_COMBINE = (("due diligence", "immobili"),)
 ANALYSTE = ("observatoire", "geopolitique", "geostrategique", "prospective")
 NOYAU_IE = ("intelligence economique", "intelligence strategique",
