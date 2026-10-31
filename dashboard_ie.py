@@ -107,7 +107,7 @@ def echeances_affichees(ech, aujourd):
 def declencheurs_affiches(decl):
     """Programme AFA confirme d'abord, puis a verifier, puis scans illisibles,
     chacun du plus recemment valide au plus ancien."""
-    rang = {"programme_afa": 0, "a_verifier": 1, "illisible": 2}
+    rang = {"programme_afa": 0, "a_verifier": 1, "sanction_conformite": 2, "illisible": 3}
     vus = [d for d in decl if d.get("statut") in rang]
     return sorted(vus, key=lambda d: (rang[d["statut"]], _tri_date(d.get("validation"))),
                   reverse=False)
@@ -217,9 +217,10 @@ def rendre_echeances(ech):
 
 def rendre_declencheurs(decl):
     if not decl:
-        return '<p class="vide">Aucun declencheur CJIP recent.</p>'
+        return '<p class="vide">Aucun declencheur recent.</p>'
     STAT = {"programme_afa": ("Programme AFA", "st-afa"),
             "a_verifier": ("A verifier", "st-verif"),
+            "sanction_conformite": ("Sanction AMF conformite/LCB-FT", "st-afa"),
             "illisible": ("PDF scanne, a lire", "st-scan")}
     lignes = []
     for d in decl:
@@ -343,7 +344,7 @@ La saisie (statut, commentaire) reste dans le classeur ARISE.</p></header>
 <section><h2>Echeances de marches{c_ech}</h2>
 <p class="sous">Marches IE deja attribues dont la fin approche : fenetre de reconquete, ou signal concurrent.</p>
 {ech}</section>
-<section><h2>Declencheurs CJIP{c_decl}</h2>
+<section><h2>Declencheurs (CJIP et sanctions){c_decl}</h2>
 <p class="sous">Conventions judiciaires d'interet public imposant un programme de conformite sous controle de l'AFA : demande privee a venir.</p>
 {decl}</section>
 <section><h2>Sanctions des bailleurs{c_sanc}</h2>

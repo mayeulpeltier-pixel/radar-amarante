@@ -57,6 +57,18 @@ class TestDeclencheurs(unittest.TestCase):
         vus = [d["cle"] for d in D.declencheurs_affiches(decl)]
         self.assertEqual(vus, ["afa", "v", "scan"])   # sans_programme exclu
 
+    def test_sanction_amf_affichee(self):
+        decl = [{"cle": "amf", "statut": "sanction_conformite", "societe": "Caceis Bank",
+                 "validation": "2026-07-01", "juridiction": "AMF",
+                 "type": "sanction AMF", "lien_communique": "https://www.amf-france.org/x"},
+                {"cle": "abus", "statut": "abus_marche", "societe": "X",
+                 "validation": "2026-06-01"}]
+        vus = [d["cle"] for d in D.declencheurs_affiches(decl)]
+        self.assertEqual(vus, ["amf"])                # abus_marche exclu
+        html = D.rendre_declencheurs(D.declencheurs_affiches(decl))
+        self.assertIn("Sanction AMF conformite/LCB-FT", html)
+        self.assertIn("Caceis Bank", html)
+
 
 class TestRendu(unittest.TestCase):
 
@@ -71,7 +83,7 @@ class TestRendu(unittest.TestCase):
                               genere_le=AUJ)
         self.assertIn("<!doctype html>", html)
         self.assertIn("Radar ARISE", html)
-        for attendu in ("Leads a traiter", "Echeances de marches", "Declencheurs CJIP",
+        for attendu in ("Leads a traiter", "Echeances de marches", "Declencheurs (CJIP et sanctions)",
                         "2026-10-31", "Due diligence des tiers", "Parcours IE",
                         "Amarante sortant", "Programme AFA", "PMC"):
             self.assertIn(attendu, html)
