@@ -1,0 +1,45 @@
+name: Sonde AfDB via moteur de recherche
+# Diagnostic ponctuel, DECLENCHEMENT MANUEL UNIQUEMENT (workflow_dispatch).
+# Ne touche a RIEN : ni Sheet, ni Postgres, ni etat. AUCUN appel LLM.
+# Mesure si l'AfDB (site bloque par Cloudflare depuis le 29/10/2026) reste
+# recuperable via l'index d'un moteur de recherche (Brave Search API) :
+#   1. RAPPEL    : nombre d'avis de passation AfDB retrouves, par type ;
+#   2. FRAICHEUR : delai entre publication d'un avis et apparition dans l'index.
+# N'interroge JAMAIS afdb.org : seules les metadonnees du moteur sont lues.
+# UTILISATION : Actions > "Sonde AfDB via moteur de recherche" > Run workflow.
+# SECRET REQUIS : BRAVE_API_KEY (offre gratuite, ~20 requetes consommees).
+# RESULTAT : onglet Summary + artefact "sonde-afdb-recherche".
+on:
+  workflow_dispatch:
+    inputs:
+      jours:
+        description: "Fenetre de fraicheur en jours (defaut 30)"
+        required: false
+        default: "30"
+jobs:
+  sonde-afdb-recherche:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer les dependances radar
+        run: pip install -r requirements-radar.txt
+      - name: Sonder l'AfDB via Brave Search
+        env:
+          BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
+          SONDE_JOURS: ${{ github.event.inputs.jours || '30' }}
+          SONDE_SORTIE: sonde_afdb_recherche_sortie
+        run: python sonde_afdb_recherche.py
+      - name: Conserver le rapport
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonde-afdb-recherche
+          path: sonde_afdb_recherche_sortie/
+          if-no-files-found: warn
+          retention-days: 30
