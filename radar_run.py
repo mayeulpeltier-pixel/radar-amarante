@@ -100,18 +100,32 @@ def verifier_interface(ted):
     return [s for s in SYMBOLES_REQUIS_TED if not hasattr(ted, s)]
 
 
+def run_echoue(resultats):
+    """True si au moins une etape est en ECHEC. Un statut BLOQUE (source fermee
+    cote fournisseur) ne fait PAS echouer le run. Fonction PURE (testee)."""
+    return any(statut == "ECHEC" for statut, _ in resultats.values())
+
+
 def lancer_collecteur(nom, module):
     """Lance le main() d'un collecteur, isole des erreurs.
-    Renvoie (succes: bool, duree_secondes: float)."""
+    Renvoie (statut: 'OK'|'BLOQUE'|'ECHEC', duree_secondes: float).
+
+    Un collecteur peut signaler un BLOCAGE de source (porte fermee cote
+    fournisseur, ex. defi Cloudflare AfDB) en renvoyant la chaine 'BLOQUE'
+    depuis son main() : ce n'est PAS un echec (le run reste vert), mais c'est
+    distinct d'un 'OK' dans le bilan. Tout autre retour vaut 'OK'. Une
+    exception reste un 'ECHEC'."""
     logger.info("=" * 60)
     logger.info(">>> %s", nom)
     logger.info("=" * 60)
     debut = time.time()
     try:
-        module.main()
+        resultat = module.main()
         duree = time.time() - debut
-        logger.info("%s termine en %.0fs.", nom, duree)
-        return True, duree
+        statut = "BLOQUE" if resultat == "BLOQUE" else "OK"
+        logger.info("%s termine en %.0fs%s.", nom, duree,
+                    " (SOURCE BLOQUEE)" if statut == "BLOQUE" else "")
+        return statut, duree
     except KeyboardInterrupt:
         # Interruption manuelle (ou coupure reseau Colab sur Android) : on
         # n'avale pas, on remonte pour que l'utilisateur sache que c'est lui
@@ -121,7 +135,7 @@ def lancer_collecteur(nom, module):
         duree = time.time() - debut
         logger.error("%s a ECHOUE apres %.0fs : %s", nom, duree, e)
         logger.error("Detail technique :\n%s", traceback.format_exc())
-        return False, duree
+        return "ECHEC", duree
 
 
 def main():
@@ -254,15 +268,14 @@ def main():
     logger.info("#" * 60)
     logger.info("BILAN GLOBAL DU RUN")
     logger.info("#" * 60)
-    duree_totale = 0.0
-    au_moins_un_echec = False
-    for nom, (ok, duree) in resultats.items():
-        duree_totale += duree
-        etat = "OK" if ok else "ECHEC"
-        if not ok:
-            au_moins_un_echec = True
-        logger.info("  %-18s : %-5s (%.0fs)", nom, etat, duree)
+    duree_totale = sum(duree for _, duree in resultats.values())
+    for nom, (statut, duree) in resultats.items():
+        logger.info("  %-18s : %-6s (%.0fs)", nom, statut, duree)
     logger.info("  %-18s : %.0fs", "Duree totale", duree_totale)
+    # Seul un ECHEC fait echouer le run. Un BLOQUE (source fermee cote
+    # fournisseur, ex. defi Cloudflare AfDB) laisse le run vert : voir
+    # run_echoue (pure, testee).
+    au_moins_un_echec = run_echoue(resultats)
 
     # --- 5 bis. Sante des appels au modele -----------------------------------
     # Un modele retire ferait echouer tous les appels sans faire echouer le run :

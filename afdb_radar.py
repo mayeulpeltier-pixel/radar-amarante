@@ -147,14 +147,71 @@ _NOMS_TRIES = sorted(NOM_VERS_ISO3, key=len, reverse=True)
 # PARTIE 2 -- COLLECTE RSS
 # ===========================================================================
 
+# ===========================================================================
+# BLOCAGE CLOUDFLARE (depuis le 29/10/2026)
+# ---------------------------------------------------------------------------
+# afdb.org est passe derriere un defi Cloudflare : toute requete non-navigateur
+# recoit HTTP 403 avec une page "Just a moment..." (verifie depuis un runner ET
+# une connexion de particulier). Ce N'EST PAS une panne du collecteur : c'est
+# une porte fermee cote AfDB, qui peut rouvrir seule. On la DISTINGUE d'un vrai
+# echec pour ne pas noyer les autres alertes sous un rouge permanent (lecon
+# UNGM : une alerte qui sonne toujours a masque une vraie panne six semaines).
+#
+# Comportement : un blocage laisse le run VERT (statut BLOQUE, pas ECHEC), le
+# RSS est reessaye a chaque run et repart seul si le defi tombe. Au-dela de
+# SEUIL_BLOCAGE_RUNS runs consecutifs (~2 semaines a 2 runs/semaine), on
+# re-alerte (ECHEC) pour forcer une decision humaine. Le signal amont AfDB,
+# lui, continue via afdb_projets.py (donnees IATI, porte restee ouverte).
+SEUIL_BLOCAGE_RUNS = int(os.environ.get("AFDB_SEUIL_BLOCAGE", "4"))
+AFDB_ETAT_FICHIER = os.environ.get("RADAR_AFDB_ETAT_FICHIER", "radar_etat_afdb.json")
+_MARQUEURS_DEFI = ("just a moment", "cf-chl", "challenge-platform", "cf-browser-verification",
+                   "enable javascript and cookies", "/cdn-cgi/challenge")
+
+
+class BlocageCloudflare(Exception):
+    """Le flux AfDB est inaccessible pour cause de defi Cloudflare (403), et
+    non a cause d'une erreur du collecteur."""
+
+
+def _est_defi_cloudflare(status_code, corps):
+    """Vrai si la reponse est un defi Cloudflare (403 + page de verification),
+    et non un simple 403 d'autorisation. Fonction PURE (testable)."""
+    if status_code != 403:
+        return False
+    bas = str(corps or "").lower()
+    return any(m in bas for m in _MARQUEURS_DEFI)
+
+
+def _lire_blocages():
+    import json
+    try:
+        with open(AFDB_ETAT_FICHIER, encoding="utf-8") as f:
+            return int(json.load(f).get("blocages_consecutifs", 0))
+    except Exception:  # noqa: BLE001  (fichier absent/illisible : zero)
+        return 0
+
+
+def _ecrire_blocages(n):
+    import json
+    try:
+        with open(AFDB_ETAT_FICHIER, "w", encoding="utf-8") as f:
+            json.dump({"blocages_consecutifs": int(n)}, f)
+    except Exception as e:  # noqa: BLE001  (l'etat best-effort ne casse rien)
+        print("  (info) etat AfDB non ecrit ({}).".format(e))
+
+
 def collecter_flux(fetch=None, session=None):
     """Renvoie le texte XML brut du flux. `fetch` injectable pour tests :
-    callable() -> str. En production, GET resiliente via la session du coeur."""
+    callable() -> str. En production, GET resiliente via la session du coeur.
+    Leve BlocageCloudflare si afdb.org renvoie un defi Cloudflare (403)."""
     if fetch is not None:
         return fetch()
     session = session or ted.session_robuste()
     rep = session.get(FLUX_AFDB, timeout=30, headers={
         "User-Agent": "radar-amarante/1.0 (veille commerciale)"})
+    if _est_defi_cloudflare(rep.status_code, rep.text):
+        raise BlocageCloudflare(
+            "afdb.org sous defi Cloudflare (HTTP 403) : flux RSS inaccessible.")
     rep.raise_for_status()
     return rep.text
 
@@ -465,9 +522,22 @@ def main():
 
     try:
         avis, stats = collecter_et_normaliser()
+    except BlocageCloudflare as e:
+        n = _lire_blocages() + 1
+        _ecrire_blocages(n)
+        if n >= SEUIL_BLOCAGE_RUNS:
+            print("AfDB BLOQUE par Cloudflare depuis {} runs consecutifs (~{} "
+                  "semaines) : on re-alerte pour decision. {}".format(
+                      n, round(n / 2), e))
+            raise                                  # -> ECHEC, l'ordonnanceur alerte
+        print("AfDB BLOQUE (defi Cloudflare), {}e run consecutif (seuil d'alerte "
+              "{}). Run laisse VERT : le RSS sera reessaye, le signal amont passe "
+              "par afdb_projets.py (IATI). {}".format(n, SEUIL_BLOCAGE_RUNS, e))
+        return "BLOQUE"
     except Exception as e:
         print("ERREUR : collecte du flux AfDB impossible ({}).".format(e))
         raise
+    _ecrire_blocages(0)                            # succes : le compteur repart a zero
     print("Flux : {items} item(s) | hors perimetre : {hors_perimetre} | "
           "retenus (pays a risque, non attribution, frais) : {retenus}".format(**stats))
     if not avis:
