@@ -59,6 +59,17 @@ class TestPrefiltreSurIntitulesReels(unittest.TestCase):
             self.assertEqual(L.prefiltre(titre)[0], "bruit", titre)
         self.assertEqual(L.prefiltre("Rapports OSINT sur les migrations")[0], "ie_titre")
 
+    def test_ctf_en_fin_de_titre_ecarte(self):
+        # IE-5 (31/10) : "OSINT CTF" en fin de titre echappait au filtre quand
+        # " ctf " etait cherche comme sous-chaine (pas d'espace final). Un
+        # evenement CTF reste du bruit meme sans texte apres.
+        self.assertEqual(
+            L.prefiltre("Przygotowanie i wsparcie realizacji zawodow OSINT CTF")[0],
+            "bruit")
+        self.assertEqual(L.prefiltre("CTF cybersecurite")[0], "bruit")
+        # Un mot qui CONTIENT "ctf" ne declenche pas (frontiere de mot).
+        self.assertNotEqual(L.prefiltre("veille strategique ctfinance")[0], "bruit")
+
     def test_ambigus_et_vides(self):
         self.assertEqual(L.prefiltre("Revue de presse quotidienne")[0], "a_mesurer")
         self.assertEqual(L.prefiltre("Business intelligence dashboard licences")[0], "a_mesurer")

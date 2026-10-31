@@ -117,6 +117,22 @@ def termes_trouves(texte_n):
     return [(m, n) for m, n in TERMES if _contient_mot(texte_n, m)]
 
 
+def _bruit_present(texte_n):
+    """Vrai si un terme de BRUIT est present. Une entree ENCADREE d'espaces
+    (ex. " ctf ") est traitee comme un MOT ENTIER, pour matcher aussi en fin
+    de titre ("... osint ctf"), que la recherche par sous-chaine ratait
+    (sonde IE-5, 31/10). Les autres entrees restent des sous-chaines
+    volontaires ("touris" -> tourisme/touristique)."""
+    for x in BRUIT:
+        noyau = x.strip()
+        if x != noyau:
+            if _contient_mot(texte_n, noyau):
+                return True
+        elif x in texte_n:
+            return True
+    return False
+
+
 def prefiltre(titre, corps=""):
     """Classe deterministe d'un avis, AVANT tout appel LLM.
 
@@ -131,7 +147,7 @@ def prefiltre(titre, corps=""):
     termes = sorted({m for m, _ in t_titre + t_corps})
     if any(x in t for x in ANALYSTE) and not any(_contient_mot(t, m) for m in NOYAU_IE):
         return "hors_analyste", termes
-    if any(x in t for x in BRUIT) or any(
+    if _bruit_present(t) or any(
             _contient_mot(t, a) and b in t for a, b in BRUIT_COMBINE):
         return "bruit", termes
     if any(n == "fort" for _, n in t_titre):
