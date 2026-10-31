@@ -1,0 +1,41 @@
+name: Sonde déclencheurs AMF/ACPR (jetable)
+# Mesure EN ISOLATION, lecture seule, sans LLM, si les sanctions AMF et ACPR
+# génèrent des prospects nommés avec un besoin de remédiation conformité/LCB-FT
+# (évaluation des tiers, KYC) = déclencheurs ARISE, même logique que les CJIP.
+#   - AMF : joignable partout (sitemap + pages + PDF statiques).
+#   - ACPR : banque-france.fr bloque le conteneur de dev ; cet egness Actions
+#            permet de la mesurer aussi.
+# Produit rapport.md (résumé de job) + amf_pertinents.csv en artefact.
+# A SUPPRIMER une fois la décision de câbler le collecteur prise.
+on:
+  workflow_dispatch:
+    inputs:
+      mois:
+        description: "Fenêtre en mois"
+        required: false
+        default: "24"
+
+jobs:
+  sonde:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer les dépendances
+        run: pip install -r requirements-radar.txt
+      - name: Sonder AMF + ACPR (aucune écriture)
+        env:
+          SONDE_MOIS: ${{ github.event.inputs.mois }}
+        run: python sonde_declencheurs_amf_acpr.py
+      - name: Publier le rapport
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonde-declencheurs-amf-acpr
+          path: sonde_declencheurs_amf_acpr_sortie/
+          if-no-files-found: warn
