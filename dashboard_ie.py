@@ -42,6 +42,9 @@ COLONNES = {
                               "juridiction", "statut", "programme", "afa",
                               "duree_mois", "fin_suivi", "lecture",
                               "lien_communique", "lien_convention"),
+    "radar_ie_sanctions": ("cle", "source", "nom", "type", "pays", "ville",
+                           "exclu_par", "cross_debarment", "debar_debut",
+                           "debar_fin", "motif", "lien", "detecte_le"),
 }
 
 
@@ -61,16 +64,17 @@ def lire_tables(url):
     """(leads, echeances, declencheurs). Chaque table est best-effort :
     absente ou illisible -> liste vide, la page reste complete."""
     if not url:
-        return [], [], []
+        return [], [], [], []
     try:
         import psycopg
         with psycopg.connect(url, connect_timeout=15) as conn:
             return (lire_table(conn, "radar_ie_leads", COLONNES["radar_ie_leads"]),
                     lire_table(conn, "radar_ie_echeances", COLONNES["radar_ie_echeances"]),
-                    lire_table(conn, "radar_ie_declencheurs", COLONNES["radar_ie_declencheurs"]))
+                    lire_table(conn, "radar_ie_declencheurs", COLONNES["radar_ie_declencheurs"]),
+                    lire_table(conn, "radar_ie_sanctions", COLONNES["radar_ie_sanctions"]))
     except Exception as e:  # noqa: BLE001
         print("  (info) base IE indisponible ({}).".format(str(e)[:120]))
-        return [], [], []
+        return [], [], [], []
 
 
 # ===========================================================================
@@ -107,6 +111,14 @@ def declencheurs_affiches(decl):
     vus = [d for d in decl if d.get("statut") in rang]
     return sorted(vus, key=lambda d: (rang[d["statut"]], _tri_date(d.get("validation"))),
                   reverse=False)
+
+
+def sanctions_recentes(sanctions, aujourd, jours=180):
+    """Exclusions dont la date de debut est dans les N derniers jours (signal
+    radar), les plus recentes d'abord. Le stock complet reste en base."""
+    seuil = aujourd - datetime.timedelta(days=jours)
+    rec = [s for s in sanctions if (_date(s.get("debar_debut")) or datetime.date.min) >= seuil]
+    return sorted(rec, key=lambda s: str(s.get("debar_debut") or ""), reverse=True)
 
 
 def _tri_date(v):
@@ -226,6 +238,27 @@ def rendre_declencheurs(decl):
             '</tr></thead><tbody>' + "".join(lignes) + '</tbody></table>')
 
 
+def rendre_sanctions(sanctions):
+    if not sanctions:
+        return '<p class="vide">Aucune exclusion recente.</p>'
+    lignes = []
+    for s in sanctions:
+        cross = _vrai(s.get("cross_debarment"))
+        badge = _badge("Cross-debarment" if cross else "Banque mondiale",
+                       "pos-concurrent" if cross else "pos-autre")
+        lignes.append(
+            '<tr><td>{deb}</td><td>{badge}</td><td class="titre">{nom}</td>'
+            '<td>{type}</td><td>{pays}</td><td>{fin}</td>'
+            '<td class="motifs">{motif}</td><td class="liens">{lien}</td></tr>'.format(
+                deb=e(s.get("debar_debut")), badge=badge,
+                nom=e(s.get("nom")), type=e(s.get("type")), pays=e(s.get("pays")),
+                fin=e(s.get("debar_fin")), motif=e(s.get("motif")),
+                lien=_lien(s.get("lien"), "source")))
+    return ('<table><thead><tr><th>Exclu le</th><th>Par</th><th>Nom</th>'
+            '<th>Type</th><th>Pays</th><th>Jusqu\'au</th><th>Motif</th>'
+            '<th>Source</th></tr></thead><tbody>' + "".join(lignes) + '</tbody></table>')
+
+
 STYLE = """
 :root{--bg:#f4f5f7;--carte:#fff;--txt:#1c2431;--doux:#5b6676;--trait:#e3e7ee;
 --accent:#1f6feb;--contacter:#b42318;--surveiller:#b54708;--ok:#067647}
@@ -283,13 +316,14 @@ function filtrer(){
 """
 
 
-def generer_html(leads, echeances, declencheurs, genere_le=None):
+def generer_html(leads, echeances, declencheurs, sanctions=None, genere_le=None):
     """Page complete, auto-suffisante. Fonction PURE."""
     genere_le = genere_le or datetime.date.today()
+    auj = genere_le if isinstance(genere_le, datetime.date) else datetime.date.today()
     la = leads_affiches(leads)
-    le = echeances_affichees(echeances, genere_le if isinstance(genere_le, datetime.date)
-                             else datetime.date.today())
+    le = echeances_affichees(echeances, auj)
     ld = declencheurs_affiches(declencheurs)
+    ls = sanctions_recentes(sanctions or [], auj)
     stamp = genere_le.isoformat() if isinstance(genere_le, datetime.date) else str(genere_le)
 
     def compteur(n):
@@ -312,25 +346,31 @@ La saisie (statut, commentaire) reste dans le classeur ARISE.</p></header>
 <section><h2>Declencheurs CJIP{c_decl}</h2>
 <p class="sous">Conventions judiciaires d'interet public imposant un programme de conformite sous controle de l'AFA : demande privee a venir.</p>
 {decl}</section>
+<section><h2>Sanctions des bailleurs{c_sanc}</h2>
+<p class="sous">Entreprises et personnes recemment exclues des marches des banques multilaterales (Banque mondiale et cross-debarment des autres banques) pour fraude ou corruption. Matiere de due diligence.</p>
+{sanc}</section>
 </main>
 <footer>Radar Amarante — volet IE. Donnees internes, usage ARISE uniquement.</footer>
 <script>{script}</script></body></html>""".format(
         style=STYLE, script=SCRIPT, stamp=e(stamp),
         c_leads=compteur(len(la)), c_ech=compteur(len(le)), c_decl=compteur(len(ld)),
-        leads=rendre_leads(la), ech=rendre_echeances(le), decl=rendre_declencheurs(ld))
+        c_sanc=compteur(len(ls)),
+        leads=rendre_leads(la), ech=rendre_echeances(le), decl=rendre_declencheurs(ld),
+        sanc=rendre_sanctions(ls))
 
 
 def main():
     url = os.environ.get("DATABASE_URL")
     sortie = os.environ.get("IE_DASHBOARD_SORTIE", "public_ie")
-    leads, ech, decl = lire_tables(url)
-    html_page = generer_html(leads, ech, decl)
+    leads, ech, decl, sanctions = lire_tables(url)
+    html_page = generer_html(leads, ech, decl, sanctions)
     os.makedirs(sortie, exist_ok=True)
     chemin = os.path.join(sortie, "index.html")
     with open(chemin, "w", encoding="utf-8") as f:
         f.write(html_page)
-    print("Tableau de bord ARISE ecrit : {} ({} leads, {} echeances, {} declencheurs).".format(
-        chemin, len(leads_affiches(leads)), len(ech), len(declencheurs_affiches(decl))))
+    print("Tableau de bord ARISE ecrit : {} ({} leads, {} echeances, {} declencheurs, "
+          "{} sanctions).".format(chemin, len(leads_affiches(leads)), len(ech),
+                                  len(declencheurs_affiches(decl)), len(sanctions)))
     resume = os.environ.get("GITHUB_STEP_SUMMARY")
     if resume:
         with open(resume, "a", encoding="utf-8") as f:
