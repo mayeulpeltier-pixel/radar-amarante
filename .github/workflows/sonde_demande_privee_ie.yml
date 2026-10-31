@@ -1,0 +1,43 @@
+name: Sonde demande privée IE (jetable)
+# Mesure EN ISOLATION la demande privée d'IE sur deux canaux, lecture seule,
+# aucune écriture base/Sheet :
+#   1. Adzuna  : entreprises qui recrutent des postes IE / conformité (signal
+#                concret et daté ; secrets ADZUNA_APP_ID / ADZUNA_APP_KEY).
+#   2. Presse  : familles Google News (M&A, enquêtes, Sapin II, IE explicite),
+#                avec heuristique de précision sans LLM.
+# Produit un rapport.md (résumé de job) + entreprises_adzuna.csv en artefact.
+# A SUPPRIMER une fois la décision prise (quels canaux justifient un collecteur).
+on:
+  workflow_dispatch:
+    inputs:
+      jours:
+        description: "Fenêtre de fraîcheur en jours"
+        required: false
+        default: "45"
+
+jobs:
+  sonde:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer les dépendances
+        run: pip install -r requirements-radar.txt
+      - name: Sonder la demande privée (Adzuna + presse, aucune écriture)
+        env:
+          ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
+          ADZUNA_APP_KEY: ${{ secrets.ADZUNA_APP_KEY }}
+          SONDE_JOURS: ${{ github.event.inputs.jours }}
+        run: python sonde_demande_privee_ie.py
+      - name: Publier le rapport
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonde-demande-privee-ie
+          path: sonde_demande_privee_ie_sortie/
+          if-no-files-found: warn
