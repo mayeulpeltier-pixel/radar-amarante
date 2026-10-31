@@ -47,7 +47,7 @@ jobs:
         run: pip install -r requirements-radar.txt
       # Barriere : les tests du volet IE d'abord. S'ils cassent, rien ne tourne.
       - name: Tester le volet IE
-        run: python -m unittest test_lentille_ie test_collecteur_ie test_collecteur_international_ie test_echeances_ie test_declencheurs_ie -v
+        run: python -m unittest test_lentille_ie test_collecteur_ie test_collecteur_international_ie test_echeances_ie test_declencheurs_ie test_dashboard_ie -v
       - name: Reconstituer la cle de service Google
         id: cle
         run: |
@@ -125,3 +125,35 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python echeances_ie.py
+      # Tableau de bord ARISE (IE-2) : page web autonome lisant les tables
+      # radar_ie_* (jamais radar_lignes). Isole de l'app Operations. Genere
+      # meme en mode debug (lecture seule). Toujours apres les collecteurs.
+      - name: Generer le tableau de bord ARISE
+        id: dashboard
+        if: always() && steps.cle.outcome == 'success'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          IE_DASHBOARD_SORTIE: public_ie
+        run: python dashboard_ie.py
+      - name: Conserver le tableau de bord ARISE (artefact)
+        if: always() && steps.dashboard.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-arise
+          path: public_ie/
+          if-no-files-found: warn
+          retention-days: 30
+      # Publication Cloudflare Pages, PROJET SEPARE de celui des Operations
+      # (radar-amarante-arise) : ARISE a sa propre URL, a placer derriere
+      # Cloudflare Access comme la page Operations. Best-effort : un probleme
+      # d'hebergement ne fait pas echouer la collecte (l'artefact reste dispo).
+      - name: Publier le tableau de bord ARISE
+        if: always() && steps.dashboard.outcome == 'success' && env.CF_TOKEN != ''
+        continue-on-error: true
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy public_ie --project-name=radar-amarante-arise --branch=main
