@@ -313,6 +313,17 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python bm_projets.py
 
+      # Projets amont AfDB via les donnees ouvertes IATI (d-portal). Repli du
+      # collecteur d'avis afdb_radar.py, injoignable depuis le 29/10/2026 (defi
+      # Cloudflare). Signal amont uniquement, aucun LLM, onglet separe.
+      - name: Collecter les projets amont AfDB (IATI)
+        if: always() && steps.cle.outcome == 'success'
+        env:
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python afdb_projets.py
+
       # 4e) Analyse LLM des attributions (attributions_analyse.py).
       #     Doit tourner APRES les cinq collecteurs d'attributions (leurs lignes
       #     brutes sont sa source) et AVANT le dashboard (qui joint le resultat).

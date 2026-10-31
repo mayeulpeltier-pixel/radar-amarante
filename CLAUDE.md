@@ -98,7 +98,8 @@ autres `.yml` sont des workflows GitHub. Python est épinglé à **3.12** via
 |---|---|---|
 | `ted_complet_bm.py` | Banque Mondiale | Actif · budget `BM_BUDGET` (150) |
 | `ted_complet_reliefweb.py` | ReliefWeb | Actif · budget `RELIEFWEB_BUDGET` (120) |
-| `afdb_radar.py` | AfDB (RSS) | Actif · `AFDB_BUDGET` |
+| `afdb_radar.py` | AfDB (RSS) | **Bloqué** depuis le 29/10/2026 (défi Cloudflare, HTTP 403) ; réessaie à chaque run |
+| `afdb_projets.py` | AfDB projets amont via IATI (d-portal) | Actif · `RADAR_AFDB_PROJETS` · repli du RSS bloqué, signal amont, sans LLM, onglet `afdb_projets_radar` |
 | `ebrd_radar.py` | EBRD (portail ECEPP) | Actif · `EBRD_BUDGET` |
 | `ungm_radar.py` | UNGM (agences ONU) | Actif |
 | `adb_radar.py` | ADB | **Désactivé** (`RADAR_ADB=0`), portail rendu en JS |
