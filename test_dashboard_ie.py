@@ -102,10 +102,35 @@ class TestRendu(unittest.TestCase):
         self.assertNotIn("99 EUR", html)
 
 
+class TestSanctions(unittest.TestCase):
+
+    def _s(self, cle, debut="2026-10-20", cross="false", nom="ACME LTD"):
+        return {"cle": cle, "nom": nom, "type": "Entreprise", "pays": "China",
+                "exclu_par": "Banque mondiale", "cross_debarment": cross,
+                "debar_debut": debut, "debar_fin": "2027-01-01", "motif": "Fraud",
+                "lien": "https://www.worldbank.org/x", "detecte_le": "2026-10-31"}
+
+    def test_recentes_filtre_et_tri(self):
+        s = [self._s("a", "2024-01-01"), self._s("b", "2026-10-01"),
+             self._s("c", "2026-10-27")]
+        rec = D.sanctions_recentes(s, AUJ, 180)
+        self.assertEqual([x["cle"] for x in rec], ["c", "b"])   # recent d'abord, vieux exclu
+
+    def test_section_rendue_et_cross_badge(self):
+        html = D.generer_html([], [], [], [self._s("x", cross="true")], genere_le=AUJ)
+        self.assertIn("Sanctions des bailleurs", html)
+        self.assertIn("Cross-debarment", html)
+        self.assertIn("ACME LTD", html)
+
+    def test_section_vide(self):
+        html = D.generer_html([], [], [], [], genere_le=AUJ)
+        self.assertIn("Aucune exclusion recente", html)
+
+
 class TestLectureVide(unittest.TestCase):
 
     def test_sans_url(self):
-        self.assertEqual(D.lire_tables(None), ([], [], []))
+        self.assertEqual(D.lire_tables(None), ([], [], [], []))
 
 
 if __name__ == "__main__":
