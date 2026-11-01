@@ -1,0 +1,18 @@
+name: Sonde BODACC (jetable)
+
+# Sonde jetable (01/11/2026) : mesure le rendement des declencheurs ARISE dans
+# le BODACC (due diligence, forensic/recouvrement). Lecture seule, aucun secret.
+# A supprimer une fois la decision prise. Lancement manuel uniquement.
+on:
+  workflow_dispatch:
+
+jobs:
+  sonde:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Sonder le BODACC
+        run: python sonde_bodacc_ie.py
