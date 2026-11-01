@@ -46,6 +46,42 @@ class TestIndex(unittest.TestCase):
             self.assertTrue(c["etranger"])
 
 
+class TestChampConcurrentiel(unittest.TestCase):
+    """Resume concurrentiel qui alimente la dimension winability (P2, 01/11)."""
+
+    def test_match_precis_etranger(self):
+        idx = cp.construire_index([attrib("Onur", etr="oui")])
+        ch = cp.champ_concurrentiel(idx, "Génie civil / BTP", "Sahel")
+        self.assertFalse(ch["ouvert"])
+        self.assertTrue(ch["etranger"])
+        self.assertEqual(ch["n"], 1)
+        self.assertEqual(ch["granularite"], "secteur_zone")
+
+    def test_repli_secteur_puis_zone(self):
+        idx = cp.construire_index([attrib("Onur")])
+        self.assertEqual(cp.champ_concurrentiel(idx, "Génie civil / BTP", "ZoneX")["granularite"],
+                         "secteur")
+        self.assertEqual(cp.champ_concurrentiel(idx, "AutreSecteur", "Sahel")["granularite"],
+                         "zone")
+
+    def test_terrain_ouvert_si_rien(self):
+        idx = cp.construire_index([attrib("Onur")])
+        ch = cp.champ_concurrentiel(idx, "Inconnu", "Nulle part")
+        self.assertTrue(ch["ouvert"])
+        self.assertEqual(ch["n"], 0)
+        self.assertFalse(ch["etranger"])
+
+    def test_index_absent_ouvert(self):
+        ch = cp.champ_concurrentiel(None, "X", "Y")
+        self.assertTrue(ch["ouvert"])
+
+    def test_local_seul_non_etranger(self):
+        idx = cp.construire_index([attrib("Locale", origine="MLI", etr="non")])
+        ch = cp.champ_concurrentiel(idx, "Génie civil / BTP", "Sahel")
+        self.assertFalse(ch["etranger"])
+        self.assertFalse(ch["ouvert"])
+
+
 class TestCascade(unittest.TestCase):
 
     def setUp(self):

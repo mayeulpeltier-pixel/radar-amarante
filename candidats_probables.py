@@ -93,6 +93,42 @@ def construire_index(leads, top=8):
     }
 
 
+def champ_concurrentiel(index, secteur, zone):
+    """Resume du champ concurrentiel pour un (secteur, zone), lu sur l'index
+    deja construit par `construire_index`. Fonction PURE, AUCUNE collecte
+    nouvelle : pure relecture des attributions deja en base.
+
+    Sert la dimension `winability` d'opportunites (P2, 01/11/2026). Jusqu'ici
+    l'index n'alimentait que le badge « incumbent » de la fiche ; la gagnabilite
+    l'ignorait. On rend donc visible a la winability ce qu'on savait deja du
+    terrain concurrentiel.
+
+    Repli secteur_zone -> secteur -> zone, comme le fait le front (le plus
+    precis d'abord). Renvoie :
+      {"n": nb d'incumbents connus sur l'axe retenu,
+       "etranger": au moins un incumbent etranger (prospect a deloger /
+                   partenaire local -- l'angle Amarante par excellence),
+       "ouvert": aucun incumbent connu nulle part sur ces axes,
+       "granularite": "secteur_zone" | "secteur" | "zone" | "aucune"}
+
+    Un mismatch de vocabulaire secteur/zone entre sources retombe doucement sur
+    un axe plus large puis sur "ouvert" : degradation gracieuse, pas une erreur.
+    """
+    vide = {"n": 0, "etranger": False, "ouvert": True, "granularite": "aucune"}
+    if not index:
+        return vide
+    sect = (secteur or "").strip() or "Autre"
+    zn = (zone or "").strip() or "Non classe"
+    for gran, cle in (("secteur_zone", "{}|{}".format(sect, zn)),
+                      ("secteur", sect), ("zone", zn)):
+        lst = (index.get(gran) or {}).get(cle)
+        if lst:
+            return {"n": len(lst),
+                    "etranger": any(c.get("etranger") for c in lst),
+                    "ouvert": False, "granularite": gran}
+    return vide
+
+
 # ===========================================================================
 # BIDDER INTELLIGENCE (P2.6, 26/08/2026)
 # ===========================================================================
