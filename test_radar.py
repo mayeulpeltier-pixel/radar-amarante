@@ -2237,6 +2237,27 @@ class TestCablageUNGMDashboard(unittest.TestCase):
         self.assertIn("<html", html.lower())
 
 
+class TestReferentielLEIFiche(unittest.TestCase):
+    """Audit 3.4 : le LEI persisté doit être rattaché au lead et affiché dans
+    la fiche 360 (avec lien vers le registre GLEIF)."""
+
+    def test_attacher_enrichissement_rattache_le_lei(self):
+        import radar_dashboard as dash
+        lead = {"nom": "n.c.", "entreprise": "Stecol"}
+        enr = {"stecol": {"dirigeant_principal": "", "siren": "",
+                          "chiffre_affaires": "", "lei": "969500K1S2L3M4N5O6P7"}}
+        dash._attacher_enrichissement(lead, enr, "Stecol")
+        self.assertEqual(lead["lei"], "969500K1S2L3M4N5O6P7")
+
+    def test_fiche_affiche_le_lei(self):
+        """Point de branchement dans le gabarit : accumulateur, condition
+        d'affichage et lien GLEIF."""
+        html = radar_dashboard.GABARIT_HTML
+        for marqueur in ("enr.lei", "f.enr.lei", "search.gleif.org"):
+            self.assertIn(marqueur, html,
+                          "point de branchement LEI absent : {}".format(marqueur))
+
+
 try:
     import ungm_attributions
 except Exception:

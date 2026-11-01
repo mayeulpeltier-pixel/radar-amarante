@@ -99,6 +99,12 @@ COLONNES_ENRICHIES = [
     "entreprise", "siren", "nom_officiel", "dirigeant_principal",
     "autres_dirigeants", "activite_naf", "effectif", "ville",
     "chiffre_affaires", "source", "date_enrichissement",
+    # Ajout 01/11/2026 (P2 / audit 3.4) : le LEI (GLEIF) etait recupere puis
+    # jete. On le PERSISTE comme referentiel d'identite. En FIN de liste a
+    # dessein : lecture positionnelle preservee (regles 4 et 6), le miroir
+    # JSONB gagne juste une clef, aucun ALTER. Vide pour les societes FR (le
+    # registre gouv ne fournit pas de LEI) : c'est normal, pas une anomalie.
+    "lei",
 ]
 
 # Libelles des tranches d'effectif INSEE.
@@ -385,7 +391,7 @@ def enrichir_une(entreprise_row, session=None, fetch_gouv=None, fetch_pappers=No
             if gleif["pays"]:                    # pays code dans la ville (decision 2A)
                 ville = "{} ({})".format(ville, gleif["pays"]) if ville else "({})".format(gleif["pays"])
             base.update({"entreprise": nom, "nom_officiel": gleif["nom_officiel"],
-                         "ville": ville, "source": "gleif",
+                         "ville": ville, "source": "gleif", "lei": gleif.get("lei", ""),
                          "date_enrichissement": aujourd})
         else:
             base.update({"entreprise": nom, "source": "non trouvée",

@@ -1092,6 +1092,7 @@ def _attacher_enrichissement(lead, enrichissement, cle_entreprise):
         lead["email"] = email           # contact Hunter -> pre-remplit le mailto
     lead["siren"] = _txt(info.get("siren"))
     lead["ca"] = _txt(info.get("chiffre_affaires"))
+    lead["lei"] = _txt(info.get("lei"))     # referentiel GLEIF (audit 3.4), vide si FR
 
 
 def superposer_analyse_attribution(lead, analyse):
@@ -1412,7 +1413,7 @@ def lire_onglets(sheet_id, fichier_cs):
         onglet_enr = "entreprises_enrichies"
         colonnes_enr = ["entreprise", "siren", "nom_officiel", "dirigeant_principal",
                         "autres_dirigeants", "activite_naf", "effectif", "ville",
-                        "chiffre_affaires", "source", "date_enrichissement"]
+                        "chiffre_affaires", "source", "date_enrichissement", "lei"]
     enrichissement = {}
     for d in _lignes_vers_dicts(valeurs(onglet_enr), colonnes_enr):
         nom = _txt(d.get("entreprise")).lower()
@@ -2575,12 +2576,13 @@ function finaliserFiche(f){
   f.signaux.forEach(s=>{ if((RANG_ACTION[s.action]||0)>(RANG_ACTION[prio]||0)) prio=s.action; });
   if(!f.signaux.length) prio='aucun';                 // cible surveillee, sans signal recent
   else if(!(prio in RANG_ACTION)) prio='surveiller';
-  let enr={nom:'',email:'',siren:'',ca:''};
+  let enr={nom:'',email:'',siren:'',ca:'',lei:''};
   f.signaux.forEach(s=>{
     if(!enr.nom && s.nom && s.nom!=='n.c.') enr.nom=s.nom;
     if(!enr.email && s.email && s.email!=='n.c.') enr.email=s.email;
     if(!enr.siren && s.siren) enr.siren=s.siren;
     if(!enr.ca && s.ca) enr.ca=s.ca;
+    if(!enr.lei && s.lei) enr.lei=s.lei;
   });
   const repr=f.signaux.find(s=>s.email&&s.email!=='n.c.')||f.signaux[0]||null;
   const meilleur=f.signaux.length?f.signaux.reduce((a,b)=>b.final>a.final?b:a):null;
@@ -3417,12 +3419,13 @@ function ficheCard(f,i){
     ? [secteur,'aucun signal récent'].join(' · ')
     : [secteur,f.n+' signal'+(f.n>1?'s':''),(f.zones.join(', ')||'zone n.c.')].join(' · ');
   const sig=f.signaux.slice().sort((a,b)=>(b.date_det||'').localeCompare(a.date_det||'')).slice(0,4).map(ficheSignalRow).join('');
-  const hasEnr=f.enr.nom||f.enr.email||f.enr.siren||f.enr.ca;
+  const hasEnr=f.enr.nom||f.enr.email||f.enr.siren||f.enr.ca||f.enr.lei;
   const enr=hasEnr?`<div class="fenr">
      ${f.enr.nom?`<div class="er"><span class="ek">Dirigeant</span><span>${esc(f.enr.nom)}</span></div>`:''}
      ${f.enr.email?`<div class="er"><span class="ek">Email</span><span>${esc(f.enr.email)}</span></div>`:''}
      ${f.enr.siren?`<div class="er"><span class="ek">SIREN</span><span>${esc(f.enr.siren)}</span></div>`:''}
      ${f.enr.ca?`<div class="er"><span class="ek">CA</span><span>${esc(f.enr.ca)} €</span></div>`:''}
+     ${f.enr.lei?`<div class="er"><span class="ek">LEI</span><span class="mono"><a href="https://search.gleif.org/#/record/${esc(f.enr.lei)}" target="_blank" rel="noopener">${esc(f.enr.lei)}</a></span></div>`:''}
    </div>`:(sansSignal?'':`<div class="fmiss">⚠ Contact non enrichi (entreprise probablement hors France). À rechercher manuellement.</div>`);
   const mailBtn=f.repr?`<a class="act mail" href="${mailtoHref(f.repr)}">✉ Rédiger l'email</a>`:'';
   const voirBtn=f.n>0?`<button class="act" type="button" data-fiche-ent="${i}">Voir les ${f.n} signal${f.n>1?'s':''} ↗</button>`:'';
