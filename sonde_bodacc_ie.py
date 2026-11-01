@@ -67,56 +67,52 @@ def nom_entreprise(rec):
         return ""
 
 
+from datetime import date, timedelta
+
+# Familles d'avis BODACC visees, mappees a une ligne de service ARISE.
+CIBLES = [
+    ("Procédures collectives", "forensic / recouvrement"),
+    ("Ventes et cessions", "due diligence (acquisition fonds/société)"),
+    ("Modifications", "due diligence (changement de contrôle / dirigeant)"),
+    ("Créations", "(volume de référence : trop générique = bruit)"),
+]
+
+
 def main():
     print("=" * 64)
-    print("SONDE BODACC pour ARISE -- structure, volume, exemples")
+    print("SONDE BODACC pour ARISE -- volume par famille sur 30 j + exemples")
     print("=" * 64)
 
-    # 1) Un enregistrement : schema + volume total.
+    # 1) Schema + volume total.
     d = get({"limit": 1, "order_by": "dateparution desc"})
-    total = d.get("total_count")
     recs = d.get("results") or []
     if not recs:
         print("Aucun enregistrement renvoye."); return
-    champs = sorted(recs[0].keys())
-    fam_key = champ_famille(recs[0])
-    print("total_count (toutes dates) :", total)
-    print("champ famille d'avis       :", fam_key)
-    print("champs disponibles         :", ", ".join(champs))
-    print()
+    fam_key = champ_famille(recs[0]) or "familleavis_lib"
+    print("total_count (toutes dates) :", d.get("total_count"))
+    print("champ famille              :", fam_key)
+    depuis = (date.today() - timedelta(days=30)).isoformat()
+    print("fenetre                    : annonces depuis", depuis)
 
-    # 2) Echantillon des annonces les plus recentes -> distribution par famille.
-    echantillon = []
-    for page in range(5):                       # 5 x 100 = 500 plus recentes
-        d = get({"limit": 100, "offset": page * 100, "order_by": "dateparution desc"})
-        echantillon += d.get("results") or []
-    if not fam_key:
-        fam_key = champ_famille(echantillon[0]) if echantillon else None
-    dist = Counter(premier(r.get(fam_key)) for r in echantillon if fam_key)
-    if echantillon:
-        dates = sorted(premier(r.get("dateparution")) for r in echantillon if r.get("dateparution"))
-        print("Echantillon : {} annonces, du {} au {}".format(
-            len(echantillon), dates[0] if dates else "?", dates[-1] if dates else "?"))
-    print("\nDistribution par famille d'avis (echantillon recent) :")
-    for fam, n in dist.most_common():
-        print("  {:5d}  {}".format(n, fam))
-
-    # 3) Exemples pour les deux declencheurs ARISE visés.
-    def exemples(motcle, titre):
-        print("\n--- {} ---".format(titre))
-        vus = [r for r in echantillon
-               if motcle in premier(r.get(fam_key)).lower()] if fam_key else []
-        if not vus:
-            print("  (aucun dans l'echantillon recent)")
-        for r in vus[:4]:
-            print("  {} | {} | {}".format(
-                premier(r.get("dateparution")),
-                (nom_entreprise(r) or "?")[:48],
-                (premier(r.get("ville")) or premier(r.get("tribunal")) or "")[:30]))
-
-    exemples("proc", "Procedures collectives -> forensic / recouvrement")
-    exemples("vente", "Ventes et cessions -> due diligence")
-    exemples("cession", "Cessions -> due diligence")
+    # 2) Pour chaque famille cible : volume sur 30 j + exemples nommes.
+    for fam, service in CIBLES:
+        where = '{k}="{v}" and dateparution>="{d}"'.format(k=fam_key, v=fam, d=depuis)
+        try:
+            r = get({"where": where, "limit": 4, "order_by": "dateparution desc"})
+        except Exception as e:  # noqa: BLE001
+            print("\n### {} : requete en echec ({})".format(fam, str(e)[:80])); continue
+        n = r.get("total_count")
+        print("\n### {}  ->  {}".format(fam, service))
+        print("    volume 30 j : {}".format(n))
+        for rec in (r.get("results") or [])[:4]:
+            jug = premier(rec.get("jugement"))
+            if isinstance(jug, dict):
+                jug = jug.get("famille") or jug.get("nature") or ""
+            print("      {} | {} | SIREN {} | {}".format(
+                premier(rec.get("dateparution")),
+                (nom_entreprise(rec) or "?")[:42],
+                (premier(rec.get("registre")) or "?")[:20],
+                (str(jug) or premier(rec.get("ville")) or "")[:40]))
 
     print("\n(sonde terminee ; aucune ecriture)")
 
