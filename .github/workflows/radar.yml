@@ -105,7 +105,6 @@ jobs:
           RADAR_LOG_FILE: radar.log
           RELIEFWEB_APPNAME: amarante-radar-veille-x7q234hyu
           RADAR_GDELT: "0"
-          RADAR_ADB: "0"          # ADB desactive : portail rendu en JS, 0 resultat depuis l'infra CI (meme logique que GDELT). Retirer cette ligne pour reactiver.
           RADAR_PRIVES_DEBUG: "0"
           # Retroaction (item 7) en mode OMBRE : mesure ce que la retroaction
           # FERAIT (combien d'actions changeraient) sans rien appliquer au score.
@@ -239,6 +238,22 @@ jobs:
           RADAR_ISDB_DEBUG: "0"
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python isdb_radar.py
+
+      # 4d-bis) ADB (Asian Development Bank) -- REACTIVE le 01/11/2026.
+      #     La page tenders est rendue en JS ; le collecteur consomme desormais
+      #     l'API JSON SearchStax que la page appelle (champs structures, filtre
+      #     serveur status:Active). Rendement mesure : 162 avis en zone suivie.
+      #     Onglet adb_radar dedie, double ecriture Sheet + miroir Postgres.
+      #     Isole (if: always()). ADB_DRY_RUN=1 pour l'entonnoir sans LLM ;
+      #     RADAR_ADB=0 pour recouper ; ADB_API_TOKEN pour surcharger le jeton.
+      - name: Collecter les avis ADB (Asie-Pacifique)
+        if: always() && steps.cle.outcome == 'success'
+        env:
+          TED_SHEET_ID: ${{ secrets.TED_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python adb_radar.py
 
       # 4d-ter) MIGA (garanties risque politique, Groupe BM) -- Vague 2.
       #     Investissements prives ETRANGERS assures contre le risque politique :
