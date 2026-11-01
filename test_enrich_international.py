@@ -175,6 +175,39 @@ class TestAiguillageInternational(unittest.TestCase):
         self.assertIsNone(en.enrichir_une({"entreprise": "  "}))
 
 
+class TestReferentielLEI(unittest.TestCase):
+    """Audit 3.4 : le LEI (GLEIF) était récupéré puis jeté. Il doit être
+    persisté comme référentiel d'identité, en fin de schéma (règles 4 et 6)."""
+
+    def test_colonne_lei_en_fin_de_schema(self):
+        self.assertEqual(en.COLONNES_ENRICHIES[-1], "lei")
+
+    def _gleif_avec_lei(self, lei="969500K1S2L3M4N5O6P7"):
+        def gleif(*a, **k):
+            return {"data": [{"id": lei, "attributes": {"lei": lei, "entity": {
+                "legalName": {"name": "STECOL CORPORATION"},
+                "legalAddress": {"city": "Tianjin", "country": "CN"}}}}]}
+        return gleif
+
+    def test_le_lei_est_persiste_par_le_repli_mondial(self):
+        ligne = en.enrichir_une(
+            {"entreprise": "STECOL CORPORATION", "etranger": True},
+            fetch_gleif=self._gleif_avec_lei())
+        i_lei = en.COLONNES_ENRICHIES.index("lei")
+        self.assertEqual(ligne[i_lei], "969500K1S2L3M4N5O6P7")
+
+    def test_societe_francaise_sans_lei(self):
+        """Le registre gouv ne fournit pas de LEI : la colonne reste vide,
+        ce n'est pas une anomalie."""
+        def gouv(*a, **k):
+            return {"results": [{"siren": "812345678", "nom_complet": "SOGEA SAS",
+                                 "dirigeants": [], "siege": {"libelle_commune": "Nanterre"}}]}
+        ligne = en.enrichir_une({"entreprise": "SOGEA SAS"}, fetch_gouv=gouv,
+                                fetch_pappers=lambda *a, **k: "")
+        i_lei = en.COLONNES_ENRICHIES.index("lei")
+        self.assertEqual(ligne[i_lei], "")
+
+
 class TestNonRegression(unittest.TestCase):
 
     def test_la_cascade_reste_gouv_puis_gleif(self):
