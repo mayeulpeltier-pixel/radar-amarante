@@ -340,14 +340,27 @@ def timing(leads, aujourd=None):
     return (min(100, round(n)), motifs)
 
 
-def winability(leads):
+def winability(leads, champ=None):
     """« Est-ce realiste de gagner ? »
 
     C'est la dimension que l'audit externe reclamait en croyant qu'elle
     n'existait pas. Elle existe : `accessibilite_commerciale` est ponderee
     depuis toujours dans le score commercial (+3 / +1,5 / 0). Elle etait
     simplement fondue dans un chiffre unique. Ici on la sort, on la nomme, et
-    on lui adjoint les deux autres signaux deja collectes."""
+    on lui adjoint les deux autres signaux deja collectes.
+
+    `champ` (P2 winability v2, 01/11/2026) : resume concurrentiel optionnel
+    produit par `candidats_probables.champ_concurrentiel` pour le (secteur,
+    zone) de l'opportunite. Il n'apporte AUCUN renseignement nouveau -- c'est
+    une relecture des attributions deja en base, fidele a l'ethos du module --
+    mais il fait enfin parler a la gagnabilite ce qu'on savait du terrain :
+      - incumbent ETRANGER present  -> un angle (a deloger ou partenaire local),
+                                        pas un mur : la doctrine candidats_probables
+                                        tient l'etranger pour « doublement interessant » ;
+      - terrain OUVERT (nul titulaire installe) -> leger plus ;
+      - champ encombre de titulaires LOCAUX    -> concurrence installee que
+                                                  l'acheteur reconduit souvent.
+    `champ=None` laisse la winability historique intacte (retrocompatibilite)."""
     motifs, n = [], 50
     acces = {l.get("acces") for l in leads if l.get("acces")}
     if "facile" in acces:
@@ -369,6 +382,17 @@ def winability(leads):
     elif client & {"entreprise_privee", "bailleur_donateur"}:
         n += 10
         motifs.append("acheteur privé ou bailleur : décision plus directe")
+    if champ:
+        if champ.get("ouvert"):
+            n += 5
+            motifs.append("terrain ouvert : aucun titulaire installé sur ce secteur/zone")
+        else:
+            if champ.get("etranger"):
+                n += 15
+                motifs.append("incumbent étranger identifié : à déloger ou partenaire local (angle Amarante)")
+            elif champ.get("n", 0) >= 4:
+                n -= 10
+                motifs.append("champ encombré de titulaires locaux : concurrence installée")
     if not motifs:
         motifs.append("aucun signal d'accessibilité : winability indéterminée")
     return (max(0, min(100, round(n))), motifs)
@@ -542,6 +566,17 @@ def construire(leads, aujourd=None, pays_aggraves=None):
     Aucun appel reseau ni base : la persistance est le travail de
     `radar_stockage.enregistrer_opportunites`."""
     auj = aujourd or datetime.date.today()
+    # Index des incumbents (P2 winability v2) : construit UNE fois sur TOUS les
+    # leads (candidats_probables ne lit que les attributions), puis interroge
+    # par (secteur, zone) pour alimenter la dimension winability. Import local :
+    # candidats_probables importe opportunites de facon differee (dans _bande),
+    # donc aucun cycle au niveau module ; best-effort, une panne d'index ne doit
+    # jamais empecher de construire les opportunites.
+    try:
+        import candidats_probables
+        index_incumbents = candidats_probables.construire_index(leads)
+    except Exception:
+        candidats_probables, index_incumbents = None, None
     groupes = collections.OrderedDict()
     for l in (leads or []):
         # Une attribution deja gagnee par un tiers n'est pas une opportunite a
@@ -558,9 +593,16 @@ def construire(leads, aujourd=None, pays_aggraves=None):
 
     out = []
     for cle, groupe in groupes.items():
+        # (secteur, zone) du groupe, meme vocabulaire que la sortie plus bas,
+        # pour interroger l'index des incumbents.
+        sect_g = next((l.get("sect") or l.get("grp") for l in groupe
+                       if (l.get("sect") or l.get("grp"))), "")
+        zone_g = next((l.get("zone") for l in groupe if l.get("zone")), "")
+        champ = (candidats_probables.champ_concurrentiel(index_incumbents, sect_g, zone_g)
+                 if index_incumbents is not None else None)
         dims = {"attractivite": attractivite(groupe),
                 "timing": timing(groupe, auj),
-                "winability": winability(groupe),
+                "winability": winability(groupe, champ),
                 "fit": fit(groupe),
                 "confiance": confiance(groupe, pays_aggraves)}
         conv = convergence(groupe, pays_aggraves)

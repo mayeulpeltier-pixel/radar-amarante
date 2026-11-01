@@ -162,6 +162,52 @@ class TestDimensions(unittest.TestCase):
         self.assertLess(avec, sans)
         self.assertTrue(any("déloger" in m for m in motifs))
 
+    def test_champ_none_laisse_la_winability_historique(self):
+        """Rétrocompatibilité : sans champ concurrentiel, note inchangée."""
+        sans_arg, _ = op.winability([_lead(acces="moyenne")])
+        champ_none, _ = op.winability([_lead(acces="moyenne")], champ=None)
+        self.assertEqual(sans_arg, champ_none)
+
+    def test_incumbent_etranger_est_un_angle(self):
+        """Un incumbent étranger remonte la winability (à déloger / partenaire)."""
+        base, _ = op.winability([_lead(acces="moyenne")])
+        avec, motifs = op.winability(
+            [_lead(acces="moyenne")],
+            champ={"n": 2, "etranger": True, "ouvert": False, "granularite": "secteur_zone"})
+        self.assertGreater(avec, base)
+        self.assertTrue(any("étranger" in m for m in motifs))
+
+    def test_champ_local_encombre_penalise(self):
+        base, _ = op.winability([_lead(acces="moyenne")])
+        avec, motifs = op.winability(
+            [_lead(acces="moyenne")],
+            champ={"n": 5, "etranger": False, "ouvert": False, "granularite": "secteur"})
+        self.assertLess(avec, base)
+        self.assertTrue(any("encombré" in m for m in motifs))
+
+    def test_terrain_ouvert_leger_bonus(self):
+        base, _ = op.winability([_lead(acces="moyenne")])
+        avec, motifs = op.winability(
+            [_lead(acces="moyenne")],
+            champ={"n": 0, "etranger": False, "ouvert": True, "granularite": "aucune"})
+        self.assertGreater(avec, base)
+        self.assertTrue(any("ouvert" in m for m in motifs))
+
+    def test_construire_alimente_la_winability_depuis_les_attributions(self):
+        """Câblage de bout en bout : une attribution étrangère sur le même
+        secteur/zone qu'une opportunité fait monter sa winability, sans aucune
+        collecte nouvelle (pure relecture de l'historique d'attributions)."""
+        avis = _lead(src="TED", projet_id="PX", sect="BTP", zone="Sahel",
+                     acces="moyenne", date_det="2026-08-01")
+        attr = _lead(src="ATTRIB", entreprise="Onur Taahhut", sect="BTP",
+                     zone="Sahel", origine="TUR", etranger_titulaire="oui",
+                     mois="2026-07", projet_id="")
+        sans = op.construire([avis], AUJ)
+        avec = op.construire([avis, attr], AUJ)
+        w_sans = sans[0]["dimensions"]["winability"]["note"]
+        w_avec = avec[0]["dimensions"]["winability"]["note"]
+        self.assertGreater(w_avec, w_sans)
+
     def test_absence_de_deploiement_penalise_le_fit(self):
         expat, _ = op.fit([_lead(nature="expatrie_significatif")])
         aucun, _ = op.fit([_lead(nature="aucun_deploiement")])
