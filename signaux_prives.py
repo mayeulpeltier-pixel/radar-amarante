@@ -44,6 +44,7 @@ import radar_resilience
 import bitd_signaux as bitd
 import radar_etat
 import radar_retroaction
+import radar_stockage
 try:
     import pays_reference          # referentiel pays officiel (eForms-SDK)
 except Exception:                  # module absent : on retombe sur les tables manuelles
@@ -934,6 +935,22 @@ def _charger_outcomes_prive(sheet_id, fichier_cs):
              "statut": col(r, bitd.COLONNE_STATUT)} for r in valeurs[1:]]
 
 
+def ecrire_signaux(feuille, resultats):
+    """Ecrit les signaux prives dans le Sheet PUIS dans le miroir Postgres
+    (double ecriture, comme les collecteurs d'avis). Le hook miroir est
+    INCONDITIONNEL : une liste vide n'ecrit rien dans le Sheet mais signale
+    quand meme au miroir -- c'est le cablage verifie par test_miroir_prives.
+    Corrige l'oubli de la bascule Postgres (22/07) : `prive_radar` etait gele
+    car signaux_prives n'ecrivait que le Sheet, devenu non-source-de-verite."""
+    n = bitd.ecrire_resultats(feuille, resultats)
+    try:
+        plates = [dict(zip(bitd.COLONNES_PRIVE, r)) for r in resultats]
+        print("  (pg) " + radar_stockage.ecrire_miroir(bitd.NOM_ONGLET_PRIVE, plates))
+    except Exception as e:  # noqa: BLE001
+        print("  (pg) miroir indisponible ({})".format(e))
+    return n
+
+
 def main():
     if not ACTIVER:
         print("(info) Moteur signaux prives desactive (RADAR_SIGNAUX_PRIVES=0).")
@@ -1077,7 +1094,7 @@ def main():
                 fichier, scopes=["https://www.googleapis.com/auth/spreadsheets"])
             classeur_rw = radar_resilience.avec_retry(lambda: gspread.authorize(creds).open_by_key(sheet_id), "ouverture classeur")
             feuille = bitd.ouvrir_ou_creer_onglet(classeur_rw)
-            n_ecrits = bitd.ecrire_resultats(feuille, resultats)
+            n_ecrits = ecrire_signaux(feuille, resultats)
             print("-> {} signal(aux) ecrit(s) dans '{}'.".format(n_ecrits, bitd.NOM_ONGLET_PRIVE))
         except Exception as e:
             print("ERREUR ecriture Sheet : {}".format(e))

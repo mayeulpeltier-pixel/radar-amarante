@@ -39,6 +39,7 @@ import unicodedata
 
 import ted_complet_v14 as ted
 import radar_resilience
+import radar_stockage
 
 try:
     import bitd_signaux as bs
@@ -832,6 +833,23 @@ def construire_liste_enrichissement(sheet_id, fichier_cs, ouvrir=None):
     return uniques
 
 
+def ecrire_enrichies(feuille, lignes):
+    """Ecrit les lignes enrichies dans le Sheet PUIS dans le miroir Postgres
+    (double ecriture). Hook miroir INCONDITIONNEL (cf. test_miroir_prives).
+    Corrige l'oubli de la bascule Postgres (22/07) : `entreprises_enrichies`
+    etait gele car l'enrichissement n'ecrivait que le Sheet."""
+    if lignes:
+        radar_resilience.avec_retry(
+            lambda: feuille.append_rows(lignes, value_input_option="RAW"),
+            "ecriture append_rows")
+    try:
+        plates = [dict(zip(COLONNES_ENRICHIES, l)) for l in lignes]
+        print("  (pg) " + radar_stockage.ecrire_miroir(NOM_ONGLET_ENRICHIES, plates))
+    except Exception as e:  # noqa: BLE001
+        print("  (pg) miroir indisponible ({})".format(e))
+    return len(lignes)
+
+
 def main():
     import time
     print("=" * 60)
@@ -877,13 +895,10 @@ def main():
     portee = ["https://www.googleapis.com/auth/spreadsheets"]
     creds = Credentials.from_service_account_file(fichier, scopes=portee)
     classeur = radar_resilience.avec_retry(lambda: gspread.authorize(creds).open_by_key(sheet_id), "ouverture classeur")
-    if lignes:
-        feuille = ouvrir_ou_creer_onglet(classeur)
-        radar_resilience.avec_retry(lambda: feuille.append_rows(lignes, value_input_option="RAW"), "ecriture append_rows")
-        print("{} entreprises enrichies et ecrites dans '{}'.".format(
-            len(lignes), NOM_ONGLET_ENRICHIES))
-    else:
-        print("Enrichissement firmographique : rien de nouveau.")
+    feuille = ouvrir_ou_creer_onglet(classeur)
+    n = ecrire_enrichies(feuille, lignes)
+    print("{} entreprise(s) enrichie(s) ecrite(s) dans '{}'.".format(n, NOM_ONGLET_ENRICHIES)
+          if n else "Enrichissement firmographique : rien de nouveau.")
 
     # Passe contacts (Hunter), independante du cache d'enrichissement. Ne cible
     # que les priorites 'Haute' (defense + watchlist), jamais les attributaires
