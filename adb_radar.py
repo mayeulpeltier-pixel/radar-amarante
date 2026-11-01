@@ -10,35 +10,39 @@ Afghanistan, Pakistan, Bangladesh, Sri Lanka, Myanmar, plus le Caucase
 (Armenie, Azerbaidjan, Georgie) et l'Asie centrale (Kazakhstan, Kirghizistan,
 Tadjikistan, Turkmenistan, Ouzbekistan).
 
-ACCES (verifie, juillet 2026)
------------------------------
-Depuis la migration SearchStax, ADB n'expose plus de flux RSS fiable pour les
-tenders. La page https://www.adb.org/projects/tenders liste les avis avec des
-CHAMPS EN CLAIR tres exploitables :
-    Status / Deadline / [reference: code-pays: Titre](lien PDF)
-    Country/Economy: <NOM DE PAYS EN CLAIR> / Sector / Posting Date / Notice Type
-On lit donc cette page (pagination searchstax[page]=N) et on parse par LABELS,
-methode robuste a la structure HTML. Le pays vient du champ Country/Economy
-(nom en clair), bien plus fiable que les codes ADB du titre.
+ACCES (bascule API JSON, 01/11/2026)
+------------------------------------
+La page https://www.adb.org/projects/tenders est rendue en JavaScript (migration
+SearchStax) : le scraping HTML revenait VIDE, d'ou la desactivation (RADAR_ADB=0).
+Une sonde a trouve l'API JSON que la page appelle elle-meme -- un endpoint Solr
+SearchStax, champs STRUCTURES, aucun navigateur requis :
 
-GARDE-FOU : si la page revient SANS notices (probablement rendue en JavaScript
-cote navigateur), le collecteur le signale clairement et invite a fournir
-l'URL de l'API JSON (F12 > Reseau). Il ne fabrique jamais de faux resultats.
+    GET searchcloud-2-ap-southeast-1.searchstax.com/29847/tenders-11959/emselect
+    En-tete : Authorization: Token <jeton de LECTURE expose dans le JS public>
+    q=*:*  fq=tm_X3b_en_status:Active  sort=ds_date_posted desc  wt=json
 
-REUTILISATION : comme AfDB, ce collecteur REUTILISE le coeur ted_complet_v14
-(session, LLM, scoring, escalade, memoire, Sheet) sans le modifier. Onglet
-SEPARE "adb_radar", meme echelle de score que TED/BM.
+Doctrine : on prefere l'API au rendu JS (leçon ADB). Rendement mesure a la sonde :
+435 avis actifs, dont 123 en zone Amarante (Bangladesh, Pakistan, Ouzbekistan,
+Tadjikistan, Nepal, Kirghizstan, Georgie...). Le filtre `status:Active` remplace
+l'ancienne fenetre de fraicheur : il ne garde que les marches OUVERTS, ce qui est
+plus juste qu'une fenetre sur la date de publication. La memoire (dedup par
+publication_number) + le plafond LLM gerent le reste (regle 9).
 
-Interrupteur : RADAR_ADB=0 desactive.
-Reglage : ADB_DRY_RUN=1 montre l'entonnoir SANS appel LLM (et liste les pays
-hors zone rencontres, canari de derive du mapping).
+REUTILISATION : ce collecteur REUTILISE le coeur ted_complet_v14 (session, LLM,
+scoring, escalade, memoire, Sheet) sans le modifier. Onglet SEPARE "adb_radar",
+meme echelle de score que TED/BM. Double ecriture Sheet + miroir Postgres (source
+de verite depuis le 22/07), best-effort (le miroir ne fait jamais echouer un run).
+
+Interrupteur : RADAR_ADB=0 desactive. Reactivation = retirer la variable.
+Reglages : ADB_DRY_RUN=1 montre l'entonnoir SANS appel LLM ; ADB_API_URL /
+ADB_API_TOKEN surchargent l'endpoint et le jeton si ADB les fait tourner.
 """
 
 import os
 import re
 import time
 import unicodedata
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 
 try:
     import ted_complet_v14 as ted
@@ -55,17 +59,21 @@ except ModuleNotFoundError:
 ACTIVER = os.environ.get("RADAR_ADB", "1") != "0"
 DRY_RUN = os.environ.get("ADB_DRY_RUN", "0") == "1"
 
-# URL de la page tenders avec un emplacement {page} pour la pagination.
-# Surchargeable par ADB_URL (colle l'URL exacte vue dans ton navigateur, en
-# remplacant le numero de page par {page}).
-ADB_URL = os.environ.get(
-    "ADB_URL",
-    "https://www.adb.org/projects/tenders?searchstax[query]=*"
-    "&searchstax[page]={page}&searchstax[order]=ds_date_closing%20desc")
-NB_PAGES = int(os.environ.get("ADB_PAGES", "5"))     # 12 notices par page
+# --- API JSON SearchStax (Solr) d'ADB, decouverte par sonde le 01/11/2026 ------
+# Endpoint public que la page tenders appelle elle-meme. Le jeton est un jeton de
+# LECTURE SEULE expose en clair dans le JavaScript public de adb.org (il autorise
+# uniquement la recherche publique des tenders) : ce n'est pas un secret au sens
+# GitHub, d'ou sa presence comme defaut. Surchargeables par variable si ADB les
+# fait tourner.
+ADB_API_URL = os.environ.get(
+    "ADB_API_URL",
+    "https://searchcloud-2-ap-southeast-1.searchstax.com/29847/tenders-11959/emselect")
+ADB_API_TOKEN = os.environ.get(
+    "ADB_API_TOKEN", "2a076eb3a48fd68fc78506c1a16a5d5000da76e4")
+ADB_ROWS = int(os.environ.get("ADB_ROWS", "500"))    # couvre tous les avis actifs
+BASE_ADB = "https://www.adb.org"                     # prefixe des liens relatifs
 NOM_ONGLET = "adb_radar"
 
-NB_JOURS_FENETRE = int(os.environ.get("ADB_JOURS", "30"))
 MAX_AVIS_LLM = int(os.environ.get("ADB_BUDGET", "60"))
 
 
@@ -101,112 +109,50 @@ _SUIVIS = set(getattr(ted, "CODES_PAYS_SUIVIS", []))
 
 
 # ===========================================================================
-# PARTIE 2 -- COLLECTE (page tenders)
+# PARTIE 2 -- COLLECTE (API JSON SearchStax)
 # ===========================================================================
 
-def collecter_pages(fetch=None, session=None, pages=NB_PAGES):
-    """Renvoie le texte concatene des pages tenders. `fetch` injectable pour
-    tests : callable(url) -> str (ou callable() -> str)."""
-    if fetch is not None:
-        try:
-            return fetch(ADB_URL.format(page=1))
-        except TypeError:
-            return fetch()
+def interroger_api(session=None, rows=ADB_ROWS):
+    """Appelle l'API Solr SearchStax d'ADB et renvoie la liste des documents
+    bruts. Tenders ACTIFS seulement (marches ouverts), tri date de publication
+    decroissante. `fetch_json` dans collecter_et_normaliser permet de tester
+    sans reseau."""
     session = session or ted.session_robuste()
-    entetes = {
-        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                       "AppleWebKit/537.36 (KHTML, like Gecko) "
-                       "Chrome/125.0 Safari/537.36"),
-        "Accept": "text/html,application/xhtml+xml",
+    params = {"q": "*:*", "fq": "tm_X3b_en_status:Active",
+              "sort": "ds_date_posted desc", "rows": rows, "wt": "json"}
+    rep = session.get(ADB_API_URL, params=params, timeout=30, headers={
+        "Authorization": "Token " + ADB_API_TOKEN, "Accept": "application/json"})
+    rep.raise_for_status()
+    return (rep.json().get("response") or {}).get("docs") or []
+
+
+def _premier(v):
+    """Champ Solr multivalue (liste) -> premiere valeur en chaine."""
+    if isinstance(v, (list, tuple)):
+        return str(v[0]) if v else ""
+    return str(v) if v is not None else ""
+
+
+def notice_depuis_doc(doc):
+    """Document Solr ADB -> notice brute (meme forme que l'ancien parseur, pour
+    que `normaliser` reste inchange). Les liens relatifs sont rendus absolus."""
+    lien = _premier(doc.get("ss_file_url")) or _premier(doc.get("ss_url"))
+    if lien.startswith("/"):
+        lien = BASE_ADB + lien
+    return {
+        "pays_clair": _premier(doc.get("tm_X3b_en_country")),
+        # Reference stable pour la memoire : n° d'agrement, sinon n° de projet,
+        # sinon l'id Solr (toujours present et stable).
+        "reference": (_premier(doc.get("tm_X3b_en_approval_number"))
+                      or _premier(doc.get("tm_X3b_en_project_number"))
+                      or _premier(doc.get("id"))),
+        "lien": lien,
+        "titre": _premier(doc.get("tm_X3b_en_title")),
+        "type_notice_txt": _premier(doc.get("tm_X3b_en_type")),
+        "secteur": _premier(doc.get("tm_X3b_en_sector")),
+        "deadline": _premier(doc.get("ds_date_closing")),
+        "posting_date": _premier(doc.get("ds_date_posted")),
     }
-    morceaux = []
-    for p in range(1, pages + 1):
-        url = ADB_URL.format(page=p)
-        rep = session.get(url, timeout=30, headers=entetes)
-        rep.raise_for_status()
-        morceaux.append(rep.text)
-        time.sleep(0.5)
-    return "\n".join(morceaux)
-
-
-def _texte_brut(html):
-    """HTML -> texte : retire scripts/styles et balises, en conservant les
-    liens PDF sous forme lisible [texte](url) pour ne pas perdre le lien."""
-    html = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", html)
-    # Conserve les ancres PDF : <a href="X.pdf">T</a> -> [T](X.pdf)
-    html = re.sub(r'(?is)<a[^>]+href="([^"]+\.pdf)"[^>]*>(.*?)</a>',
-                  lambda m: "[{}]({})".format(re.sub(r"<[^>]+>", "", m.group(2)).strip(), m.group(1)),
-                  html)
-    html = re.sub(r"(?s)<[^>]+>", " ", html)          # autres balises
-    html = (html.replace("&amp;", "&").replace("&nbsp;", " ")
-                .replace("&#8211;", "-").replace("&ndash;", "-")
-                .replace("&#039;", "'").replace("&rsquo;", "'"))
-    return html
-
-
-# ===========================================================================
-# PARTIE 3 -- PARSING PAR LABELS
-# ===========================================================================
-
-_RE_REFERENCE = re.compile(r"\b(\d{5}-\d{3})\b")
-_RE_DATE = re.compile(r"(\d{1,2}\s+\w{3,9}\s+\d{4})")
-_RE_LIEN_PDF = re.compile(r"\]\((https?://[^)\s]+\.pdf)\)")
-
-
-def _champ(bloc, label, fins):
-    """Extrait la valeur d'un label jusqu'au prochain label (labels colles sans
-    espace dans la page ADB : 'Country/Economy: Sri LankaSector: ...')."""
-    motif = re.escape(label) + r"\s*[:\-]?\s*(.+?)\s*(?:" + "|".join(re.escape(f) for f in fins) + r"|$)"
-    m = re.search(motif, bloc, re.IGNORECASE | re.DOTALL)
-    return (m.group(1).strip() if m else "")
-
-
-LABELS = ["Status", "Deadline", "Country/Economy", "Sector",
-          "Posting Date", "Notice Type", "Approval Number"]
-
-
-def parser_notices(texte):
-    """Texte de la ou des pages -> liste de notices (dicts bruts). Chaque notice
-    commence par 'Status:'. Robuste aux labels colles."""
-    blocs = re.split(r"(?=Status\s*:\s*(?:Active|Closed|Awarded|Cancelled))", texte)
-    notices = []
-    for bloc in blocs:
-        if "Country/Economy" not in bloc:
-            continue
-        pays = _champ(bloc, "Country/Economy", ["Sector", "Posting Date", "Notice Type", "Status"])
-        if not pays:
-            continue
-        ref = ""
-        m = _RE_REFERENCE.search(bloc)
-        if m:
-            ref = m.group(1)
-        lien = ""
-        ml = _RE_LIEN_PDF.search(bloc)
-        if ml:
-            lien = ml.group(1)
-        # Titre : contenu entre crochets si present, sinon 1re ligne apres Deadline.
-        titre = ""
-        mt = re.search(r"\[([^\]]+)\]\(", bloc)
-        if mt:
-            titre = mt.group(1).strip()
-        else:
-            mt2 = re.search(r"\d{5}-\d{3}:\s*(.+)", bloc)
-            titre = mt2.group(1).strip()[:300] if mt2 else pays
-        type_notice_txt = _champ(bloc, "Notice Type", ["Approval Number", "Status", "Deadline"])
-        deadline = ""
-        md = re.search(r"Deadline\s*:?\s*" + _RE_DATE.pattern, bloc)
-        if md:
-            deadline = md.group(1)
-        posting = ""
-        mp = re.search(r"Posting Date\s*:?\s*" + _RE_DATE.pattern, bloc)
-        if mp:
-            posting = mp.group(1)
-        notices.append({
-            "pays_clair": pays, "reference": ref, "lien": lien, "titre": titre,
-            "type_notice_txt": type_notice_txt, "deadline": deadline,
-            "posting_date": posting,
-        })
-    return notices
 
 
 def resoudre_iso3(pays_clair, titre=""):
@@ -246,9 +192,17 @@ def type_notice(texte):
 
 
 def _date_iso(txt):
+    if not txt:
+        return None
+    # L'API renvoie de l'ISO ("2026-11-19T12:00:00Z"). On garde le repli
+    # jour-mois-annee par prudence (robustesse a un changement de format).
+    try:
+        return date.fromisoformat(str(txt)[:10])
+    except ValueError:
+        pass
     for fmt in ("%d %b %Y", "%d %B %Y"):
         try:
-            return datetime.strptime(txt.strip(), fmt).date()
+            return datetime.strptime(str(txt).strip(), fmt).date()
         except (ValueError, AttributeError):
             continue
     return None
@@ -273,24 +227,28 @@ def normaliser(notice):
         "lien_avis": notice["lien"],
         "publication_number": notice["reference"] or notice["lien"] or notice["titre"],
         "deadline": d.isoformat() if d else "",
-        "date_publication": notice["posting_date"],
+        "date_publication": (_date_iso(notice["posting_date"]).isoformat()
+                             if _date_iso(notice["posting_date"]) else ""),
     }
     return avis, ""
 
 
-def collecter_et_normaliser(fetch=None, session=None, pages=NB_PAGES):
-    """Pages -> notices -> avis normalises (filtres pays + fraicheur + dedup).
-    stats['pays_hors_zone'] = canari ; stats['page_vide'] = garde-fou JS."""
-    texte = _texte_brut(collecter_pages(fetch=fetch, session=session, pages=pages))
-    notices = parser_notices(texte)
-    seuil = date.today() - timedelta(days=NB_JOURS_FENETRE)
+def collecter_et_normaliser(fetch_json=None, session=None, rows=ADB_ROWS):
+    """API -> notices -> avis normalises (filtre pays zone + dedup). `fetch_json`
+    injectable pour tests : callable() -> liste de documents Solr.
+
+    Pas de fenetre sur la date de publication : le filtre serveur
+    `status:Active` ne garde deja que les marches OUVERTS (plus juste qu'une
+    fenetre), et la memoire (dedup par publication_number) + le plafond LLM
+    gerent la file (regle 9 : memoire avant plafond).
+
+    stats['pays_hors_zone'] = canari de derive du mapping ;
+    stats['api_vide'] = aucun document (endpoint/jeton a verifier)."""
+    docs = fetch_json() if fetch_json is not None else interroger_api(session=session, rows=rows)
     avis, vus, hors_zone = [], set(), {}
     hors_perimetre = 0
-    for n in notices:
-        d = _date_iso(n["posting_date"])
-        if d and d < seuil:
-            continue
-        a, hz = normaliser(n)
+    for doc in docs:
+        a, hz = normaliser(notice_depuis_doc(doc))
         if a is None:
             hors_perimetre += 1
             if hz:
@@ -302,9 +260,9 @@ def collecter_et_normaliser(fetch=None, session=None, pages=NB_PAGES):
         vus.add(cle)
         avis.append(a)
     return avis, {
-        "notices": len(notices), "hors_perimetre": hors_perimetre,
+        "notices": len(docs), "hors_perimetre": hors_perimetre,
         "retenus": len(avis), "pays_hors_zone": hors_zone,
-        "page_vide": len(notices) == 0,
+        "api_vide": len(docs) == 0,
     }
 
 
@@ -415,6 +373,19 @@ def ecrire_resultats(feuille, resultats):
     return nb_new, nb_maj
 
 
+def ecrire_miroir(resultats):
+    """Double ecriture dans le miroir Postgres (source de verite depuis le
+    22/07). Upsert des `donnees` (regle 5), aligne POSITIONNELLEMENT sur
+    COLONNES_ADB (regle 4). Best-effort absolu : n'interrompt JAMAIS un run
+    (regle 11). Point d'entree isole pour etre testable."""
+    try:
+        import radar_stockage
+        plates = [dict(zip(COLONNES_ADB, ligne_depuis_resultat(r))) for r in resultats]
+        return radar_stockage.ecrire_miroir(NOM_ONGLET, plates)
+    except Exception as e:  # noqa: BLE001
+        return "miroir indisponible ({})".format(e)
+
+
 # ===========================================================================
 # PARTIE 6 -- POINT D'ENTREE
 # ===========================================================================
@@ -451,15 +422,13 @@ def main():
         print("ERREUR : collecte ADB impossible ({}).".format(e))
         raise
 
-    if stats["page_vide"]:
-        print("GARDE-FOU : la page ADB est revenue SANS notice exploitable.")
-        print("  -> Elle est probablement rendue en JavaScript (SearchStax).")
-        print("  -> Ouvre la page tenders, F12 > Reseau, repere la requete qui")
-        print("     renvoie du JSON avec les tenders, et donne-moi son URL :")
-        print("     je bascule le collecteur en mode JSON (plus robuste).")
+    if stats["api_vide"]:
+        print("GARDE-FOU : l'API ADB n'a renvoye AUCUN document.")
+        print("  -> Endpoint ou jeton a verifier (ADB_API_URL / ADB_API_TOKEN),")
+        print("     ou le jeton de lecture public d'adb.org a change.")
         return
 
-    print("Page : {notices} notice(s) | hors perimetre : {hors_perimetre} | retenus : {retenus}".format(**stats))
+    print("API : {notices} doc(s) actif(s) | hors perimetre : {hors_perimetre} | retenus : {retenus}".format(**stats))
     if stats["pays_hors_zone"]:
         top = sorted(stats["pays_hors_zone"].items(), key=lambda x: -x[1])[:8]
         print("  (info) pays hors zone suivie : " +
@@ -523,6 +492,8 @@ def main():
             print("ERREUR ecriture Sheet : {}".format(e))
     else:
         print("\n(dry-run Sheet : identifiants Google absents)")
+    # Miroir Postgres (source de verite) : independant du Sheet, best-effort.
+    print("  (pg) " + ecrire_miroir(resultats))
 
 
 if __name__ == "__main__":
