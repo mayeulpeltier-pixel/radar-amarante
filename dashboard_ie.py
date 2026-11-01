@@ -26,6 +26,8 @@ import datetime
 import html
 import os
 
+import enrichir_ie as EN      # cle_societe : jointure declencheurs <-> enrichissement
+
 
 COLONNES = {
     "radar_ie_leads": ("cle", "source", "id_avis", "date_detection",
@@ -45,6 +47,10 @@ COLONNES = {
     "radar_ie_sanctions": ("cle", "source", "nom", "type", "pays", "ville",
                            "exclu_par", "cross_debarment", "debar_debut",
                            "debar_fin", "motif", "lien", "detecte_le"),
+    "radar_ie_enrichissement": ("cle_societe", "societe", "siren", "nom_officiel",
+                                "dirigeant_principal", "autres_dirigeants",
+                                "activite_naf", "ville", "effectif", "email",
+                                "source", "enrichi_le"),
 }
 
 
@@ -61,20 +67,27 @@ def lire_table(conn, table, colonnes):
 
 
 def lire_tables(url):
-    """(leads, echeances, declencheurs). Chaque table est best-effort :
-    absente ou illisible -> liste vide, la page reste complete."""
+    """(leads, echeances, declencheurs, sanctions, enrichissement). Chaque table
+    est best-effort : absente ou illisible -> liste vide, la page reste complete."""
     if not url:
-        return [], [], [], []
+        return [], [], [], [], []
     try:
         import psycopg
         with psycopg.connect(url, connect_timeout=15) as conn:
             return (lire_table(conn, "radar_ie_leads", COLONNES["radar_ie_leads"]),
                     lire_table(conn, "radar_ie_echeances", COLONNES["radar_ie_echeances"]),
                     lire_table(conn, "radar_ie_declencheurs", COLONNES["radar_ie_declencheurs"]),
-                    lire_table(conn, "radar_ie_sanctions", COLONNES["radar_ie_sanctions"]))
+                    lire_table(conn, "radar_ie_sanctions", COLONNES["radar_ie_sanctions"]),
+                    lire_table(conn, "radar_ie_enrichissement",
+                               COLONNES["radar_ie_enrichissement"]))
     except Exception as e:  # noqa: BLE001
         print("  (info) base IE indisponible ({}).".format(str(e)[:120]))
-        return [], [], [], []
+        return [], [], [], [], []
+
+
+def index_enrichissement(enrichissement):
+    """{cle_societe: ligne} pour rattacher l'enrichissement aux declencheurs."""
+    return {x.get("cle_societe"): x for x in (enrichissement or []) if x.get("cle_societe")}
 
 
 # ===========================================================================
@@ -215,9 +228,23 @@ def rendre_echeances(ech):
             '</tr></thead><tbody>' + "".join(lignes) + '</tbody></table>')
 
 
-def rendre_declencheurs(decl):
+def _contact(enrich):
+    """Cellule 'qui appeler' depuis l'enrichissement (dirigeant, SIREN, ville)."""
+    if not enrich:
+        return "-"
+    bouts = []
+    if enrich.get("dirigeant_principal"):
+        bouts.append(e(enrich["dirigeant_principal"]))
+    bas = " · ".join(filter(None, [enrich.get("siren"), enrich.get("ville")]))
+    if bas:
+        bouts.append('<span class="meta">{}</span>'.format(e(bas)))
+    return "<br>".join(bouts) or "-"
+
+
+def rendre_declencheurs(decl, enrich_index=None):
     if not decl:
         return '<p class="vide">Aucun declencheur recent.</p>'
+    enrich_index = enrich_index or {}
     STAT = {"programme_afa": ("Programme AFA", "st-afa"),
             "a_verifier": ("A verifier", "st-verif"),
             "sanction_conformite": ("Sanction AMF conformite/LCB-FT", "st-afa"),
@@ -228,14 +255,15 @@ def rendre_declencheurs(decl):
         liens = " ".join(filter(None, [
             _lien(d.get("lien_communique"), "communique") if d.get("lien_communique") else "",
             _lien(d.get("lien_convention"), "convention") if d.get("lien_convention") else ""]))
+        contact = _contact(enrich_index.get(EN.cle_societe(d.get("societe") or "")))
         lignes.append(
-            '<tr><td>{val}</td><td>{badge}</td><td>{soc}</td><td>{fin}</td>'
+            '<tr><td>{val}</td><td>{badge}</td><td>{soc}</td><td>{contact}</td>'
             '<td>{jur}</td><td class="liens">{liens}</td></tr>'.format(
                 val=e(d.get("validation")), badge=_badge(txt, cls),
-                soc=e(d.get("societe")), fin=e(d.get("fin_suivi")),
+                soc=e(d.get("societe")), contact=contact,
                 jur=e(d.get("juridiction")), liens=liens or "-"))
     return ('<table><thead><tr><th>Validee le</th><th>Statut</th><th>Societe</th>'
-            '<th>Fin suivi AFA</th><th>Juridiction</th><th>Documents</th>'
+            '<th>Contact (dirigeant / SIREN)</th><th>Juridiction</th><th>Documents</th>'
             '</tr></thead><tbody>' + "".join(lignes) + '</tbody></table>')
 
 
@@ -317,7 +345,8 @@ function filtrer(){
 """
 
 
-def generer_html(leads, echeances, declencheurs, sanctions=None, genere_le=None):
+def generer_html(leads, echeances, declencheurs, sanctions=None,
+                 enrichissement=None, genere_le=None):
     """Page complete, auto-suffisante. Fonction PURE."""
     genere_le = genere_le or datetime.date.today()
     auj = genere_le if isinstance(genere_le, datetime.date) else datetime.date.today()
@@ -325,6 +354,7 @@ def generer_html(leads, echeances, declencheurs, sanctions=None, genere_le=None)
     le = echeances_affichees(echeances, auj)
     ld = declencheurs_affiches(declencheurs)
     ls = sanctions_recentes(sanctions or [], auj)
+    enrich_index = index_enrichissement(enrichissement)
     stamp = genere_le.isoformat() if isinstance(genere_le, datetime.date) else str(genere_le)
 
     def compteur(n):
@@ -356,15 +386,15 @@ La saisie (statut, commentaire) reste dans le classeur ARISE.</p></header>
         style=STYLE, script=SCRIPT, stamp=e(stamp),
         c_leads=compteur(len(la)), c_ech=compteur(len(le)), c_decl=compteur(len(ld)),
         c_sanc=compteur(len(ls)),
-        leads=rendre_leads(la), ech=rendre_echeances(le), decl=rendre_declencheurs(ld),
-        sanc=rendre_sanctions(ls))
+        leads=rendre_leads(la), ech=rendre_echeances(le),
+        decl=rendre_declencheurs(ld, enrich_index), sanc=rendre_sanctions(ls))
 
 
 def main():
     url = os.environ.get("DATABASE_URL")
     sortie = os.environ.get("IE_DASHBOARD_SORTIE", "public_ie")
-    leads, ech, decl, sanctions = lire_tables(url)
-    html_page = generer_html(leads, ech, decl, sanctions)
+    leads, ech, decl, sanctions, enrichissement = lire_tables(url)
+    html_page = generer_html(leads, ech, decl, sanctions, enrichissement)
     os.makedirs(sortie, exist_ok=True)
     chemin = os.path.join(sortie, "index.html")
     with open(chemin, "w", encoding="utf-8") as f:

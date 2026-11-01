@@ -47,7 +47,7 @@ jobs:
         run: pip install -r requirements-radar.txt
       # Barriere : les tests du volet IE d'abord. S'ils cassent, rien ne tourne.
       - name: Tester le volet IE
-        run: python -m unittest test_lentille_ie test_collecteur_ie test_collecteur_international_ie test_echeances_ie test_declencheurs_ie test_declencheurs_amf_ie test_sanctions_ie test_dashboard_ie -v
+        run: python -m unittest test_lentille_ie test_collecteur_ie test_collecteur_international_ie test_echeances_ie test_declencheurs_ie test_declencheurs_amf_ie test_enrichir_ie test_sanctions_ie test_dashboard_ie -v
       - name: Reconstituer la cle de service Google
         id: cle
         run: |
@@ -117,6 +117,19 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python declencheurs_amf_ie.py
+      # Enrichissement (IE-9) : rend actionnables les societes nommees des
+      # declencheurs (SIREN, dirigeant, NAF, ville) via l'API publique gratuite
+      # Recherche d'entreprises. Apres les declencheurs (sa source), avant le
+      # tableau de bord (qui rattache l'enrichissement aux lignes). Aucun LLM.
+      - name: Enrichir les prospects IE
+        if: always() && steps.cle.outcome == 'success'
+        env:
+          RADAR_IE: "1"
+          RADAR_IE_DEBUG: ${{ github.event.inputs.debug || '0' }}
+          IE_SHEET_ID: ${{ secrets.IE_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python enrichir_ie.py
       # Echeances (IE-6) : marches IE deja attribues dont la fin approche, tires
       # des DECP consolidees (~230 Mo, Parquet). Aucun appel LLM. Isole : un
       # echec ici n'annule pas les leads ecrits a l'etape precedente.

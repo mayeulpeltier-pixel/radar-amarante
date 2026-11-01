@@ -69,6 +69,17 @@ class TestDeclencheurs(unittest.TestCase):
         self.assertIn("Sanction AMF conformite/LCB-FT", html)
         self.assertIn("Caceis Bank", html)
 
+    def test_jointure_enrichissement(self):
+        decl = [{"cle": "amf", "statut": "sanction_conformite", "societe": "Novaxia Investissement",
+                 "validation": "2026-07-01", "juridiction": "AMF"}]
+        enr = [{"cle_societe": "novaxia investissement", "siren": "802346551",
+                "dirigeant_principal": "Lucile Bertoni (President)", "ville": "PARIS"}]
+        html = D.generer_html([], [], decl, [], enr, genere_le=AUJ)
+        self.assertIn("Lucile Bertoni", html)
+        self.assertIn("802346551", html)
+        # Colonne de contact presente.
+        self.assertIn("Contact (dirigeant / SIREN)", html)
+
 
 class TestRendu(unittest.TestCase):
 
@@ -142,7 +153,7 @@ class TestSanctions(unittest.TestCase):
 class TestLectureVide(unittest.TestCase):
 
     def test_sans_url(self):
-        self.assertEqual(D.lire_tables(None), ([], [], [], []))
+        self.assertEqual(D.lire_tables(None), ([], [], [], [], []))
 
 
 if __name__ == "__main__":
