@@ -40,7 +40,7 @@ vendable** (multi-client, faible coût d'exploitation). Toute proposition se jug
         ┌───────────┴───────────┐
         ▼                       ▼
   Google Sheet            Postgres / Neon          ◄── SOURCE DE VÉRITÉ
-  (écriture seule,        radar_lignes  (collecte, ajout seul)
+  (écriture seule,        radar_lignes  (collecte, upsert donnees)
    export + secours)      radar_statuts (zone humaine, upsert)
         │                       │
         ▼                       ▼
@@ -79,7 +79,7 @@ autres `.yml` sont des workflows GitHub. Python est épinglé à **3.12** via
 ### Stockage et application (nouveaux, 22/07/2026)
 | Fichier | Rôle |
 |---|---|
-| `radar_stockage.py` | Couche Postgres. `radar_lignes` (JSONB, **ajout seul**, `ON CONFLICT DO NOTHING`) et `radar_statuts` (**seule table où l'upsert est permis**). `ecrire_miroir()` est le point d'entrée des collecteurs : best-effort absolu, ne lève jamais. |
+| `radar_stockage.py` | Couche Postgres. `radar_lignes` (JSONB, `ON CONFLICT DO UPDATE` : rafraîchit `donnees` + `maj` pour laisser passer les scores raffinés Sonnet, correction du 23/07/2026 — **PAS d'ajout seul**) ; `radar_statuts` (**seule zone de saisie humaine**, upsert). `ecrire_miroir()` est le point d'entrée des collecteurs : best-effort absolu, ne lève jamais. |
 | `radar_app.py` | Application FastAPI. Lit Postgres, réutilise `construire_leads` + `generer_html` **tels quels** (zéro duplication de rendu). Auth HTTP Basic, gzip, cache 10 min, `POST /api/statut`, `/sante`. |
 | `radar_rattrapage.py` | Verse tout le Sheet dans le miroir. **Lecture positionnelle** pour les 11 onglets à schéma connu. Rejouable, jamais destructif. `RADAR_RATTRAPAGE_PURGE=1` pour réimporter proprement. |
 | `requirements.txt`, `render.yaml`, `.python-version` | Déploiement Render (racine du dépôt). |
@@ -137,9 +137,15 @@ Les tests d'intégration Postgres se sautent seuls sans `RADAR_TEST_DATABASE_URL
 4. **LECTURE POSITIONNELLE, JAMAIS PAR EN-TÊTE.** Un en-tête de Sheet peut être
    désaligné. C'est arrivé (`bm_radar`, décalage d'une colonne) : le rattrapage
    avait rangé les **numéros de téléphone** sous `publication_number`.
-5. **`radar_lignes` en ajout seul.** Seule `radar_statuts` accepte l'upsert :
-   c'est la zone de saisie humaine, elle doit évoluer. Une ligne de collecte
-   n'est jamais réécrite (transposition de la garde `statut_suivi` du Sheet).
+5. **`radar_lignes` : upsert des `donnees`, PAS d'ajout seul.**
+   `ON CONFLICT (onglet, publication_number) DO UPDATE SET donnees =
+   EXCLUDED.donnees, maj = now()`. C'était `DO NOTHING` jusqu'au 23/07/2026 :
+   motif erroné (la zone de saisie humaine n'est pas ici mais dans
+   `radar_statuts`), et le `DO NOTHING` bloquait l'arrivée en base des scores
+   raffinés (escalade Sonnet) → Render affichait 5.0/surveiller quand Cloudflare
+   affichait 8.5/contacter pour le même avis. **NE PAS restaurer `DO NOTHING`.**
+   La seule zone jamais réécrite par la collecte est `radar_statuts` (saisie
+   humaine), en upsert maîtrisé.
 6. **Préservation du schéma.** Colonnes conservées même quand la logique
    disparaît (`source_mode_b` toujours False).
 7. **Motif ADB.** Une source inaccessible se **désactive par variable
