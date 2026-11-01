@@ -81,11 +81,13 @@ REGISTRE = [
      "collecteur": "afdb_radar.py", "onglet": "afdb_radar",
      "etat": "bloqué", "rendement": "non mesuré", "evalue_le": "2026-10-29",
      "note": "Défi Cloudflare, HTTP 403 depuis le 29/10 ; réessaie chaque run."},
-    {"cle": "adb", "nom": "ADB (Asie)", "pole": "Opérations",
-     "categorie": "Appels d'offres", "acces": "Portail JS",
+    {"cle": "adb", "nom": "ADB (Asie-Pacifique)", "pole": "Opérations",
+     "categorie": "Appels d'offres", "acces": "API publique (JSON SearchStax)",
      "collecteur": "adb_radar.py", "onglet": "adb_radar",
-     "etat": "désactivé", "rendement": "non mesuré", "evalue_le": "",
-     "note": "RADAR_ADB=0, portail rendu en JavaScript. Code conservé."},
+     "etat": "actif", "rendement": "moyen", "evalue_le": "2026-11-01",
+     "note": "Réactivé le 01/11 via l'API JSON SearchStax (le portail est en JS). "
+             "162 avis en zone suivie à la sonde ; 1er run prod réussi. "
+             "RADAR_ADB=0 pour recouper."},
     {"cle": "boamp", "nom": "BOAMP (France)", "pole": "Opérations",
      "categorie": "Appels d'offres", "acces": "Portail rendu serveur",
      "collecteur": "ted_complet_boamp.py", "onglet": "boamp_radar",
