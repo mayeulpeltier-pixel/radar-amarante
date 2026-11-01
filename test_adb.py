@@ -1,139 +1,77 @@
 # -*- coding: utf-8 -*-
-"""Tests ADB : parsing de la page tenders (format reel colle par l'utilisateur),
-resolution pays via Country/Economy en clair, filtrage hors-zone, FENETRE DE
-FRAICHEUR, garde-fou JS, compatibilite coeur TED. Aucun appel reseau ni LLM.
+"""Tests ADB : bascule sur l'API JSON SearchStax (01/11/2026).
 
-POURQUOI LES DATES SONT CALCULEES ET NON ECRITES EN DUR (23/07/2026)
---------------------------------------------------------------------
-La version precedente de ce fichier portait des dates FIGEES ("22 Jun 2026")
-alors que `adb.collecter_et_normaliser` filtre sur une fenetre GLISSANTE
-(`date.today() - ADB_JOURS`). Le 23/07/2026, la notice Papouasie-Nouvelle-Guinee
-est sortie de la fenetre toute seule : le test est passe au rouge SANS qu'une
-seule ligne de code ait bouge.
+L'ancien collecteur grattait la page HTML (rendue en JS -> vide -> source
+desactivee). Il consomme desormais l'API Solr que la page appelle elle-meme.
+On verifie : le mapping document Solr -> notice (champs multivalues, lien
+relatif rendu absolu, reference stable), la resolution pays / filtrage hors-zone
+(inchanges), la requete serveur (filtre `status:Active` + jeton), la
+compatibilite avec le coeur TED, et le cablage du miroir Postgres. Aucun reseau,
+aucun LLM.
 
-Consequence en production : dans `radar.yml`, l'etape "Lancer les tests" n'a ni
-`continue-on-error` ni `if: always()`. Un test rouge fait echouer le job, ce qui
-SAUTE la reconstitution de `service_account.json` et l'etape "Lancer le radar" :
-plus aucune collecte. Une bombe a retardement dans un test est donc une panne de
-production differee.
-
-REGLE POSEE : un fixture date se calcule TOUJOURS a partir de `date.today()` et
-de la constante de fenetre du collecteur (`adb.NB_JOURS_FENETRE`), jamais en dur.
-Le test devient de surcroit PLUS fort qu'avant : il verifie explicitement que la
-fenetre de fraicheur ecarte bien une notice perimee (`TestFenetreFraicheur`), ce
-que l'ancienne version ne testait pas -- elle le subissait.
-"""
+Pourquoi plus de fenetre de fraicheur : le filtre serveur `status:Active` ne
+garde que les marches OUVERTS (plus juste qu'une fenetre sur la date de
+publication), et la memoire gere le dedup (regle 9)."""
 
 import unittest
-from datetime import date, timedelta
 
 import adb_radar as adb
+import radar_stockage
 import ted_complet_v14 as ted
 
 
-# ===========================================================================
-# DATES DU FIXTURE : calculees, jamais figees.
-# ===========================================================================
-# Abreviations de mois en dur : `strftime("%b")` depend de la locale du runner,
-# alors que `adb._date_iso` attend l'anglais ("%d %b %Y"). On ne laisse pas la
-# locale de l'hote decider si le test passe.
-MOIS_EN = ("", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep",
-           "Oct", "Nov", "Dec")
+def _doc(country, title, ntype, approval, closing, posted, file_url=None, pid=None):
+    """Fabrique un document Solr ADB (champs texte MULTIVALUES, comme l'API)."""
+    d = {"tm_X3b_en_country": [country], "tm_X3b_en_title": [title],
+         "tm_X3b_en_type": [ntype], "tm_X3b_en_sector": ["Transport"],
+         "tm_X3b_en_status": ["Active"], "id": "doc-{}".format(approval or "x"),
+         "ds_date_closing": closing, "ds_date_posted": posted}
+    if approval:
+        d["tm_X3b_en_approval_number"] = [approval]
+    if pid:
+        d["tm_X3b_en_project_number"] = [pid]
+    if file_url:
+        d["ss_file_url"] = file_url
+    return d
 
 
-def _date_adb(d):
-    """date -> "30 Jun 2026", le format exact de la colonne Posting Date."""
-    return "{:02d} {} {}".format(d.day, MOIS_EN[d.month], d.year)
+# Zone suivie : Sri Lanka, PNG, Afghanistan. Hors zone : Viet Nam. Sans pays :
+# Regional. Afghanistan est une Prequalification (phase amont).
+FAKE_DOCS = [
+    _doc("Sri Lanka", "Mahaweli Water Security Investment Program", "Invitation for Bids",
+         "4741", "2026-12-15T12:00:00Z", "2026-10-20T12:00:00Z",
+         file_url="/sites/default/files/tenders/sri4741-ifb.pdf"),
+    _doc("Papua New Guinea", "Urban Water Supply and Sanitation", "Invitation for Bids",
+         "4802", "2026-12-10T12:00:00Z", "2026-10-18T12:00:00Z"),
+    _doc("Afghanistan", "Kabul Resilient Infrastructure - Prequalification", "Prequalification",
+         "1234", "2026-12-01T12:00:00Z", "2026-10-15T12:00:00Z"),
+    _doc("Viet Nam", "Ho Chi Minh Urban Rail", "Individual - Consulting",
+         "5678", "2026-12-05T12:00:00Z", "2026-10-12T12:00:00Z"),
+    _doc("Regional", "Regional Capacity Building", "Firm - Consulting",
+         "9999", "2026-12-20T12:00:00Z", "2026-10-22T12:00:00Z"),
+]
 
 
-AUJOURDHUI = date.today()
-
-# DANS la fenetre, quelle que soit la valeur de ADB_JOURS (meme ADB_JOURS=1).
-DATE_RECENTE = AUJOURDHUI - timedelta(days=1)
-# HORS fenetre par construction : on se cale sur la constante du collecteur,
-# donc le test reste juste meme si quelqu'un elargit ADB_JOURS a 365.
-DATE_PERIMEE = AUJOURDHUI - timedelta(days=adb.NB_JOURS_FENETRE + 5)
-# Echeance a venir (les avis retenus doivent avoir une date limite credible).
-DATE_ECHEANCE = AUJOURDHUI + timedelta(days=40)
-
-RECENTE = _date_adb(DATE_RECENTE)
-PERIMEE = _date_adb(DATE_PERIMEE)
-ECHEANCE = _date_adb(DATE_ECHEANCE)
-
-
-# Format REEL de la page tenders (colle depuis adb.org), enrichi de cas de
-# controle : Afghanistan (suivi), Viet Nam (hors zone), Regional (sans pays),
-# Nepal (pays SUIVI mais notice PERIMEE -> doit tomber sur la seule fenetre).
-PAGE_REELLE = """Showing 1 - 12 of 50079 results for "*"
-Sort ByRelevanceDeadlineDate Posted
-Status: ActiveDeadline: {echeance}
-[58321-001: L4741-SRI: Mahaweli Water Security Investment Program (MWSIP) Stage 2 Project](https://www.adb.org/sites/default/files/tenders/sri4741-ifb-ncpcp-5b.pdf)
-Country/Economy: Sri LankaSector: Agriculture, natural resources and rural developmentPosting Date: {recente}
-Notice Type:Invitation for BidsApproval Number:4741
-Status: ActiveDeadline: {echeance}
-[58040-001: 58040-001 PNG - Urban Water Supply and Sanitation Security and Resilience Improvement Project [UWSSSRIP-Plant-01] [Extended]](https://www.adb.org/sites/default/files/tenders/png58040-001-uwsssrip-plant-01-ifb-ext.pdf)
-Country/Economy: Papua New GuineaSector: Water and other urban infrastructure and servicesPosting Date: {recente}
-Notice Type:Invitation for BidsApproval Number:4802
-Status: ActiveDeadline: {echeance}
-[59111-002: L1234-AFG: Kabul Resilient Infrastructure - Prequalification of Contractors](https://www.adb.org/sites/default/files/tenders/afg59111-pq.pdf)
-Country/Economy: AfghanistanSector: TransportPosting Date: {recente}
-Notice Type:PrequalificationApproval Number:1234
-Status: ActiveDeadline: {echeance}
-[60222-001: L5678-VIE: Ho Chi Minh Urban Rail - Individual Consultant](https://www.adb.org/sites/default/files/tenders/vie60222.pdf)
-Country/Economy: Viet NamSector: TransportPosting Date: {recente}
-Notice Type:Individual - ConsultingApproval Number:5678
-Status: ActiveDeadline: {echeance}
-[61333-001: Regional Capacity Building - Firm Consulting](https://www.adb.org/sites/default/files/tenders/reg61333.pdf)
-Country/Economy: RegionalSector: Public sector managementPosting Date: {recente}
-Notice Type:Firm - ConsultingApproval Number:9999
-Status: ActiveDeadline: {echeance}
-[62444-001: L9012-NEP: Kathmandu Valley Water Supply - Old Notice](https://www.adb.org/sites/default/files/tenders/nep62444.pdf)
-Country/Economy: NepalSector: Water and other urban infrastructure and servicesPosting Date: {perimee}
-Notice Type:Invitation for BidsApproval Number:9012
-""".format(recente=RECENTE, perimee=PERIMEE, echeance=ECHEANCE)
-
-
-class TestTexteBrut(unittest.TestCase):
-    def test_ancre_pdf_html_preservee(self):
-        html = '<a href="https://x.org/a.pdf">Titre Projet</a> Country/Economy: Nepal'
-        t = adb._texte_brut(html)
-        self.assertIn("[Titre Projet](https://x.org/a.pdf)", t)
-
-    def test_balises_retirees(self):
-        self.assertNotIn("<div>", adb._texte_brut("<div>x</div>"))
-
-
-class TestParsingNotices(unittest.TestCase):
+class TestMappingDoc(unittest.TestCase):
     def setUp(self):
-        self.notices = adb.parser_notices(PAGE_REELLE)
+        self.sri = adb.notice_depuis_doc(FAKE_DOCS[0])
 
-    def test_nombre_notices(self):
-        # Le PARSING ne filtre rien : les 6 notices doivent etre vues, y
-        # compris la perimee (c'est la collecte qui l'ecartera ensuite).
-        self.assertEqual(len(self.notices), 6)
+    def test_champs_multivalues_premiere_valeur(self):
+        self.assertEqual(self.sri["pays_clair"], "Sri Lanka")
+        self.assertEqual(self.sri["titre"], "Mahaweli Water Security Investment Program")
+        self.assertEqual(self.sri["type_notice_txt"], "Invitation for Bids")
 
-    def test_pays_en_clair(self):
-        pays = [n["pays_clair"] for n in self.notices]
-        self.assertIn("Sri Lanka", pays)
-        self.assertIn("Papua New Guinea", pays)
-        self.assertIn("Nepal", pays)
+    def test_reference_stable_numero_agrement(self):
+        self.assertEqual(self.sri["reference"], "4741")
 
-    def test_reference_extraite(self):
-        sri = [n for n in self.notices if n["pays_clair"] == "Sri Lanka"][0]
-        self.assertEqual(sri["reference"], "58321-001")
+    def test_lien_relatif_rendu_absolu(self):
+        self.assertTrue(self.sri["lien"].startswith("https://www.adb.org/sites/"))
 
-    def test_lien_pdf_extrait(self):
-        sri = [n for n in self.notices if n["pays_clair"] == "Sri Lanka"][0]
-        self.assertTrue(sri["lien"].endswith("sri4741-ifb-ncpcp-5b.pdf"))
-
-    def test_deadline_et_posting(self):
-        sri = [n for n in self.notices if n["pays_clair"] == "Sri Lanka"][0]
-        self.assertEqual(sri["deadline"], ECHEANCE)
-        self.assertEqual(sri["posting_date"], RECENTE)
-
-    def test_type_notice_texte(self):
-        sri = [n for n in self.notices if n["pays_clair"] == "Sri Lanka"][0]
-        self.assertIn("Invitation for Bids", sri["type_notice_txt"])
+    def test_reference_repli_sur_id(self):
+        # Sans n° d'agrement ni n° de projet, la reference tombe sur l'id Solr.
+        doc = _doc("Nepal", "X", "Invitation for Bids", None,
+                   "2026-12-01T12:00:00Z", "2026-10-01T12:00:00Z")
+        self.assertEqual(adb.notice_depuis_doc(doc)["reference"], "doc-x")
 
 
 class TestResolutionPays(unittest.TestCase):
@@ -163,16 +101,15 @@ class TestTypeNotice(unittest.TestCase):
 
 class TestPipeline(unittest.TestCase):
     def setUp(self):
-        self.avis, self.stats = adb.collecter_et_normaliser(
-            fetch=lambda url=None: PAGE_REELLE)
+        self.avis, self.stats = adb.collecter_et_normaliser(fetch_json=lambda: FAKE_DOCS)
 
     def test_garde_fou_non_declenche(self):
-        self.assertFalse(self.stats["page_vide"])
+        self.assertFalse(self.stats["api_vide"])
 
     def test_retient_zones_suivies(self):
         pays = sorted(a["pays_execution"] for a in self.avis)
-        # Sri Lanka, PNG, Afghanistan gardes ; Viet Nam (hors zone), Regional
-        # (sans pays) et Nepal (perime) exclus.
+        # Sri Lanka, PNG, Afghanistan gardes ; Viet Nam (hors zone) et Regional
+        # (sans pays) exclus.
         self.assertEqual(pays, ["AFG", "LKA", "PNG"])
 
     def test_vietnam_signale(self):
@@ -184,11 +121,15 @@ class TestPipeline(unittest.TestCase):
 
     def test_deadline_convertie_iso(self):
         sri = [a for a in self.avis if a["pays_execution"] == "LKA"][0]
-        self.assertEqual(sri["deadline"], DATE_ECHEANCE.isoformat())
+        self.assertEqual(sri["deadline"], "2026-12-15")
+
+    def test_date_publication_iso(self):
+        sri = [a for a in self.avis if a["pays_execution"] == "LKA"][0]
+        self.assertEqual(sri["date_publication"], "2026-10-20")
 
     def test_reference_comme_publication_number(self):
         sri = [a for a in self.avis if a["pays_execution"] == "LKA"][0]
-        self.assertEqual(sri["publication_number"], "58321-001")
+        self.assertEqual(sri["publication_number"], "4741")
 
     def test_avis_compatible_coeur_ted(self):
         avis = self.avis[0]
@@ -204,51 +145,96 @@ class TestPipeline(unittest.TestCase):
         self.assertLessEqual(f, 10.0)
 
 
-class TestFenetreFraicheur(unittest.TestCase):
-    """Le filtre de fraicheur, teste EXPLICITEMENT.
-
-    C'est le test qui manquait : l'ancienne version subissait la fenetre sans
-    jamais l'affirmer, si bien que le jour ou elle a mordu sur un cas legitime,
-    l'echec n'a rien appris -- il a juste casse le build."""
-
-    def setUp(self):
-        self.avis, self.stats = adb.collecter_et_normaliser(
-            fetch=lambda url=None: PAGE_REELLE)
-
-    def test_notice_perimee_ecartee(self):
-        # Nepal est un pays SUIVI (NPL) : s'il n'apparait pas, c'est bien la
-        # fenetre de fraicheur qui l'a ecarte, et rien d'autre.
-        self.assertIn("NPL", ted.CODES_PAYS_SUIVIS)
-        self.assertNotIn("NPL", [a["pays_execution"] for a in self.avis])
-
-    def test_notice_recente_conservee(self):
-        # Meme secteur, meme type de notice, meme pays suivi : seule la date
-        # change. Le contraste isole la fenetre comme unique cause.
-        page_fraiche = PAGE_REELLE.replace(PERIMEE, RECENTE)
-        avis, _ = adb.collecter_et_normaliser(fetch=lambda url=None: page_fraiche)
-        self.assertIn("NPL", [a["pays_execution"] for a in avis])
-
-    def test_fixture_reste_dans_la_fenetre(self):
-        # Garde-fou anti-recidive : si un jour quelqu'un rebascule une date en
-        # dur dans ce fichier, cette assertion le dit tout de suite, avec un
-        # message clair, plutot que de laisser un test metier tomber au hasard.
-        seuil = AUJOURDHUI - timedelta(days=adb.NB_JOURS_FENETRE)
-        self.assertGreaterEqual(
-            DATE_RECENTE, seuil,
-            "Le fixture 'recent' est sorti de la fenetre : les dates de test "
-            "doivent etre calculees depuis date.today(), jamais ecrites en dur.")
-        self.assertLess(
-            DATE_PERIMEE, seuil,
-            "Le fixture 'perime' est entre dans la fenetre : il ne teste plus rien.")
-
-
-class TestGardeFouJS(unittest.TestCase):
-    def test_page_vide_declenche_garde_fou(self):
-        # Page rendue en JS = pas de notices -> garde-fou.
-        avis, stats = adb.collecter_et_normaliser(
-            fetch=lambda url=None: "<html><body><div id='app'></div></body></html>")
-        self.assertTrue(stats["page_vide"])
+class TestApiVide(unittest.TestCase):
+    def test_api_vide_declenche_garde_fou(self):
+        avis, stats = adb.collecter_et_normaliser(fetch_json=lambda: [])
+        self.assertTrue(stats["api_vide"])
         self.assertEqual(avis, [])
+
+
+class FauxRep:
+    def __init__(self, docs):
+        self._docs = docs
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return {"response": {"docs": self._docs}}
+
+
+class FauxSession:
+    def __init__(self, docs):
+        self.docs = docs
+        self.appel = None
+
+    def get(self, url, params=None, timeout=None, headers=None):
+        self.appel = {"url": url, "params": params, "headers": headers}
+        return FauxRep(self.docs)
+
+
+class TestInterrogationApi(unittest.TestCase):
+    """La requete serveur porte bien le filtre `status:Active` et le jeton :
+    c'est ce filtre qui remplace l'ancienne fenetre de fraicheur."""
+
+    def test_requete_filtre_actifs_et_jeton(self):
+        s = FauxSession(FAKE_DOCS)
+        docs = adb.interroger_api(session=s)
+        self.assertEqual(docs, FAKE_DOCS)
+        self.assertEqual(s.appel["params"]["fq"], "tm_X3b_en_status:Active")
+        self.assertEqual(s.appel["params"]["q"], "*:*")
+        self.assertTrue(s.appel["headers"]["Authorization"].startswith("Token "))
+
+
+class CaptureMiroir:
+    """Remplace radar_stockage.ecrire_miroir et capture (onglet, lignes)."""
+    def __enter__(self):
+        self.appels = []
+        self._orig = radar_stockage.ecrire_miroir
+        radar_stockage.ecrire_miroir = self._capturer
+        return self
+
+    def __exit__(self, *a):
+        radar_stockage.ecrire_miroir = self._orig
+
+    def _capturer(self, onglet, lignes):
+        self.appels.append((onglet, lignes))
+        return "capture: {} ligne(s)".format(len(lignes))
+
+
+class TestMiroir(unittest.TestCase):
+    """ADB reactive doit ecrire dans le miroir Postgres (source de verite depuis
+    le 22/07), sur le BON onglet, aligne positionnellement sur COLONNES_ADB."""
+
+    def _resultat(self):
+        avis = {"titre": "Projet X", "acheteur": "Asian Development Bank",
+                "pays_execution": "LKA", "pays_acheteur": "",
+                "publication_number": "4741", "type_notice": "Appel d'offres",
+                "phase": "tender", "lien_avis": "", "deadline": "", "date_publication": ""}
+        extraction = {"type_client": "bailleur_donateur", "confiance": 0.8}
+        return {"avis": avis, "extraction": extraction, "surete": 5.0,
+                "commercial": 5.0, "score": 5.0, "final_haiku": 5.0,
+                "raffine": False, "divergence": False}
+
+    def test_cable_le_miroir_bon_onglet_et_alignement(self):
+        with CaptureMiroir() as cap:
+            msg = adb.ecrire_miroir([self._resultat()])
+        self.assertEqual(len(cap.appels), 1)
+        self.assertEqual(cap.appels[0][0], adb.NOM_ONGLET)          # "adb_radar"
+        d = cap.appels[0][1][0]
+        self.assertEqual(set(d.keys()), set(adb.COLONNES_ADB))     # alignement schema
+        self.assertEqual(d["publication_number"], "4741")
+        self.assertIn("ligne", msg)
+
+    def test_miroir_best_effort_ne_leve_jamais(self):
+        # Meme si la couche base casse, ecrire_miroir avale l'exception (regle 11).
+        orig = radar_stockage.ecrire_miroir
+        radar_stockage.ecrire_miroir = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+        try:
+            msg = adb.ecrire_miroir([self._resultat()])
+        finally:
+            radar_stockage.ecrire_miroir = orig
+        self.assertIn("indisponible", msg)
 
 
 if __name__ == "__main__":
