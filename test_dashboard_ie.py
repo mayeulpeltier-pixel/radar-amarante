@@ -150,10 +150,31 @@ class TestSanctions(unittest.TestCase):
         self.assertIn("Aucune exclusion recente", html)
 
 
+class TestVigilance(unittest.TestCase):
+
+    def test_section_et_tri_et_contact(self):
+        vig = [{"nom": "ORANGE", "siren": "380129866", "effectif": "10 000 et plus",
+                "activite_naf": "Telecom", "ville": "PARIS"},
+               {"nom": "ACCOR", "siren": "602036444", "effectif": "10 000 et plus",
+                "activite_naf": "Hotels", "ville": "ISSY"}]
+        enr = [{"cle_societe": "orange", "dirigeant_principal": "Jane Doe (DG)",
+                "siren": "380129866"}]
+        html = D.generer_html([], [], [], [], enr, vig, genere_le=AUJ)
+        self.assertIn("grands groupes assujettis", html)
+        self.assertIn("ORANGE", html)
+        self.assertIn("Jane Doe", html)          # contact joint
+        # tri alphabetique : ACCOR avant ORANGE
+        self.assertLess(html.index("ACCOR"), html.index("ORANGE"))
+
+    def test_section_vide(self):
+        html = D.generer_html([], [], [], [], None, [], genere_le=AUJ)
+        self.assertIn("Aucune societe assujettie", html)
+
+
 class TestLectureVide(unittest.TestCase):
 
     def test_sans_url(self):
-        self.assertEqual(D.lire_tables(None), ([], [], [], [], []))
+        self.assertEqual(D.lire_tables(None), ([], [], [], [], [], []))
 
 
 if __name__ == "__main__":

@@ -51,6 +51,8 @@ COLONNES = {
                                 "dirigeant_principal", "autres_dirigeants",
                                 "activite_naf", "ville", "effectif", "email",
                                 "source", "enrichi_le"),
+    "radar_ie_vigilance": ("cle", "nom", "siren", "nature_juridique", "effectif",
+                           "activite_naf", "ville", "categorie", "detecte_le"),
 }
 
 
@@ -70,7 +72,7 @@ def lire_tables(url):
     """(leads, echeances, declencheurs, sanctions, enrichissement). Chaque table
     est best-effort : absente ou illisible -> liste vide, la page reste complete."""
     if not url:
-        return [], [], [], [], []
+        return [], [], [], [], [], []
     try:
         import psycopg
         with psycopg.connect(url, connect_timeout=15) as conn:
@@ -79,10 +81,11 @@ def lire_tables(url):
                     lire_table(conn, "radar_ie_declencheurs", COLONNES["radar_ie_declencheurs"]),
                     lire_table(conn, "radar_ie_sanctions", COLONNES["radar_ie_sanctions"]),
                     lire_table(conn, "radar_ie_enrichissement",
-                               COLONNES["radar_ie_enrichissement"]))
+                               COLONNES["radar_ie_enrichissement"]),
+                    lire_table(conn, "radar_ie_vigilance", COLONNES["radar_ie_vigilance"]))
     except Exception as e:  # noqa: BLE001
         print("  (info) base IE indisponible ({}).".format(str(e)[:120]))
-        return [], [], [], [], []
+        return [], [], [], [], [], []
 
 
 def index_enrichissement(enrichissement):
@@ -345,8 +348,30 @@ function filtrer(){
 """
 
 
+def vigilance_affichee(vigilance):
+    """Grands groupes assujettis au devoir de vigilance, par ordre alphabetique."""
+    return sorted(vigilance or [], key=lambda v: (v.get("nom") or "").lower())
+
+
+def rendre_vigilance(lignes, enrich_index=None):
+    if not lignes:
+        return '<p class="vide">Aucune societe assujettie listee.</p>'
+    enrich_index = enrich_index or {}
+    rangs = []
+    for v in lignes:
+        contact = _contact(enrich_index.get(EN.cle_societe(v.get("nom") or "")))
+        rangs.append(
+            '<tr><td class="titre">{nom}</td><td>{siren}</td><td>{eff}</td>'
+            '<td>{naf}</td><td>{ville}</td><td>{contact}</td></tr>'.format(
+                nom=e(v.get("nom")), siren=e(v.get("siren")), eff=e(v.get("effectif")),
+                naf=e(v.get("activite_naf")), ville=e(v.get("ville")), contact=contact))
+    return ('<table><thead><tr><th>Societe</th><th>SIREN</th><th>Effectif</th>'
+            '<th>Activite</th><th>Ville</th><th>Contact (dirigeant)</th>'
+            '</tr></thead><tbody>' + "".join(rangs) + '</tbody></table>')
+
+
 def generer_html(leads, echeances, declencheurs, sanctions=None,
-                 enrichissement=None, genere_le=None):
+                 enrichissement=None, vigilance=None, genere_le=None):
     """Page complete, auto-suffisante. Fonction PURE."""
     genere_le = genere_le or datetime.date.today()
     auj = genere_le if isinstance(genere_le, datetime.date) else datetime.date.today()
@@ -354,6 +379,7 @@ def generer_html(leads, echeances, declencheurs, sanctions=None,
     le = echeances_affichees(echeances, auj)
     ld = declencheurs_affiches(declencheurs)
     ls = sanctions_recentes(sanctions or [], auj)
+    lv = vigilance_affichee(vigilance)
     enrich_index = index_enrichissement(enrichissement)
     stamp = genere_le.isoformat() if isinstance(genere_le, datetime.date) else str(genere_le)
 
@@ -380,21 +406,25 @@ La saisie (statut, commentaire) reste dans le classeur ARISE.</p></header>
 <section><h2>Sanctions des bailleurs{c_sanc}</h2>
 <p class="sous">Entreprises et personnes recemment exclues des marches des banques multilaterales (Banque mondiale et cross-debarment des autres banques) pour fraude ou corruption. Matiere de due diligence.</p>
 {sanc}</section>
+<section><h2>Devoir de vigilance : grands groupes assujettis{c_vig}</h2>
+<p class="sous">Societes de plus de 5 000 salaries tenues par la loi de 2017 d'etablir une cartographie des risques et une evaluation des tiers : marche prive adressable pour ARISE.</p>
+{vig}</section>
 </main>
 <footer>Radar Amarante — volet IE. Donnees internes, usage ARISE uniquement.</footer>
 <script>{script}</script></body></html>""".format(
         style=STYLE, script=SCRIPT, stamp=e(stamp),
         c_leads=compteur(len(la)), c_ech=compteur(len(le)), c_decl=compteur(len(ld)),
-        c_sanc=compteur(len(ls)),
+        c_sanc=compteur(len(ls)), c_vig=compteur(len(lv)),
         leads=rendre_leads(la), ech=rendre_echeances(le),
-        decl=rendre_declencheurs(ld, enrich_index), sanc=rendre_sanctions(ls))
+        decl=rendre_declencheurs(ld, enrich_index), sanc=rendre_sanctions(ls),
+        vig=rendre_vigilance(lv, enrich_index))
 
 
 def main():
     url = os.environ.get("DATABASE_URL")
     sortie = os.environ.get("IE_DASHBOARD_SORTIE", "public_ie")
-    leads, ech, decl, sanctions, enrichissement = lire_tables(url)
-    html_page = generer_html(leads, ech, decl, sanctions, enrichissement)
+    leads, ech, decl, sanctions, enrichissement, vigilance = lire_tables(url)
+    html_page = generer_html(leads, ech, decl, sanctions, enrichissement, vigilance)
     os.makedirs(sortie, exist_ok=True)
     chemin = os.path.join(sortie, "index.html")
     with open(chemin, "w", encoding="utf-8") as f:

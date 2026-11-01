@@ -254,18 +254,24 @@ def lire_source_pg(url):
     """Societes des declencheurs (lecture seule)."""
     if not url:
         return []
+    sources = []
     try:
         import psycopg
         with psycopg.connect(url, connect_timeout=15) as conn:
             with conn.cursor() as cur:
-                try:
-                    cur.execute("SELECT societe FROM {}".format(TABLE_SOURCE))
-                except Exception:
-                    return []
-                return [{"societe": r[0]} for r in cur.fetchall()]
+                # Declencheurs (sanctions AMF/CJIP) + cartographie devoir de
+                # vigilance : deux populations de societes a enrichir.
+                for table, colonne in ((TABLE_SOURCE, "societe"),
+                                       ("radar_ie_vigilance", "nom")):
+                    try:
+                        cur.execute("SELECT {} FROM {}".format(colonne, table))
+                        sources += [{"societe": r[0]} for r in cur.fetchall()]
+                    except Exception:
+                        conn.rollback()      # table absente : on ignore
+        return sources
     except Exception as exc:  # noqa: BLE001
-        print("  (info) source declencheurs indisponible ({}).".format(str(exc)[:120]))
-        return []
+        print("  (info) sources a enrichir indisponibles ({}).".format(str(exc)[:120]))
+        return sources
 
 
 def ecrire_pg(url, enrichies):
