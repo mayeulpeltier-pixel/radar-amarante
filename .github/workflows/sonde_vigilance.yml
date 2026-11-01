@@ -1,0 +1,33 @@
+name: Sonde endpoint plan-vigilance (jetable)
+# Craque l'endpoint de donnees de plan-vigilance.org (SPA JS) depuis un egress
+# propre : charge la page avec Chromium, lance une recherche, capture l'appel
+# de donnees reel et sa forme. Lecture seule. A SUPPRIMER une fois l'endpoint
+# connu et le collecteur devoir-de-vigilance cable.
+on:
+  workflow_dispatch:
+
+jobs:
+  sonde:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+      - name: Installer Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Installer Playwright (Chromium)
+        run: |
+          npm init -y
+          npm install playwright@1.49.1
+          npx playwright install --with-deps chromium
+      - name: Sonder l'endpoint
+        run: node sonde_vigilance.js
+      - name: Publier le rapport
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonde-vigilance
+          path: sonde_vigilance_sortie/
+          if-no-files-found: warn
