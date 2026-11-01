@@ -1,0 +1,34 @@
+name: Santé des sources
+# Photo de production : par source, volume, dernier enregistrement, fraîcheur,
+# état (OK / VIEILLIT / MUET / VIDE / INDISPONIBLE). Lecture seule, aucun LLM.
+# Les tests ne mesurent pas la prod : ceci oui.
+on:
+  schedule:
+    - cron: "17 7 * * 1"        # lundi 07h17 UTC, après les runs du matin
+  workflow_dispatch:
+
+jobs:
+  sante:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer les dépendances
+        run: pip install -r requirements-radar.txt
+      - name: Mesurer la santé des sources
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python sante_sources.py
+      - name: Publier le rapport
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sante-sources
+          path: sante_sources_sortie/
+          if-no-files-found: warn
+          retention-days: 90
