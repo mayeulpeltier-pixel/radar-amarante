@@ -53,6 +53,9 @@ COLONNES = {
                                 "source", "enrichi_le"),
     "radar_ie_vigilance": ("cle", "nom", "siren", "nature_juridique", "effectif",
                            "activite_naf", "ville", "categorie", "detecte_le"),
+    "radar_ie_presse": ("cle", "detecte_le", "action", "entreprise", "operation",
+                        "pays", "zone_risque", "besoin", "resume", "source",
+                        "lien", "date_article"),
 }
 
 
@@ -86,6 +89,20 @@ def lire_tables(url):
     except Exception as e:  # noqa: BLE001
         print("  (info) base IE indisponible ({}).".format(str(e)[:120]))
         return [], [], [], [], [], []
+
+
+def lire_presse(url):
+    """Declencheurs presse M&A (table independante, best-effort). Lu a part pour
+    ne pas changer l'arite de `lire_tables` (et ses appelants/tests)."""
+    if not url:
+        return []
+    try:
+        import psycopg
+        with psycopg.connect(url, connect_timeout=15) as conn:
+            return lire_table(conn, "radar_ie_presse", COLONNES["radar_ie_presse"])
+    except Exception as e:  # noqa: BLE001
+        print("  (info) table presse IE indisponible ({}).".format(str(e)[:120]))
+        return []
 
 
 def index_enrichissement(enrichissement):
@@ -370,8 +387,38 @@ def rendre_vigilance(lignes, enrich_index=None):
             '</tr></thead><tbody>' + "".join(rangs) + '</tbody></table>')
 
 
+def presse_affiches(presse):
+    """Declencheurs presse a traiter : a contacter d'abord, puis par detection
+    recente. Le reste (ignorer) n'est pas affiche."""
+    rang = {"contacter": 0, "surveiller": 1}
+    aff = [p for p in (presse or []) if p.get("action") in rang]
+    return sorted(aff, key=lambda p: (rang.get(p.get("action"), 9),
+                                      _tri_date(p.get("detecte_le"))))
+
+
+def rendre_presse(presse):
+    if not presse:
+        return '<p class="vide">Aucun declencheur presse recent.</p>'
+    lignes = []
+    for p in presse:
+        zone = _badge("Zone a risque", "pos-concurrent") if _vrai(p.get("zone_risque")) else ""
+        src = (_lien(p.get("lien"), p.get("source") or "article")
+               if p.get("lien") else e(p.get("source")))
+        lignes.append(
+            '<tr><td>{badge}</td><td class="titre">{ent}<div class="resume">{res}</div></td>'
+            '<td>{op}</td><td>{pays}</td><td>{zone}</td><td>{besoin}</td>'
+            '<td class="liens">{src}</td></tr>'.format(
+                badge=_badge(p.get("action"), "a-" + (p.get("action") or "")),
+                ent=e(p.get("entreprise")) or "?", res=e(p.get("resume")),
+                op=e(p.get("operation")), pays=e(p.get("pays")), zone=zone or "-",
+                besoin=e(p.get("besoin")), src=src or "-"))
+    return ('<table><thead><tr><th>Action</th><th>Entreprise</th><th>Operation</th>'
+            '<th>Pays</th><th>Zone</th><th>Besoin</th><th>Source</th>'
+            '</tr></thead><tbody>' + "".join(lignes) + '</tbody></table>')
+
+
 def generer_html(leads, echeances, declencheurs, sanctions=None,
-                 enrichissement=None, vigilance=None, genere_le=None):
+                 enrichissement=None, vigilance=None, genere_le=None, presse=None):
     """Page complete, auto-suffisante. Fonction PURE."""
     genere_le = genere_le or datetime.date.today()
     auj = genere_le if isinstance(genere_le, datetime.date) else datetime.date.today()
@@ -380,6 +427,7 @@ def generer_html(leads, echeances, declencheurs, sanctions=None,
     ld = declencheurs_affiches(declencheurs)
     ls = sanctions_recentes(sanctions or [], auj)
     lv = vigilance_affichee(vigilance)
+    lp = presse_affiches(presse)
     enrich_index = index_enrichissement(enrichissement)
     stamp = genere_le.isoformat() if isinstance(genere_le, datetime.date) else str(genere_le)
 
@@ -403,6 +451,9 @@ La saisie (statut, commentaire) reste dans le classeur ARISE.</p></header>
 <section><h2>Declencheurs (CJIP et sanctions){c_decl}</h2>
 <p class="sous">Conventions judiciaires d'interet public imposant un programme de conformite sous controle de l'AFA : demande privee a venir.</p>
 {decl}</section>
+<section><h2>Presse : acquisitions et implantations{c_presse}</h2>
+<p class="sous">Entreprises qui acquierent ou s'implantent a l'etranger (surtout en zone a risque) : besoin de due diligence sur la cible ou le marche, et souvent de securite sur place. Source : presse economique.</p>
+{presse}</section>
 <section><h2>Sanctions des bailleurs{c_sanc}</h2>
 <p class="sous">Entreprises et personnes recemment exclues des marches des banques multilaterales (Banque mondiale et cross-debarment des autres banques) pour fraude ou corruption. Matiere de due diligence.</p>
 {sanc}</section>
@@ -414,17 +465,19 @@ La saisie (statut, commentaire) reste dans le classeur ARISE.</p></header>
 <script>{script}</script></body></html>""".format(
         style=STYLE, script=SCRIPT, stamp=e(stamp),
         c_leads=compteur(len(la)), c_ech=compteur(len(le)), c_decl=compteur(len(ld)),
-        c_sanc=compteur(len(ls)), c_vig=compteur(len(lv)),
+        c_sanc=compteur(len(ls)), c_vig=compteur(len(lv)), c_presse=compteur(len(lp)),
         leads=rendre_leads(la), ech=rendre_echeances(le),
         decl=rendre_declencheurs(ld, enrich_index), sanc=rendre_sanctions(ls),
-        vig=rendre_vigilance(lv, enrich_index))
+        vig=rendre_vigilance(lv, enrich_index), presse=rendre_presse(lp))
 
 
 def main():
     url = os.environ.get("DATABASE_URL")
     sortie = os.environ.get("IE_DASHBOARD_SORTIE", "public_ie")
     leads, ech, decl, sanctions, enrichissement, vigilance = lire_tables(url)
-    html_page = generer_html(leads, ech, decl, sanctions, enrichissement, vigilance)
+    presse = lire_presse(url)
+    html_page = generer_html(leads, ech, decl, sanctions, enrichissement, vigilance,
+                             presse=presse)
     os.makedirs(sortie, exist_ok=True)
     chemin = os.path.join(sortie, "index.html")
     with open(chemin, "w", encoding="utf-8") as f:
