@@ -171,10 +171,44 @@ class TestVigilance(unittest.TestCase):
         self.assertIn("Aucune societe assujettie", html)
 
 
+class TestPresse(unittest.TestCase):
+
+    def _p(self, cle, action="contacter", zone="true", ent="Dangote"):
+        return {"cle": cle, "detecte_le": "2026-11-03", "action": action,
+                "entreprise": ent, "operation": "implantation", "pays": "Cameroun",
+                "zone_risque": zone, "besoin": "les_deux", "resume": "r",
+                "source": "RFI", "lien": "http://x"}
+
+    def test_affiches_filtre_et_tri(self):
+        presse = [self._p("a", action="surveiller"), self._p("b", action="contacter"),
+                  self._p("c", action="ignorer")]
+        vus = [p["cle"] for p in D.presse_affiches(presse)]
+        self.assertEqual(vus, ["b", "a"])         # contacter avant surveiller, ignorer exclu
+
+    def test_section_dans_la_page(self):
+        html = D.generer_html([], [], [], [], None, None, genere_le=AUJ,
+                              presse=[self._p("b")])
+        self.assertIn("acquisitions et implantations", html)
+        self.assertIn("Dangote", html)
+        self.assertIn("Zone a risque", html)
+
+    def test_section_vide(self):
+        html = D.generer_html([], [], [], genere_le=AUJ, presse=[])
+        self.assertIn("Aucun declencheur presse", html)
+
+    def test_retrocompatible_sans_presse(self):
+        # generer_html reste appelable sans presse (arite inchangee des appelants).
+        html = D.generer_html([], [], [], genere_le=AUJ)
+        self.assertIn("acquisitions et implantations", html)   # section presente, vide
+
+
 class TestLectureVide(unittest.TestCase):
 
     def test_sans_url(self):
         self.assertEqual(D.lire_tables(None), ([], [], [], [], [], []))
+
+    def test_lire_presse_sans_url(self):
+        self.assertEqual(D.lire_presse(None), [])
 
 
 if __name__ == "__main__":
