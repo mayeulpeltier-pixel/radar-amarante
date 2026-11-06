@@ -532,7 +532,8 @@ def postures(leads, alertes, risque=None):
 def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
                     candidats=None, dossiers=None, projets=None,
                     candidats_projets=None, sante=None, posture=None,
-                    geo_alertes=None, opportunites=None, detail_sante=None):
+                    geo_alertes=None, opportunites=None, detail_sante=None,
+                    fiches=None):
     """leads (schema dashboard) -> HTML autonome. Fonction PURE.
     dossiers : liste compacte (dossiers.serialiser) pour la vue Ecosysteme
                (projets BM suivis a travers leurs phases). Defaut [].
@@ -570,19 +571,24 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
     # CONTACTER : c'est la ou la question « qui va soumissionner » se pose. Les
     # calculer pour tout le corpus alourdirait la page de plusieurs centaines
     # de listes que personne n'ouvrirait.
+    #
+    # CANDIDATS PROUVES (06/11/2026) : remplacent `soumissionnaires_probables`,
+    # qui proposait les memes negociants pour la RDC, le Bangladesh et le
+    # Kirghizistan (motif unique « secteur et theatre »). Consigne de Mayeul :
+    # « de vraies propositions, pas n'importe quoi ». Un candidat n'apparait
+    # que s'il a deja remporte un marche comparable, cite en preuve.
+    # Etendu aux avis « a surveiller » : la preuve est rare, donc legere.
     soum = {}
     try:
         import candidats_probables as _cp
         cibles = [l for l in leads
-                  if l.get("src") != "ATTRIB" and l.get("action") == "contacter"]
-        # L'historique des titulaires est le MEME pour tous les avis : le
-        # reconstruire a chaque iteration parcourait tout le corpus 200 fois.
-        hists = _cp.historique_titulaires(leads)
-        for l in cibles[:200]:
+                  if l.get("src") != "ATTRIB" and l.get("action") in ("contacter", "surveiller")]
+        idx_att = _cp.index_attributions(leads)
+        for l in cibles[:800]:
             cle = str(l.get("pub") or "").strip()
             if not cle:
                 continue
-            r = _cp.soumissionnaires_probables(l, leads, n=4, hists=hists)
+            r = _cp.candidats_prouves(l, leads, n=4, index=idx_att)
             if r:
                 soum[cle] = r
     except Exception as e:
@@ -608,7 +614,10 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
                       type(e).__name__, str(e)[:90]))
             opportunites = []
             comptes_ = {}
+    fiches_js, fiche_pub = preparer_fiches(leads, fiches)
     return (GABARIT
+            .replace("__FICHES_JSON__", json.dumps(fiches_js, ensure_ascii=False))
+            .replace("__FICHEPUB_JSON__", json.dumps(fiche_pub, ensure_ascii=False))
             .replace("__OPPS_JSON__", json.dumps(alleger_opps(opportunites),
                                                  ensure_ascii=False))
             .replace("__COMPTES_JSON__", json.dumps(comptes_ or {}, ensure_ascii=False))
@@ -631,6 +640,44 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
             .replace("__SUIVI_URL__", json.dumps(_url))
             .replace("__SUIVI_TOKEN__", json.dumps(_token))
             .replace("__API_STATUT__", "true" if suivi.get("api") else "false"))
+
+
+def preparer_fiches(leads, fiches):
+    """(fiches_par_cle, cle_par_pub) pour le cockpit. Fonction PURE.
+
+    Une fiche Analyste est rangee sous la cle d'OPPORTUNITE (analyste.cle_fiche)
+    : tous les leads du meme projet la montrent, pas seulement celui qui l'a
+    declenchee. On n'embarque que l'utile a l'ecran (pas le cout ni le modele)."""
+    if not fiches:
+        return {}, {}
+    try:
+        import analyste
+    except Exception:
+        return {}, {}
+    par_cle = {}
+    for f in fiches:
+        if not isinstance(f, dict) or not isinstance(f.get("fiche"), dict):
+            continue
+        cle = str(f.get("publication_number") or "")
+        if cle:
+            par_cle[cle] = {"date": f.get("date", ""), "fiche": f["fiche"],
+                            "candidats": f.get("candidats") or [],
+                            "sources": (f.get("sources") or [])[:6]}
+    if not par_cle:
+        return {}, {}
+    par_pub = {}
+    for l in leads:
+        pub = str(l.get("pub") or "").strip()
+        if not pub or l.get("src") == "ATTRIB":
+            continue
+        try:
+            cle = analyste.cle_fiche(l)
+        except Exception:
+            continue
+        if cle in par_cle:
+            par_pub[pub] = cle
+    utiles = set(par_pub.values())
+    return {k: v for k, v in par_cle.items() if k in utiles}, par_pub
 
 
 def main():
@@ -1017,6 +1064,8 @@ th[data-sort]:hover,th[data-asort]:hover,th[data-psort]:hover{color:var(--ink)}
 .mt-m{font-size:12.5px;color:var(--ink-2);margin-top:6px;line-height:1.5}
 .sb{background:var(--surface-2);border:1px solid var(--line-2);border-radius:10px;padding:12px 14px}
 .sb-r{padding:6px 0;border-bottom:1px solid var(--line)}
+.fiche-a .dr-analyse>div{margin-bottom:6px}.fa-ul{margin:3px 0 0 18px;padding:0}.fa-ul li{margin:2px 0}
+.fa-act{padding:7px 9px;border-left:3px solid var(--blue);background:rgba(0,0,0,.03);margin:8px 0}
 .sb-r:last-of-type{border-bottom:none}
 .sb-h{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
 .sb-e{font-weight:600;font-size:13px}
@@ -1284,6 +1333,7 @@ const COMPTES=__COMPTES_JSON__;
 // (preference). Les melanger, comme le faisait la v1, produisait un classement
 // qui se presentait comme une prevision sans en etre une.
 const SOUM=__SOUM_JSON__;
+const FICHES=__FICHES_JSON__, FICHE_PUB=__FICHEPUB_JSON__;
 const DIM_LBL={attractivite:"Attractivité",timing:"Timing",winability:"Winability",
   fit:"Fit Amarante",confiance:"Confiance"};
 function candidatsPour(l){
@@ -1685,20 +1735,52 @@ function composantes(l){
 // l'historique, « intérêt » est une preference commerciale. Un titulaire tres
 // probable peut n'avoir aucun interet (local, sans expatries), et
 // reciproquement.
+function lienSur(u){u=String(u||"");return /^https?:\/\//i.test(u)?u.replace(/"/g,"%22"):"";}
+const PREUVE_LBL={meme_projet:"même projet",meme_acheteur:"même acheteur",meme_pays_secteur:"même pays et secteur"};
+// CANDIDATS PROUVES (06/11/2026). Remplace les « soumissionnaires probables »
+// et la cascade secteur/theatre : un candidat n'est montre que s'il a deja
+// remporte un marche comparable, et ce marche est cite.
 function blocSoumissionnaires(l){
   const c=SOUM[l.pub];
   if(!c||!c.length)return "";
-  const lignes=c.map(x=>`<div class="sb-r">
+  const lignes=c.map(x=>{const m=(x.marches||[])[0]||{};const u=lienSur(m.lien);
+    return `<div class="sb-r">
     <div class="sb-h"><span class="sb-e">${esc(x.entreprise)}</span>
       ${x.etranger?'<span class="flag">étr.</span>':""}
-      <span class="sb-p" title="Probabilité de soumissionner, fondée sur l'historique">${x.probabilite}%</span>
-      <span class="sb-i" title="Intérêt commercial pour Amarante">int. ${x.interet}</span></div>
-    <div class="sb-m">${esc(x.motifs.join(" · "))}</div>
-  </div>`).join("");
-  return `<div class="dr-sec"><h5>Soumissionnaires probables</h5>
+      <span class="sb-i" title="Nature de la preuve">${esc(PREUVE_LBL[x.preuve]||x.preuve)}</span></div>
+    <div class="sb-m">A remporté ${u?`<a href="${u}" target="_blank" rel="noopener">« ${esc(m.titre)} »</a>`:`« ${esc(m.titre)} »`} · ${esc(m.pays||"")} · ${esc(m.date||"")}${x.nb_preuves>1?` · ${x.nb_preuves} marchés probants`:""}</div>
+  </div>`;}).join("");
+  return `<div class="dr-sec"><h5>Candidats probables (prouvés)</h5>
     <div class="sb">${lignes}
-    <div class="dc-note"><b>Probabilité</b> = chance de soumissionner, déduite de l'historique (acheteur déjà servi, secteur, théâtre, récence, ordre de grandeur). <b>Intérêt</b> = valeur du compte pour Amarante. Les deux sont séparés : un titulaire très probable peut n'avoir aucun intérêt, et l'inverse.</div>
+    <div class="dc-note">Seuls apparaissent les titulaires qui ont <b>déjà remporté</b> un marché de services ou de travaux comparable : même projet, même acheteur dans ce pays, ou même pays et secteur depuis moins de 3 ans. Pas de preuve, pas de candidat.</div>
     </div></div>`;
+}
+// FICHE ANALYSTE (06/11/2026) : redigee par Sonnet 5.5 avec recherche web,
+// une par opportunite. Rangee sous la cle d'opportunite : tous les documents
+// du meme projet la montrent.
+function blocFiche(l){
+  const cle=FICHE_PUB[l.pub];const r=cle&&FICHES[cle];
+  if(!r)return "";
+  const f=r.fiche||{};const pa=f.prochaine_action||{};
+  const liste=a=>(a||[]).filter(Boolean).map(x=>`<li>${esc(x)}</li>`).join("");
+  const qui=(f.qui_deploiera||[]).map(a=>{const u=lienSur(a.source);
+    return `<li>${esc(a.acteur)}${u?` <a href="${u}" target="_blank" rel="noopener">(source)</a>`:a.source==="radar"?" (titulaire prouvé)":a.source==="avis"?" (cité dans l'avis)":""}</li>`;}).join("");
+  const srcs=(r.sources||[]).map(lienSur).filter(Boolean).map((u,i)=>`<a href="${u}" target="_blank" rel="noopener">[${i+1}]</a>`).join(" ");
+  const vcol={poursuivre:"var(--green)",surveiller:"var(--amber)",abandonner:"var(--red)"}[f.verdict]||"var(--ink-3)";
+  return `<div class="dr-sec fiche-a"><h5>Fiche Analyste <span style="font-weight:400;text-transform:none">· ${esc(r.date||"")}</span></h5>
+    <div class="dr-analyse">
+      <div style="margin-bottom:8px"><b style="color:${vcol}">${esc((f.verdict||"").toUpperCase())}</b> · ${esc(f.en_une_phrase||"")}</div>
+      ${f.pourquoi_maintenant?`<div><strong>Pourquoi maintenant :</strong> ${esc(f.pourquoi_maintenant)}</div>`:""}
+      ${f.acheteur?`<div><strong>Acheteur :</strong> ${esc(f.acheteur)}</div>`:""}
+      ${qui?`<div><strong>Qui déploiera :</strong><ul class="fa-ul">${qui}</ul></div>`:""}
+      ${(f.besoin_surete||[]).length?`<div><strong>Besoin sûreté :</strong><ul class="fa-ul">${liste(f.besoin_surete)}</ul></div>`:""}
+      ${f.concurrence?`<div><strong>Concurrence :</strong> ${esc(f.concurrence)}</div>`:""}
+      ${f.angle_amarante?`<div><strong>Angle Amarante :</strong> ${esc(f.angle_amarante)}</div>`:""}
+      ${pa.action?`<div class="fa-act"><strong>Prochaine action :</strong> ${esc(pa.action)}${pa.cible?`<br><span style="color:var(--ink-3)">Cible : ${esc(pa.cible)}</span>`:""}${pa.avant_le?` · avant le ${esc(pa.avant_le)}`:""}</div>`:""}
+      ${(f.a_verifier||[]).length?`<div><strong>À vérifier :</strong><ul class="fa-ul">${liste(f.a_verifier)}</ul></div>`:""}
+    </div>
+    ${srcs?`<div class="dc-note">Sources consultées : ${srcs}</div>`:""}
+  </div>`;
 }
 function blocOpportunite(l){
   const o=OPP_PAR_CLE[l.opp];
@@ -1994,9 +2076,9 @@ function openDrawer(id){
     <div class="dr-src">${l.src} · ${l.zone}</div><h3>${esc(l.titre)}</h3>
     <div style="display:flex;gap:8px;align-items:center"><span class="score-badge" style="width:34px;height:34px;font-size:14px;background:${scoreColor(l.score)}">${l.score.toFixed(1)}</span><span class="pill ${l.prio}">${PRIO_LBL[l.prio]||l.prio}</span><span class="t-val" style="margin-left:auto;font-size:15px">${fmtEur(l.valeur)}</span></div></div>
   <div class="dr-body">
+    ${blocFiche(l)}
     <div class="dr-sec"><h5>Marché</h5><div class="dr-grid"><div class="dr-field"><div class="l">Pays</div><div class="v">${l.pays||"—"}</div></div><div class="dr-field"><div class="l">Secteur</div><div class="v">${l.secteur}</div></div><div class="dr-field"><div class="l">Acheteur / bailleur</div><div class="v" style="font-size:13px">${esc(l.acheteur)}</div></div><div class="dr-field"><div class="l">Fenêtre</div><div class="v">${WIN_LBL[l.win]||l.win||"—"}</div></div>${l.deadline?`<div class="dr-field"><div class="l">Clôture</div><div class="v">${esc(l.deadline)} ${badgeDeadline(l)}</div></div>`:""}${l.geoboost?`<div class="dr-field"><div class="l">Contexte géo</div><div class="v" style="font-size:12px;color:var(--red)">▲ aggravation ${esc(l.geodate||"")} · score ${l.finalbase!=null?l.finalbase.toFixed(1):"?"} → ${l.score.toFixed(1)}</div></div>`:""}${l.enveloppe>0?`<div class="dr-field"><div class="l">Enveloppe projet</div><div class="v" style="color:var(--blue)">${fmtEur(l.enveloppe)} <span style="font-size:10px;color:var(--ink-3)">(coût total, pas le marché)</span></div></div>`:""}</div></div>
     ${l.titulaire||l.pays_tit?`<div class="dr-sec"><h5>Titulaire</h5><div class="dr-grid"><div class="dr-field"><div class="l">Entreprise</div><div class="v">${esc(l.titulaire||"—")}</div></div><div class="dr-field"><div class="l">Origine</div><div class="v">${l.pays_tit||"—"} ${l.etranger?'<span class="flag">étranger</span>':""}</div></div></div></div>`:""}
-    ${(function(){const c=candidatsPour(l);return c.length?`<div class="dr-sec"><h5>Candidats probables${l.src==="ATTRIB"?" (autres du secteur)":""}</h5><div class="cand-list">${c.map(x=>`<div class="cand" onclick="rechercherEnt('${(x.entreprise||"").replace(/'/g,"\\'")}')"><div class="cand-n">${esc(x.entreprise)}</div><div class="cand-m">${x.nb} marché${x.nb>1?"s":""} similaire${x.nb>1?"s":""}${x.origine?" · "+esc(x.origine):""}${x.etranger?' <span class="cand-etr">étranger</span>':""}</div></div>`).join("")}</div><div class="cand-note">Inféré depuis l'historique des attributions du même secteur / théâtre.</div></div>`:"";})()}
     <div class="dr-sec"><h5>Cible commerciale</h5><div class="dr-analyse">${esc(l.cible)||"—"}${l.interlocuteur?"<br><strong>Interlocuteur :</strong> "+esc(l.interlocuteur):""}${l.besoin?"<br><strong>Besoin de sûreté :</strong> "+esc(besL):""}${l.nature?"<br><strong>Déploiement :</strong> "+natL:""}</div></div>
     ${blocSoumissionnaires(l)}
     ${blocOpportunite(l)}

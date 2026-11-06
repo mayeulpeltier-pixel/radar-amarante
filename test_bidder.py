@@ -243,16 +243,23 @@ class TestAffichage(unittest.TestCase):
         self.assertIn("function blocSoumissionnaires", self.html)
         self.assertIn("Soumissionnaires probables", self.html)
 
-    def test_les_deux_scores_expliques_a_l_ecran(self):
-        """Sans l'explication, le lecteur croira à un score unique."""
-        self.assertIn("Les deux sont séparés", self.html)
-        self.assertIn("chance de soumissionner", self.html)
+    def test_la_regle_de_preuve_est_expliquee_a_l_ecran(self):
+        """06/11/2026 : les « soumissionnaires probables » (score de
+        probabilite sur secteur + theatre) sont remplaces par des candidats
+        PROUVES, sur consigne de Mayeul (« de vraies propositions »). L'ecran
+        doit dire la regle, sinon le lecteur croira a une liste exhaustive."""
+        self.assertIn("Pas de preuve, pas de candidat", self.html)
+        self.assertIn("Candidats probables (prouvés)", self.html)
 
-    def test_calcule_pour_les_avis_a_contacter_seulement(self):
-        """Le calculer pour tout le corpus alourdirait la page de centaines
-        de listes que personne n'ouvrirait."""
+    def test_calcule_pour_les_avis_a_traiter_seulement_et_borne(self):
+        """Contacter et surveiller (la preuve est rare, donc legere), jamais
+        tout le corpus, avec un plafond et un index par pays."""
         src = _lire("radar_cockpit.py")
-        self.assertIn('l.get("action") == "contacter"', src)
+        self.assertIn('l.get("action") in ("contacter", "surveiller")', src)
+        self.assertIn("cibles[:800]", src)
+        self.assertIn("_cp.index_attributions(leads)", src)
+        self.assertIn("_cp.candidats_prouves(", src)
+        self.assertNotIn("_cp.soumissionnaires_probables(", src)
 
     def test_degradation_bruyante(self):
         src = _lire("radar_cockpit.py")
