@@ -260,14 +260,44 @@ def resume_modele(resultats, role, modele):
     }
 
 
+def pays_principal(avis):
+    """Premier code pays ISO3 du champ pays_execution ("MDA, MDA" -> "MDA").
+    Les codes NUTS (MK008) et les valeurs parasites sont ignores."""
+    for morceau in str(avis.get("pays_execution") or "").split(","):
+        m = morceau.strip().upper()
+        if len(m) == 3 and m.isalpha() and m != "CPV":
+            return m
+    return "?"
+
+
 def echantillonner(avis_normalises, n):
-    """Echantillon deterministe : avis AVEC description d'abord (c'est le cas
-    le plus riche et le plus representatif de la production), puis les
-    autres ; ordre stable par publication_number pour rejouer a l'identique."""
-    tries = sorted(avis_normalises,
-                   key=lambda a: (0 if a.get("description") else 1,
-                                  str(a.get("publication_number", ""))))
-    return tries[:max(0, n)]
+    """Echantillon DIVERSIFIE et deterministe.
+
+    CORRECTIF (06/11/2026, dry-run) : le premier tri (description, puis
+    publication_number) ramenait 25 avis presque tous moldaves ou macedoniens
+    (electricite, cadastre), donc quasi tous a ignorer. Une sonde qui ne voit
+    pas de leads a enjeu ne mesure pas l'essentiel : l'accord sur ce que la BD
+    doit CONTACTER. On fait donc une tournee par pays (round-robin), et dans
+    chaque pays : acheteur etranger d'abord (le coeur de cible Amarante), puis
+    avis avec description, puis le plus recent. Ordre stable a donnees egales."""
+    def priorite(a):
+        return (0 if a.get("acheteur_etranger") else 1,
+                0 if a.get("description") else 1,
+                "".join(chr(255 - ord(c)) for c in str(a.get("date_publication", ""))[:10]),
+                str(a.get("publication_number", "")))
+    par_pays = {}
+    for a in avis_normalises:
+        par_pays.setdefault(pays_principal(a), []).append(a)
+    files = [sorted(v, key=priorite) for _, v in sorted(par_pays.items())]
+    # Les pays dont la tete de file a un acheteur etranger passent en premier.
+    files.sort(key=lambda f: priorite(f[0]))
+    choisis, rang = [], 0
+    while len(choisis) < max(0, n) and any(rang < len(f) for f in files):
+        for f in files:
+            if rang < len(f) and len(choisis) < n:
+                choisis.append(f[rang])
+        rang += 1
+    return choisis
 
 
 def estimer_cout(nb_avis, modeles, tokens_entree=3000, tokens_sortie=600):
@@ -484,7 +514,10 @@ def main():
     print("Modeles compares : " + json.dumps(modeles))
     echantillon = collecter_echantillon(n)
     nb_desc = sum(1 for a in echantillon if a.get("description"))
-    print("Echantillon : {} avis ({} avec description).".format(len(echantillon), nb_desc))
+    nb_etr = sum(1 for a in echantillon if a.get("acheteur_etranger"))
+    nb_pays = len({pays_principal(a) for a in echantillon})
+    print("Echantillon : {} avis, {} pays, {} acheteurs etrangers, {} avec description.".format(
+        len(echantillon), nb_pays, nb_etr, nb_desc))
     print("Estimation a priori : ~{} $ (plafond {} $).".format(
         estimer_cout(len(echantillon), list(modeles.values())), plafond))
     if dryrun:

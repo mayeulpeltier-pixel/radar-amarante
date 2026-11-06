@@ -151,13 +151,40 @@ class TestComparaison(unittest.TestCase):
 
 
 class TestEchantillon(unittest.TestCase):
-    def test_description_dabord_et_deterministe(self):
-        avis = [{"publication_number": "3", "description": ""},
-                {"publication_number": "2", "description": "x"},
-                {"publication_number": "1", "description": ""}]
-        e = sm.echantillonner(avis, 2)
-        self.assertEqual([a["publication_number"] for a in e], ["2", "1"])
+    @staticmethod
+    def _a(num, pays, etr=False, desc="x", date="2026-11-01"):
+        return {"publication_number": num, "pays_execution": pays,
+                "acheteur_etranger": etr, "description": desc,
+                "date_publication": date}
+
+    def test_pays_principal(self):
+        self.assertEqual(sm.pays_principal({"pays_execution": "MK008, MKD, MK008"}), "MKD")
+        self.assertEqual(sm.pays_principal({"pays_execution": "CPV, CPV"}), "?")
+        self.assertEqual(sm.pays_principal({}), "?")
+
+    def test_un_pays_massif_ne_monopolise_plus_lechantillon(self):
+        # Regression du dry-run du 06/11 : 25 avis quasi tous MDA/MKD.
+        avis = [self._a(str(i), "MDA") for i in range(30)]
+        avis += [self._a("n1", "NER", etr=True), self._a("k1", "KEN")]
+        e = sm.echantillonner(avis, 3)
+        self.assertEqual({sm.pays_principal(a) for a in e}, {"MDA", "NER", "KEN"})
+
+    def test_acheteur_etranger_dabord(self):
+        avis = [self._a("1", "MDA"), self._a("2", "MLI", etr=True)]
+        self.assertEqual(sm.echantillonner(avis, 1)[0]["publication_number"], "2")
+
+    def test_dans_un_pays_recent_et_etranger_dabord(self):
+        avis = [self._a("vieux", "NER", date="2025-01-01"),
+                self._a("recent", "NER", date="2026-11-01"),
+                self._a("etr", "NER", etr=True, date="2024-01-01")]
+        self.assertEqual([a["publication_number"] for a in sm.echantillonner(avis, 3)],
+                         ["etr", "recent", "vieux"])
+
+    def test_deterministe_et_bornes(self):
+        avis = [self._a(str(i), p) for i, p in enumerate(["MDA", "NER", "KEN", "MDA"])]
+        self.assertEqual(sm.echantillonner(avis, 4), sm.echantillonner(list(reversed(avis)), 4))
         self.assertEqual(sm.echantillonner(avis, 0), [])
+        self.assertEqual(len(sm.echantillonner(avis, 99)), 4)
 
 
 class FausseAPI:
