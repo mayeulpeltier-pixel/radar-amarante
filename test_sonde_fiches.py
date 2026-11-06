@@ -163,6 +163,30 @@ class TestProduction(unittest.TestCase):
                         texte_notice=boum, candidats_pour=boum, pause=0)
         self.assertEqual(len(b["resultats"][0]["fiches"]), 2)
 
+    def test_aucun_soumissionnaire_probable_par_defaut(self):
+        """Doctrine du 06/11 : soit de vrais prospects, soit rien. Plus de
+        liste hypothetique tiree de la base dans le prompt."""
+        prompts = []
+
+        def faux(corps):
+            prompts.append(corps["messages"][0]["content"])
+            return _reponse(json.dumps(FICHE))
+        from unittest import mock
+        import candidats_probables as cp
+        piege = [{"entreprise": "NEGOCIANT FANTOME", "probabilite": 60, "motifs": []}]
+        with mock.patch.object(cp, "soumissionnaires_probables", return_value=piege), \
+                mock.patch.object(cp, "historique_titulaires", return_value={}):
+            b = sf.executer([_lead()], [_lead(pub="autre")], "claude-sonnet-5-5", plafond=10,
+                            appel=faux, texte_notice=lambda l: "", pause=0)
+        self.assertEqual(b["resultats"][0]["candidats"], [])
+        self.assertTrue(all("NEGOCIANT FANTOME" not in p for p in prompts))
+
+    def test_prompt_exige_des_prospects_reels(self):
+        p = sf.construire_prompt(_lead())
+        self.assertIn("QUE des prospects réels", p)
+        self.assertIn("liste vide", p)
+        self.assertNotIn("nom ou profil", p)
+
     def test_markdown(self):
         md = sf.fiche_markdown(FICHE, "t")
         self.assertIn("**Prochaine action** : Appeler (titulaire, avant le 2026-12-01)", md)
