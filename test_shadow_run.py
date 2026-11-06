@@ -68,8 +68,15 @@ class TestInstrumentation(unittest.TestCase):
         del sh.ERREURS[:]
 
     def test_cout_calcule_sur_le_tarif_verifie(self):
+        # Le tarif suit le modele reellement appele (bascule Haiku 5.5 du
+        # 06/11/2026) : plus de tarif Haiku 4.5 fige.
         sh.USAGE["in"], sh.USAGE["out"] = 1000000, 1000000
-        self.assertAlmostEqual(sh.cout_usd(), 6.0)      # 1$ in + 5$ out
+        prix_in, prix_out = sh._TARIFS.get(sh.ted.MODELE, (1.0, 5.0))
+        self.assertAlmostEqual(sh.cout_usd(), prix_in + prix_out)
+
+    def test_tarifs_verifies(self):
+        self.assertEqual(sh._TARIFS["claude-haiku-4-5-20251001"], (1.0, 5.0))
+        self.assertEqual(sh._TARIFS["claude-haiku-5-5"], (0.10, 0.50))
 
     def test_cout_nul_sans_appel(self):
         self.assertEqual(sh.cout_usd(), 0.0)

@@ -294,13 +294,13 @@ def _appel_llm(prompt, modele=None, temperature=0.0, max_tokens=400):
     session = ted.session_robuste()
     entetes = {"x-api-key": cle, "anthropic-version": "2023-06-01",
                "content-type": "application/json"}
-    corps = {"model": modele or ted.MODELE, "max_tokens": max_tokens,
-             "temperature": temperature,
-             "messages": [{"role": "user", "content": prompt}]}
+    # Corps adapte au modele (06/11/2026) : pas de `temperature` et marge de
+    # raisonnement pour les modeles 5.x (sinon refus 400 ou troncature).
+    corps = ted.corps_appel(modele or ted.MODELE, prompt, max_tokens, temperature)
     ted.STATS_LLM["appels"] += 1
     try:
-        rep = session.post(ted.ANTHROPIC_ENDPOINT, headers=entetes,
-                           json=corps, timeout=40)
+        rep = session.post(ted.ANTHROPIC_ENDPOINT, headers=entetes, json=corps,
+                           timeout=60 if ted.modele_raisonne(corps["model"]) else 40)
         rep.raise_for_status()
     except Exception as e:
         detail = ""

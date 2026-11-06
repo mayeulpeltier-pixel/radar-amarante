@@ -65,8 +65,12 @@ PAUSE = config_env.reel("SHADOW_PAUSE", "1.0")
 # manque de l'instrumentation, corrige ici.
 DEBUG = os.environ.get("SHADOW_DEBUG", "0") == "1"
 
-# Tarif Haiku 4.5 verifie le 24/08/2026 : 1 $/MTok entree, 5 $/MTok sortie.
-PRIX_IN, PRIX_OUT = 1.0, 5.0
+# Tarifs $/MTok (entree, sortie). Haiku 4.5 verifie le 24/08/2026 ; Haiku 5.5
+# releve le 06/11/2026 (prompts < 100k tokens). Le cout affiche suit le modele
+# reellement appele, pas un tarif fige.
+_TARIFS = {"claude-haiku-4-5-20251001": (1.0, 5.0), "claude-haiku-4-5": (1.0, 5.0),
+           "claude-haiku-5-5": (0.10, 0.50)}
+PRIX_IN, PRIX_OUT = _TARIFS.get(ted.MODELE, (1.0, 5.0))
 
 M = collections.Counter()          # compteurs globaux
 ERREURS = []                       # (etape, detail)
@@ -83,8 +87,8 @@ def appel_llm_mesure(prompt):
     if not cle:
         raise RuntimeError("ANTHROPIC_API_KEY absente")
     session = ted.session_robuste()
-    corps = {"model": ted.MODELE, "max_tokens": MAX_TOKENS, "temperature": 0,
-             "messages": [{"role": "user", "content": prompt}]}
+    # Corps adapte au modele (06/11/2026) : voir ted.corps_appel.
+    corps = ted.corps_appel(ted.MODELE, prompt, MAX_TOKENS)
     USAGE["appels"] += 1
     rep = session.post(ted.ANTHROPIC_ENDPOINT, timeout=90, json=corps,
                        headers={"x-api-key": cle,

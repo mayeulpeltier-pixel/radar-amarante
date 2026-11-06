@@ -527,6 +527,36 @@ def afficher(synthese):
                 b, d[b]["classe"], d[b]["score"]))
 
 
+def verifier_chemin_production(echantillon, appeler_llm=None, extraire_ie=None):
+    """Exerce le VRAI chemin de production (ted.appeler_llm, volume puis
+    escalade, et la lentille IE) sur quelques avis, sans rien ecrire.
+
+    Pourquoi (06/11/2026) : la sonde compare les modeles via son propre appel
+    HTTP. La bascule, elle, passe par `ted.corps_appel` dans le coeur et la
+    lentille IE. Ce mode prouve en conditions reelles que ces chemins
+    produisent une extraction exploitable avec les modeles configures."""
+    appeler_llm = appeler_llm or ted.appeler_llm
+    if extraire_ie is None:
+        import lentille_ie
+        extraire_ie = lentille_ie.extraire
+    lignes = []
+    for avis in echantillon:
+        vol = appeler_llm(avis)
+        esc = appeler_llm(avis, modele=ted.MODELE_RAFFINEMENT)
+        ie = extraire_ie({"source": "TED", "acheteur": avis.get("acheteur"),
+                          "titre": avis.get("titre"), "description": avis.get("description"),
+                          "montant": avis.get("valeur_estimee")})
+        lignes.append({
+            "publication_number": avis.get("publication_number"),
+            "volume_ok": vol is not None,
+            "score_volume": ted.calculer_scores(avis, vol)[2] if vol else None,
+            "escalade_ok": esc is not None,
+            "score_escalade": ted.calculer_scores(avis, esc)[2] if esc else None,
+            "lentille_ie_ok": ie is not None,
+        })
+    return lignes
+
+
 def main():
     # config_env : une saisie vide dans le formulaire du workflow vaut le
     # defaut, et une valeur illisible ne tue pas la sonde (garde test_config_env).
@@ -536,6 +566,7 @@ def main():
     sortie = config_env.texte("SONDE_SORTIE", "sonde_modeles_resultats.json")
     max_tokens = config_env.entier("SONDE_MAX_TOKENS", 1000)
     roles = roles_actifs()
+    verif_coeur = config_env.booleen("SONDE_VERIF_COEUR", False)
     modeles = modeles_configures()
     print("Modeles compares : " + json.dumps({r: modeles[r] for r in roles})
           + " | max_tokens {}".format(max_tokens))
@@ -559,6 +590,20 @@ def main():
     if not echantillon:
         print("Aucun avis TED exploitable : rien a comparer.")
         return 1
+    if verif_coeur:
+        print("VERIFICATION DU CHEMIN DE PRODUCTION : volume {} / escalade {}".format(
+            ted.MODELE, ted.MODELE_RAFFINEMENT))
+        lignes = verifier_chemin_production(echantillon[:3])
+        for l in lignes:
+            print("  - {publication_number} | volume ok={volume_ok} score={score_volume} | "
+                  "escalade ok={escalade_ok} score={score_escalade} | "
+                  "lentille IE ok={lentille_ie_ok}".format(**l))
+        ok, message = ted.sante_llm()
+        print("  sante modele : " + message)
+        tout_ok = ok and all(l["volume_ok"] and l["escalade_ok"] and l["lentille_ie_ok"]
+                             for l in lignes)
+        print("VERDICT : " + ("CHEMIN DE PRODUCTION OK" if tout_ok else "ECHEC, NE PAS BASCULER"))
+        return 0 if tout_ok else 1
     bilan = executer(echantillon, modeles, plafond, roles=roles, max_tokens=max_tokens)
     synthese = rapport(bilan, modeles, roles=roles)
     afficher(synthese)
