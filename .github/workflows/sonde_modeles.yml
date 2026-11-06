@@ -1,0 +1,53 @@
+name: Sonde migration modeles
+# Diagnostic ponctuel, DECLENCHEMENT MANUEL UNIQUEMENT (workflow_dispatch).
+# Ne touche a RIEN : ni Google Sheet, ni Postgres, ni etat, ni dashboard.
+# Compare, sur de VRAIS avis TED, les modeles actuels (Haiku 4.5 / Sonnet 4.6)
+# a leurs successeurs (Haiku 5.5 / Sonnet 5.5) : compatibilite de l'appel
+# (temperature: 0), fiabilite du JSON, accord sur les decisions, cout mesure.
+# Plafond de depense dur (SONDE_PLAFOND_USD). Sonde jetable : supprimer une
+# fois la bascule decidee.
+#
+# UTILISATION : Actions > "Sonde migration modeles" > Run workflow.
+# Lancer d'abord avec dryrun=1 (gratuit) pour voir l'echantillon.
+on:
+  workflow_dispatch:
+    inputs:
+      n:
+        description: "Nombre d'avis TED compares (defaut 25)"
+        required: false
+        default: "25"
+      plafond:
+        description: "Plafond de depense en dollars (defaut 3)"
+        required: false
+        default: "3"
+      dryrun:
+        description: "1 = echantillon + estimation, AUCUN appel modele"
+        required: false
+        default: "0"
+jobs:
+  sonde-modeles:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer les dependances radar
+        run: pip install -r requirements-radar.txt
+      - name: Comparer les modeles
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SONDE_N: ${{ github.event.inputs.n }}
+          SONDE_PLAFOND_USD: ${{ github.event.inputs.plafond }}
+          SONDE_DRYRUN: ${{ github.event.inputs.dryrun }}
+        run: python sonde_modeles.py
+      - name: Publier le detail
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonde-modeles-resultats
+          path: sonde_modeles_resultats.json
+          if-no-files-found: ignore

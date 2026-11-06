@@ -158,7 +158,8 @@ class TestCouvertureDuDepot(unittest.TestCase):
     EXPOSES = ("collecteur_projets.py", "decouverte_projets.py",
                "shadow_run_projets.py", "sonde_delegation.py",
                "sonde_montant_bailleurs.py", "sonde_projets.py",
-               "sonde_rattachement.py", "sonde_requetes.py")
+               "sonde_rattachement.py", "sonde_requetes.py",
+               "sonde_modeles.py")
 
     def test_les_modules_exposes_n_ont_plus_la_forme_piegeuse(self):
         """C'est cette forme précise qui est piégeuse : le défaut n'est rendu
