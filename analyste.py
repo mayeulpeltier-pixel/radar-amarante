@@ -307,7 +307,7 @@ def charger_leads():
         lignes = radar_app.lire_donnees(conn)
     (l_ted, l_bm, l_prive, l_attrib, enrich, l_rw, l_afdb, l_adb, l_ebrd, _watch,
      l_ungm, an_attrib, _alertes, l_miga, l_ifc, l_idb, l_bmp, l_prop, l_dfc,
-     _projets, _cand) = lignes
+     _projets, _cand) = lignes[:21]
     return dash.construire_leads(
         l_ted, l_bm, l_prive, enrich, l_attrib, l_rw, l_afdb, l_adb, l_ebrd, l_ungm,
         an_attrib, lignes_miga=l_miga, lignes_ifc=l_ifc, lignes_idb=l_idb,

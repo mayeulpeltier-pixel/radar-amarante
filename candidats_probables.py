@@ -431,7 +431,24 @@ def nom_exploitable(nom):
             and not _NOM_CORROMPU.search(n) and n.count(";") <= 2)
 
 
-def candidats_prouves(avis, leads, n=3, aujourd=None):
+def index_attributions(leads):
+    """Attributions rangees par pays et par projet, construit UNE fois par
+    page : sans lui, chaque avis reparcourait tout le corpus (des milliers
+    d'avis x des milliers d'attributions au rendu du cockpit). Toutes les
+    preuves exigent le meme pays, sauf « meme projet » : ces deux cles
+    suffisent."""
+    idx = {"pays": {}, "projet": {}}
+    for l in (leads or []):
+        if l.get("src") != "ATTRIB":
+            continue
+        idx["pays"].setdefault(_norm(l.get("pays")), []).append(l)
+        pid = str(l.get("projet_id") or "").strip()
+        if pid:
+            idx["projet"].setdefault(pid, []).append(l)
+    return idx
+
+
+def candidats_prouves(avis, leads, n=3, aujourd=None, index=None):
     """[{entreprise, preuve, libelle_preuve, etranger, origine, marches}] pour
     un avis, UNIQUEMENT avec preuve. Fonction PURE.
 
@@ -448,8 +465,16 @@ def candidats_prouves(avis, leads, n=3, aujourd=None):
     libelles = {"meme_projet": "titulaire d'un marché du même projet",
                 "meme_acheteur": "déjà titulaire chez le même acheteur, dans ce pays",
                 "meme_pays_secteur": "déjà titulaire dans ce pays et ce secteur"}
+    if index is not None:
+        vus, corpus = set(), []
+        for l in (index["projet"].get(projet, []) if projet else []) + index["pays"].get(pays, []):
+            if id(l) not in vus:
+                vus.add(id(l))
+                corpus.append(l)
+    else:
+        corpus = leads or []
     out = {}
-    for l in (leads or []):
+    for l in corpus:
         if l.get("src") != "ATTRIB":
             continue
         ent = (l.get("entreprise") or "").strip()

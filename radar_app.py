@@ -328,7 +328,14 @@ def lire_donnees(conn):
     except Exception as e:
         print("(app) candidats projets indisponibles ({}).".format(str(e)[:80]))
         cand_projets = []
-    return tuple(lignes) + (projets_suivis, cand_projets)
+    # Fiches Analyste (06/11/2026) : lues ici, dans la phase de lecture, comme
+    # tout le reste (la connexion ne traverse pas le calcul).
+    try:
+        fiches = [d for d in _onglet(conn, "fiches_analyste") if isinstance(d, dict)]
+    except Exception as e:
+        print("(app) fiches Analyste indisponibles ({}).".format(str(e)[:80]))
+        fiches = []
+    return tuple(lignes) + (projets_suivis, cand_projets, fiches)
 
 
 def generer_page(conn):
@@ -350,7 +357,9 @@ def rendre_page(lignes):
      lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_watchlist,
      lignes_ungm, analyses_attrib, lignes_alertes,
      lignes_miga, lignes_ifc, lignes_idb, lignes_bmp,
-     lignes_proparco, lignes_dfc, projets_suivis, cand_projets) = lignes
+     lignes_proparco, lignes_dfc, projets_suivis, cand_projets) = lignes[:21]
+    # 22e element (fiches Analyste) optionnel : tolere un appelant plus ancien.
+    fiches = lignes[21] if len(lignes) > 21 else []
     leads = dash.construire_leads(
         lignes_ted, lignes_bm, lignes_prive, enrichissement, lignes_attrib,
         lignes_rw, lignes_afdb, lignes_adb, lignes_ebrd, lignes_ungm,
@@ -410,7 +419,8 @@ def rendre_page(lignes):
                                              candidats_projets=cand_projets,
                                              sante=sante,
                                              detail_sante=detail,
-                                             geo_alertes=lignes_alertes)
+                                             geo_alertes=lignes_alertes,
+                                             fiches=fiches)
     except Exception as e:
         print("(app) cockpit indisponible ({}), repli dashboard.".format(str(e)[:100]))
         return dash.generer_html(leads, lignes_watchlist, api_statut=True,
