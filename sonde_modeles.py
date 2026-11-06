@@ -257,6 +257,9 @@ def resume_modele(resultats, role, modele):
         "latence_mediane_s": round(sorted(lat)[len(lat) // 2], 2) if lat else None,
         "taux_escalade": round(escalades / len(ok), 3) if ok else None,
         "score_moyen": round(sum(r["score"] for r in ok) / len(ok), 2) if ok else None,
+        "types_blocs": sorted({t for r in lignes for t in r.get("types_blocs", [])}),
+        "longueur_texte_mediane": (sorted(r.get("longueur_texte", 0) for r in lignes)[n // 2]
+                                   if n else None),
     }
 
 
@@ -361,7 +364,7 @@ def tester_compatibilite(modele, appel=appel_http):
             "detail": "HTTP {} : {}".format(r["code"], r["corps_texte"][:250])}
 
 
-def analyser_avis(avis, modele, temperature, appel=appel_http):
+def analyser_avis(avis, modele, temperature, appel=appel_http, max_tokens=1000):
     """Une extraction complete : meme prompt que la production, parsing
     gratuit, score calcule par le VRAI `calculer_scores` du coeur."""
     prompt = ted.PROMPT_TEMPLATE.format(
@@ -372,17 +375,23 @@ def analyser_avis(avis, modele, temperature, appel=appel_http):
         cpv=avis.get("cpv", ""),
         description=avis.get("description", "") or "(non fournie par l'avis)",
     )
-    r = appel(modele, prompt, temperature, 1000)
+    r = appel(modele, prompt, temperature, max_tokens)
     ligne = {"modele": modele, "latence_s": r.get("latence_s"), "extraction": None,
              "score": None, "niveau_parsing": "echec", "erreur": "",
              "tokens_entree": 0, "tokens_sortie": 0, "cout_usd": 0.0,
-             "stop_reason": None}
+             "stop_reason": None, "types_blocs": [], "longueur_texte": 0,
+             "debut_texte": ""}
     charge = r.get("charge") if isinstance(r.get("charge"), dict) else {}
     usage = charge.get("usage") or {}
     ligne["tokens_entree"] = int(usage.get("input_tokens") or 0)
     ligne["tokens_sortie"] = int(usage.get("output_tokens") or 0)
     ligne["cout_usd"], _ = cout_usd(modele, ligne["tokens_entree"], ligne["tokens_sortie"])
     ligne["stop_reason"] = charge.get("stop_reason")
+    # Diagnostic (06/11/2026) : Haiku 5.5 atteignait max_tokens sur 39 avis
+    # sur 40. Raisonnement interne (blocs `thinking`) ou reponse verbeuse ?
+    # Les types de blocs et le debut du texte tranchent sans relancer a l'aveugle.
+    blocs = charge.get("content") if isinstance(charge.get("content"), list) else []
+    ligne["types_blocs"] = [str(b.get("type")) for b in blocs if isinstance(b, dict)]
     if r.get("code") != 200:
         ligne["erreur"] = "HTTP {} : {}".format(r.get("code"), r.get("corps_texte", "")[:200])
         return ligne
@@ -390,6 +399,8 @@ def analyser_avis(avis, modele, temperature, appel=appel_http):
     if texte is None:
         ligne["erreur"] = motif
         return ligne
+    ligne["longueur_texte"] = len(texte)
+    ligne["debut_texte"] = texte[:160]
     extraction, niveau = parser_extraction(texte)
     ligne["niveau_parsing"] = niveau
     if extraction is not None:
@@ -415,11 +426,21 @@ def collecter_echantillon(n):
     return echantillonner(normalises, n)
 
 
-def executer(echantillon, modeles, plafond_usd, appel=appel_http, pause=0.3):
+def roles_actifs(env=None):
+    """Sous-ensemble de roles a interroger (SONDE_ROLES="volume_candidat,...").
+    Vide ou inconnu -> les 4. Permet de relancer UN modele sans repayer les autres."""
+    env = os.environ if env is None else env
+    demandes = [r.strip() for r in str(env.get("SONDE_ROLES") or "").split(",") if r.strip()]
+    retenus = tuple(r for r in ROLES if r in demandes)
+    return retenus or ROLES
+
+
+def executer(echantillon, modeles, plafond_usd, appel=appel_http, pause=0.3,
+             roles=ROLES, max_tokens=1000):
     """Compatibilite puis extraction de chaque avis par chaque modele.
     S'arrete net (sans lever) des que le plafond de depense est atteint."""
     compat = {}
-    for role in ROLES:
+    for role in roles:
         m = modeles[role]
         if m not in compat:
             compat[m] = tester_compatibilite(m, appel=appel)
@@ -429,7 +450,7 @@ def executer(echantillon, modeles, plafond_usd, appel=appel_http, pause=0.3):
         entree = {"avis": {k: avis.get(k) for k in (
             "publication_number", "titre", "acheteur", "pays_execution", "cpv")},
             "par_role": {}}
-        for role in ROLES:
+        for role in roles:
             m = modeles[role]
             c = compat[m]
             if not c["disponible"]:
@@ -438,7 +459,7 @@ def executer(echantillon, modeles, plafond_usd, appel=appel_http, pause=0.3):
                 coupe = True
                 break
             temperature = 0 if c["temperature_0"] else None
-            ligne = analyser_avis(avis, m, temperature, appel=appel)
+            ligne = analyser_avis(avis, m, temperature, appel=appel, max_tokens=max_tokens)
             depense += ligne["cout_usd"]
             entree["par_role"][role] = ligne
             if pause:
@@ -451,7 +472,7 @@ def executer(echantillon, modeles, plafond_usd, appel=appel_http, pause=0.3):
             "depense_usd": round(depense, 4), "plafond_atteint": coupe}
 
 
-def rapport(bilan, modeles):
+def rapport(bilan, modeles, roles=ROLES):
     """Synthese chiffree : fiabilite et cout par modele, accords par paire."""
     resultats = bilan["resultats"]
     return {
@@ -460,8 +481,9 @@ def rapport(bilan, modeles):
         "avis_analyses": len(resultats),
         "depense_usd": bilan["depense_usd"],
         "plafond_atteint": bilan["plafond_atteint"],
-        "par_modele": [resume_modele(resultats, role, modeles[role]) for role in ROLES],
-        "par_paire": [comparer_paire(resultats, a, b) for a, b in PAIRES],
+        "par_modele": [resume_modele(resultats, role, modeles[role]) for role in roles],
+        "par_paire": [comparer_paire(resultats, a, b) for a, b in PAIRES
+                      if a in roles and b in roles],
     }
 
 
@@ -482,7 +504,9 @@ def afficher(synthese):
                   r["role"], r["modele"], r["extractions_ok"], r["appels"],
                   r["taux_json_direct"], r["tronquees"], r["cout_par_avis_usd"],
                   r["latence_mediane_s"], r["taux_escalade"], r["score_moyen"]))
-    inconnus = [m for m in synthese["modeles"].values() if m not in TARIFS_USD_MTOK]
+        print("      blocs {} | texte median {} car.".format(
+            r["types_blocs"], r["longueur_texte_mediane"]))
+    inconnus = [r["modele"] for r in synthese["par_modele"] if r["modele"] not in TARIFS_USD_MTOK]
     if inconnus:
         print("  (tarif inconnu, compte a 0 : {})".format(", ".join(sorted(set(inconnus)))))
     print("\n3. ACCORD DE DECISION PAR PAIRE")
@@ -510,8 +534,11 @@ def main():
     plafond = config_env.reel("SONDE_PLAFOND_USD", 3.0)
     dryrun = config_env.booleen("SONDE_DRYRUN", False)
     sortie = config_env.texte("SONDE_SORTIE", "sonde_modeles_resultats.json")
+    max_tokens = config_env.entier("SONDE_MAX_TOKENS", 1000)
+    roles = roles_actifs()
     modeles = modeles_configures()
-    print("Modeles compares : " + json.dumps(modeles))
+    print("Modeles compares : " + json.dumps({r: modeles[r] for r in roles})
+          + " | max_tokens {}".format(max_tokens))
     echantillon = collecter_echantillon(n)
     nb_desc = sum(1 for a in echantillon if a.get("description"))
     nb_etr = sum(1 for a in echantillon if a.get("acheteur_etranger"))
@@ -519,7 +546,7 @@ def main():
     print("Echantillon : {} avis, {} pays, {} acheteurs etrangers, {} avec description.".format(
         len(echantillon), nb_pays, nb_etr, nb_desc))
     print("Estimation a priori : ~{} $ (plafond {} $).".format(
-        estimer_cout(len(echantillon), list(modeles.values())), plafond))
+        estimer_cout(len(echantillon), [modeles[r] for r in roles]), plafond))
     if dryrun:
         for a in echantillon:
             print("  - {} | {} | {}".format(a.get("publication_number"),
@@ -532,8 +559,8 @@ def main():
     if not echantillon:
         print("Aucun avis TED exploitable : rien a comparer.")
         return 1
-    bilan = executer(echantillon, modeles, plafond)
-    synthese = rapport(bilan, modeles)
+    bilan = executer(echantillon, modeles, plafond, roles=roles, max_tokens=max_tokens)
+    synthese = rapport(bilan, modeles, roles=roles)
     afficher(synthese)
     with open(sortie, "w", encoding="utf-8") as f:
         json.dump({"synthese": synthese, "detail": bilan["resultats"]}, f,

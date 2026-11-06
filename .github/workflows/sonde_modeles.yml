@@ -24,6 +24,14 @@ on:
         description: "1 = echantillon + estimation, AUCUN appel modele"
         required: false
         default: "0"
+      roles:
+        description: "Sous-ensemble (ex volume_candidat), vide = les 4 modeles"
+        required: false
+        default: ""
+      max_tokens:
+        description: "Plafond de sortie par appel (defaut 1000, comme la production)"
+        required: false
+        default: "1000"
 jobs:
   sonde-modeles:
     runs-on: ubuntu-latest
@@ -43,6 +51,8 @@ jobs:
           SONDE_N: ${{ github.event.inputs.n }}
           SONDE_PLAFOND_USD: ${{ github.event.inputs.plafond }}
           SONDE_DRYRUN: ${{ github.event.inputs.dryrun }}
+          SONDE_ROLES: ${{ github.event.inputs.roles }}
+          SONDE_MAX_TOKENS: ${{ github.event.inputs.max_tokens }}
         run: python sonde_modeles.py
       - name: Publier le detail
         if: always()
