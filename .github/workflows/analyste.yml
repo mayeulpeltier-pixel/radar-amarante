@@ -1,0 +1,39 @@
+name: Fiches Analyste
+# Redige les fiches d'approche Analyste HORS du run complet du radar :
+# premier lancement, rattrapage, ou test d'un plafond. Meme module que
+# l'etape opt-in de radar.yml (analyste.py). DECLENCHEMENT MANUEL UNIQUEMENT.
+# Ecrit en base (onglet fiches_analyste), rien d'autre. Plafond de depense dur.
+#
+# UTILISATION : Actions > "Fiches Analyste" > Run workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      n:
+        description: "Nombre maximal d'opportunites a ficher (defaut 8)"
+        required: false
+        default: "8"
+      plafond:
+        description: "Plafond de depense en dollars (defaut 2)"
+        required: false
+        default: "2"
+jobs:
+  analyste:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer les dependances radar
+        run: pip install -r requirements-radar.txt
+      - name: Rediger les fiches
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          RADAR_ANALYSTE: "1"
+          RADAR_ANALYSTE_N: ${{ github.event.inputs.n }}
+          RADAR_ANALYSTE_PLAFOND_USD: ${{ github.event.inputs.plafond }}
+        run: python analyste.py
