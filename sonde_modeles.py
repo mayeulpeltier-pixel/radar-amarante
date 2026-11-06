@@ -527,6 +527,56 @@ def afficher(synthese):
                 b, d[b]["classe"], d[b]["score"]))
 
 
+CHAMPS_AVIS_FIGES = ("publication_number", "titre", "acheteur", "pays_acheteur",
+                     "pays_execution", "pays_execution_incertitude", "acheteur_etranger",
+                     "cpv", "date_publication", "deadline", "valeur_estimee",
+                     "description", "lien_avis")
+
+
+def figer_avis(avis_normalises, publications):
+    """Copie complete (description incluse) des avis demandes, dans l'ordre
+    demande. Sert a constituer un jeu de reference qui survit a la sortie des
+    avis du stock ACTIVE de TED (ils deviennent introuvables par la requete)."""
+    par_num = {str(a.get("publication_number")): a for a in avis_normalises}
+    return [{k: par_num[p].get(k) for k in CHAMPS_AVIS_FIGES}
+            for p in publications if p in par_num]
+
+
+def charger_calibration(chemin):
+    """Jeu de reference : {"verdicts": {pub: classe}, "avis": [avis figes]}.
+    Renvoie (avis_avec_verdict, verdicts). Les avis sans verdict sont ignores."""
+    with open(chemin, encoding="utf-8") as f:
+        jeu = json.load(f)
+    verdicts = {str(k): str(v).strip().lower() for k, v in jeu.get("verdicts", {}).items()}
+    avis = [a for a in jeu.get("avis", []) if str(a.get("publication_number")) in verdicts]
+    return avis, verdicts
+
+
+def precision_calibration(resultats, verdicts, roles=ROLES):
+    """Pour chaque role : nombre d'avis ou la classe d'action du modele est
+    celle du verdict humain, sur les avis ou le modele a repondu.
+
+    C'est la mesure qui manquait le 06/11 : comparer deux modeles entre eux
+    dit qu'ils different, pas lequel a raison. Le verdict humain le dit."""
+    sortie = {}
+    for role in roles:
+        justes, total, ecarts = 0, 0, []
+        for x in resultats:
+            r = x["par_role"].get(role)
+            pub = str(x["avis"].get("publication_number"))
+            if not r or r.get("score") is None or pub not in verdicts:
+                continue
+            total += 1
+            classe = classe_action(r["score"])
+            if classe == verdicts[pub]:
+                justes += 1
+            else:
+                ecarts.append({"publication_number": pub, "modele": classe,
+                               "verdict": verdicts[pub], "score": r["score"]})
+        sortie[role] = {"justes": justes, "total": total, "ecarts": ecarts}
+    return sortie
+
+
 def verifier_chemin_production(echantillon, appeler_llm=None, extraire_ie=None):
     """Exerce le VRAI chemin de production (ted.appeler_llm, volume puis
     escalade, et la lentille IE) sur quelques avis, sans rien ecrire.
@@ -567,9 +617,39 @@ def main():
     max_tokens = config_env.entier("SONDE_MAX_TOKENS", 1000)
     roles = roles_actifs()
     verif_coeur = config_env.booleen("SONDE_VERIF_COEUR", False)
+    export = [p.strip() for p in config_env.texte("SONDE_EXPORT", "").split(",") if p.strip()]
+    calibration = config_env.texte("SONDE_CALIBRATION", "")
     modeles = modeles_configures()
     print("Modeles compares : " + json.dumps({r: modeles[r] for r in roles})
           + " | max_tokens {}".format(max_tokens))
+    if calibration:
+        avis_cal, verdicts = charger_calibration(calibration)
+        print("CALIBRATION : {} avis avec verdict humain ({}).".format(len(avis_cal), calibration))
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            print("ERREUR : ANTHROPIC_API_KEY absente.")
+            return 1
+        bilan = executer(avis_cal, modeles, plafond, roles=roles, max_tokens=max_tokens)
+        prec = precision_calibration(bilan["resultats"], verdicts, roles=roles)
+        for role in roles:
+            p = prec[role]
+            print("  - {:<19} {:<28} {}/{} conformes au verdict".format(
+                role, modeles[role], p["justes"], p["total"]))
+            for e in p["ecarts"]:
+                print("      * {publication_number} : modele {modele} ({score}) vs verdict {verdict}".format(**e))
+        with open(sortie, "w", encoding="utf-8") as f:
+            json.dump({"precision": prec, "depense_usd": bilan["depense_usd"],
+                       "detail": bilan["resultats"]}, f, ensure_ascii=False, indent=1, default=str)
+        return 0
+    if export:
+        bruts = ted.interroger_ted()
+        normalises = [ted.normaliser(a) for a in bruts]
+        figes = figer_avis(normalises, export)
+        manquants = sorted(set(export) - {a["publication_number"] for a in figes})
+        print("EXPORT : {}/{} avis figes{}".format(
+            len(figes), len(export), (" ; introuvables : " + ", ".join(manquants)) if manquants else ""))
+        with open(sortie, "w", encoding="utf-8") as f:
+            json.dump({"avis": figes}, f, ensure_ascii=False, indent=1, default=str)
+        return 0
     echantillon = collecter_echantillon(n)
     nb_desc = sum(1 for a in echantillon if a.get("description"))
     nb_etr = sum(1 for a in echantillon if a.get("acheteur_etranger"))

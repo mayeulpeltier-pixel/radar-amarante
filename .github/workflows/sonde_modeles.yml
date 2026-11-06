@@ -36,6 +36,14 @@ on:
         description: "1 = exercer le vrai chemin de production (coeur + lentille IE) sur 3 avis"
         required: false
         default: "0"
+      export:
+        description: "publication-numbers a figer (separes par des virgules), vide = non"
+        required: false
+        default: ""
+      calibration:
+        description: "Jeu de reference a rejouer (ex calibration_escalade.json), vide = non"
+        required: false
+        default: ""
 jobs:
   sonde-modeles:
     runs-on: ubuntu-latest
@@ -58,6 +66,8 @@ jobs:
           SONDE_ROLES: ${{ github.event.inputs.roles }}
           SONDE_MAX_TOKENS: ${{ github.event.inputs.max_tokens }}
           SONDE_VERIF_COEUR: ${{ github.event.inputs.verif_coeur }}
+          SONDE_EXPORT: ${{ github.event.inputs.export }}
+          SONDE_CALIBRATION: ${{ github.event.inputs.calibration }}
         run: python sonde_modeles.py
       - name: Publier le detail
         if: always()

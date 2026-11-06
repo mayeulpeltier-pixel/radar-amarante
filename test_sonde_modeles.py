@@ -347,6 +347,39 @@ class TestVerificationCoeur(unittest.TestCase):
         self.assertFalse(lignes[0]["lentille_ie_ok"])
 
 
+class TestCalibration(unittest.TestCase):
+    def test_figer_garde_description_et_ordre(self):
+        a = dict(AVIS, publication_number="2", champ_parasite="x")
+        b = dict(AVIS, publication_number="1")
+        figes = sm.figer_avis([a, b], ["1", "2", "absent"])
+        self.assertEqual([f["publication_number"] for f in figes], ["1", "2"])
+        self.assertEqual(figes[0]["description"], AVIS["description"])
+        self.assertNotIn("champ_parasite", figes[1])
+
+    def test_charger_ignore_avis_sans_verdict(self):
+        import tempfile, os
+        jeu = {"verdicts": {"1": "Ignorer"}, "avis": [dict(AVIS, publication_number="1"),
+                                                      dict(AVIS, publication_number="2")]}
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as f:
+            json.dump(jeu, f)
+        try:
+            avis, verdicts = sm.charger_calibration(f.name)
+        finally:
+            os.unlink(f.name)
+        self.assertEqual([a["publication_number"] for a in avis], ["1"])
+        self.assertEqual(verdicts, {"1": "ignorer"})
+
+    def test_precision_par_role(self):
+        res = [{"avis": {"publication_number": "1"},
+                "par_role": {"a": {"score": 7.0}, "b": {"score": 2.0}}},
+               {"avis": {"publication_number": "2"},
+                "par_role": {"a": {"score": 5.0}, "b": {"score": None}}}]
+        p = sm.precision_calibration(res, {"1": "ignorer", "2": "surveiller"}, roles=("a", "b"))
+        self.assertEqual((p["a"]["justes"], p["a"]["total"]), (1, 2))
+        self.assertEqual(p["a"]["ecarts"][0]["verdict"], "ignorer")
+        self.assertEqual((p["b"]["justes"], p["b"]["total"]), (1, 1))
+
+
 class TestConfiguration(unittest.TestCase):
     def test_defauts_suivent_la_production(self):
         m = sm.modeles_configures({})
