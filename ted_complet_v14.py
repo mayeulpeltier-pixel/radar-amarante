@@ -285,13 +285,26 @@ def dans_le_perimetre(iso3, tier_minimal=0.6):
 
 ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/messages"
 # Modeles surchargeables par env (upgrade intentionnel sans toucher au code, et
-# rollback instantane). Defauts = chaines VALIDES et actives, verifiees sur la
-# doc Anthropic : Haiku 4.5 (volume) et Sonnet 4.6 (raffinement). La forme `or`
-# tolere une variable vide (retombe sur le defaut). ATTENTION : passer le
-# raffinement a "claude-sonnet-5" exige AUSSI de retirer "temperature": 0 de
-# l'appel API -- Sonnet 5 rejette les parametres d'echantillonnage non-defaut.
-# Ne pas swapper a l'aveugle.
-MODELE = os.environ.get("RADAR_MODELE") or "claude-haiku-4-5-20251001"  # modele rapide/economique pour le volume
+# rollback instantane). La forme `or` tolere une variable vide (retombe sur le
+# defaut).
+#
+# BASCULE DU VOLUME SUR HAIKU 5.5 (06/11/2026), decidee sur mesure
+# (sonde_modeles.py, 40 vrais avis TED dans 40 pays, rapport dans
+# claude/sonde_modeles_2026-11.md du projet) :
+#   - cout par avis 0,0011 $ contre 0,0055 $ pour Haiku 4.5 (5 fois moins) ;
+#   - JSON valide du premier coup 100 % (Haiku 4.5 : 97,5 %) ;
+#   - meme classe d'action que Haiku 4.5 sur 69 % des avis, soit PLUS que
+#     l'accord entre les deux modeles de production d'avant (Haiku 4.5 vs
+#     Sonnet 4.6 : 56 %).
+# Deux incompatibilites, traitees par `corps_appel` ci-dessous et NON par la
+# seule variable : les modeles 5.x refusent `temperature` (HTTP 400
+# "temperature is deprecated for this model"), et Haiku 5.5 raisonne avant de
+# repondre (blocs thinking, ~1 300 tokens de sortie) : a max_tokens=1000, 39
+# reponses sur 40 etaient tronquees.
+# RETOUR ARRIERE : RADAR_MODELE=claude-haiku-4-5-20251001 (aucun code a toucher).
+# L'ESCALADE reste sur Sonnet 4.6 : Sonnet 5.5 change la doctrine (4 fois moins
+# de "contacter" sur le meme echantillon), decision en attente de calibration BD.
+MODELE = os.environ.get("RADAR_MODELE") or "claude-haiku-5-5"  # modele rapide/economique pour le volume
 MODELE_RAFFINEMENT = os.environ.get("RADAR_MODELE_RAFFINEMENT") or "claude-sonnet-4-6"  # escalade sur les cas au-dessus du
 
 # --- Sante des appels au modele --------------------------------------------
@@ -306,6 +319,66 @@ MODELE_RAFFINEMENT = os.environ.get("RADAR_MODELE_RAFFINEMENT") or "claude-sonne
 # RADAR_MODELE et RADAR_MODELE_RAFFINEMENT.
 STATS_LLM = {"appels": 0, "echecs": 0, "modele_invalide": 0, "detail": "",
              "arret": "", "ignores": 0}
+
+
+# --- Parametres d'appel selon le modele (06/11/2026) ------------------------
+# UN SEUL endroit decide de la forme du corps envoye a l'API, pour TOUS les
+# modules qui appellent le modele (coeur, lentille IE, signaux BITD, shadow
+# run). Avant, chacun ecrivait `"temperature": 0` en dur : basculer RADAR_MODELE
+# sur un modele 5.x aurait fait echouer 100 % des appels, et ce refus (400
+# `invalid_request_error`) aurait meme ete compte comme "modele invalide".
+#
+# Marge de sortie ajoutee pour les modeles qui raisonnent : le raisonnement
+# interne consomme des tokens de sortie AVANT le JSON. Mesure : mediane ~1 300,
+# maximum ~2 400 pour Haiku 5.5. 3 000 couvre le pire cas observe ; le cout
+# reste borne (on ne paie que les tokens reellement produits).
+MARGE_RAISONNEMENT = int(os.environ.get("RADAR_LLM_MARGE_RAISONNEMENT") or "3000")
+
+# Modeles dont l'API a refuse `temperature` pendant CE run (apprentissage a
+# chaud, cf. appeler_modele). Couvre un futur modele que la regle de nommage
+# ne reconnaitrait pas.
+_SANS_TEMPERATURE_APPRIS = set()
+
+
+def generation_modele(modele):
+    """Generation majeure d'un identifiant Claude ("claude-haiku-5-5" -> 5,
+    "claude-sonnet-4-6" -> 4, "claude-3-5-haiku-..." -> 3). None si illisible.
+    Fonction PURE."""
+    m = re.match(r"claude-(?:[a-z]+-)?(\d+)", str(modele or "").strip().lower())
+    return int(m.group(1)) if m else None
+
+
+def modele_raisonne(modele):
+    """Vrai pour les modeles qui refusent `temperature` et raisonnent avant de
+    repondre : generation 5 et suivantes (constate sur Haiku 5.5 et Sonnet 5.5
+    le 06/11/2026), plus tout modele appris a chaud pendant le run."""
+    if modele in _SANS_TEMPERATURE_APPRIS:
+        return True
+    g = generation_modele(modele)
+    return g is not None and g >= 5
+
+
+def corps_appel(modele, prompt, max_tokens, temperature=0):
+    """Corps Messages API adapte au modele. Fonction PURE (hors apprentissage).
+
+    - modele classique (4.x) : corps historique, `temperature` incluse ;
+    - modele 5.x : PAS de `temperature`, et max_tokens + MARGE_RAISONNEMENT
+      pour que le raisonnement interne ne tronque pas la reponse.
+    `max_tokens` reste celui que l'appelant juge utile pour la REPONSE : la
+    marge ne sert qu'au raisonnement."""
+    corps = {"model": modele, "max_tokens": int(max_tokens),
+             "messages": [{"role": "user", "content": prompt}]}
+    if modele_raisonne(modele):
+        corps["max_tokens"] = int(max_tokens) + MARGE_RAISONNEMENT
+    elif temperature is not None:
+        corps["temperature"] = temperature
+    return corps
+
+
+def est_refus_temperature(code_http, texte):
+    """Vrai si l'API refuse la requete A CAUSE de `temperature` (400 + mention).
+    Un 400 generique (prompt trop long) n'est PAS un refus de parametre."""
+    return code_http == 400 and "temperature" in str(texte or "").lower()
 
 # DISJONCTEUR (23/07/2026) -- pourquoi il existe
 # ---------------------------------------------------------------------------
@@ -1269,15 +1342,26 @@ def appeler_modele(prompt, modele=None):
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
-    corps = {
-        "model": modele or MODELE,
-        "max_tokens": 1000,  # 700 coupait parfois une reparation JSON qui doit reecrire tout l'objet
-        "temperature": 0,
-        "messages": [{"role": "user", "content": prompt}],
-    }
+    modele_effectif = modele or MODELE
+    # 1000 : 700 coupait parfois une reparation JSON qui doit reecrire tout
+    # l'objet. Les modeles qui raisonnent recoivent la marge en plus.
+    corps = corps_appel(modele_effectif, prompt, 1000)
+    # Timeout : un modele qui raisonne met plus longtemps (Haiku 5.5 : 6,5 s
+    # medians contre 4,7 s), on garde de la marge sur 30 s.
+    delai = 60 if modele_raisonne(modele_effectif) else 30
     STATS_LLM["appels"] += 1
     try:
-        reponse = session_robuste().post(ANTHROPIC_ENDPOINT, headers=headers, json=corps, timeout=30)
+        reponse = session_robuste().post(ANTHROPIC_ENDPOINT, headers=headers, json=corps, timeout=delai)
+        if "temperature" in corps and est_refus_temperature(
+                reponse.status_code, getattr(reponse, "text", "")):
+            # Filet : modele inconnu de la regle de nommage qui refuse
+            # `temperature`. On l'apprend et on rejoue UNE fois sans, AVANT de
+            # compter un echec (sinon "invalid_request_error" passerait pour un
+            # modele retire et ferait virer le run au rouge a tort).
+            _SANS_TEMPERATURE_APPRIS.add(modele_effectif)
+            print("  (info) {} refuse `temperature` : appel rejoue sans.".format(modele_effectif))
+            corps = corps_appel(modele_effectif, prompt, 1000)
+            reponse = session_robuste().post(ANTHROPIC_ENDPOINT, headers=headers, json=corps, timeout=60)
         reponse.raise_for_status()
     except requests.exceptions.Timeout:
         # V13 : message explicite. Timeout etait deja attrape par le bloc

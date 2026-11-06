@@ -32,6 +32,10 @@ on:
         description: "Plafond de sortie par appel (defaut 1000, comme la production)"
         required: false
         default: "1000"
+      verif_coeur:
+        description: "1 = exercer le vrai chemin de production (coeur + lentille IE) sur 3 avis"
+        required: false
+        default: "0"
 jobs:
   sonde-modeles:
     runs-on: ubuntu-latest
@@ -53,6 +57,7 @@ jobs:
           SONDE_DRYRUN: ${{ github.event.inputs.dryrun }}
           SONDE_ROLES: ${{ github.event.inputs.roles }}
           SONDE_MAX_TOKENS: ${{ github.event.inputs.max_tokens }}
+          SONDE_VERIF_COEUR: ${{ github.event.inputs.verif_coeur }}
         run: python sonde_modeles.py
       - name: Publier le detail
         if: always()

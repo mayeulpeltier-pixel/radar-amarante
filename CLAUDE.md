@@ -158,6 +158,11 @@ Les tests d'intégration Postgres se sautent seuls sans `RADAR_TEST_DATABASE_URL
 10. **Aucun secret dans le dépôt.** Secrets GitHub / variables Render uniquement.
 11. **Le miroir ne peut jamais faire échouer un run.** `ecrire_miroir` avale
     toutes les exceptions et renvoie une phrase de journal.
+12. **Un seul constructeur d'appel modèle : `ted.corps_appel`.** Jamais de
+    `"temperature": 0` en dur : les modèles 5.x le refusent (HTTP 400) et
+    raisonnent avant de répondre (marge de tokens obligatoire). Verrouillé par
+    `test_corps_appel.py`. Tout changement de modèle passe d'abord par
+    `sonde_modeles.py` (comparaison sur vrais avis + `verif_coeur=1`).
 
 ---
 
@@ -167,6 +172,9 @@ Les tests d'intégration Postgres se sautent seuls sans `RADAR_TEST_DATABASE_URL
 | Variable | Rôle | Défaut |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | LLM | requis |
+| `RADAR_MODELE` | modèle de volume (tri) ; retour arrière : `claude-haiku-4-5-20251001` | **`claude-haiku-5-5`** (depuis le 06/11/2026) |
+| `RADAR_MODELE_RAFFINEMENT` | modèle d'escalade | `claude-sonnet-4-6` |
+| `RADAR_LLM_MARGE_RAISONNEMENT` | tokens de sortie ajoutés pour les modèles 5.x (raisonnement interne) | `3000` |
 | `TED_SHEET_ID`, `GOOGLE_SERVICE_ACCOUNT_FILE` | Sheet (écriture) | requis |
 | `DATABASE_URL` | Postgres Neon | secret |
 | `RADAR_MEMOIRE` | `pg` = Postgres fait foi ; `0`/absent = Sheet | **`pg`** |

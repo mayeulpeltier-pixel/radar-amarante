@@ -236,6 +236,20 @@ def construire_prompt(avis):
 # ===========================================================================
 # 3. APPEL LLM ET VALIDATION (ne leve jamais)
 # ===========================================================================
+def _corps(prompt, modele):
+    """Corps de requete adapte au modele (06/11/2026) : delegue au coeur, qui
+    retire `temperature` et ajoute la marge de raisonnement pour les modeles
+    5.x. Avec `"temperature": 0` et max_tokens=400 en dur, un modele 5.x etait
+    refuse (400) ou tronque a chaque appel. Repli sur le corps historique si
+    le coeur est indisponible (meme tolerance que `_modeles`)."""
+    try:
+        import ted_complet_v14 as ted
+        return ted.corps_appel(modele, prompt, 400)
+    except Exception:  # noqa: BLE001
+        return {"model": modele, "max_tokens": 400, "temperature": 0,
+                "messages": [{"role": "user", "content": prompt}]}
+
+
 def _appel_http(prompt, modele):
     import requests
     cle = os.environ.get("ANTHROPIC_API_KEY")
@@ -244,8 +258,7 @@ def _appel_http(prompt, modele):
     rep = requests.post(URL_API, timeout=60, headers={
         "x-api-key": cle, "anthropic-version": "2023-06-01",
         "content-type": "application/json"},
-        json={"model": modele, "max_tokens": 400, "temperature": 0,
-              "messages": [{"role": "user", "content": prompt}]})
+        json=_corps(prompt, modele))
     if rep.status_code >= 400:
         raise RuntimeError("HTTP {} : {}".format(rep.status_code, rep.text[:200]))
     blocs = rep.json().get("content") or []

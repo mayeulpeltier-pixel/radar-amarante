@@ -325,6 +325,28 @@ class TestDiagnosticHaiku55(unittest.TestCase):
         self.assertEqual(s["par_paire"], [])
 
 
+class TestVerificationCoeur(unittest.TestCase):
+    def test_chemin_production_exerce(self):
+        appels = []
+
+        def faux_llm(avis, modele=None):
+            appels.append(modele)
+            return ted.normaliser_securite(_extraction())
+        lignes = sm.verifier_chemin_production([AVIS, AVIS], appeler_llm=faux_llm,
+                                               extraire_ie=lambda a: {"ok": 1})
+        self.assertEqual(appels, [None, ted.MODELE_RAFFINEMENT] * 2)
+        self.assertTrue(all(l["volume_ok"] and l["escalade_ok"] and l["lentille_ie_ok"]
+                            for l in lignes))
+        self.assertIsNotNone(lignes[0]["score_volume"])
+
+    def test_echec_detecte(self):
+        lignes = sm.verifier_chemin_production([AVIS], appeler_llm=lambda a, modele=None: None,
+                                               extraire_ie=lambda a: None)
+        self.assertFalse(lignes[0]["volume_ok"])
+        self.assertIsNone(lignes[0]["score_volume"])
+        self.assertFalse(lignes[0]["lentille_ie_ok"])
+
+
 class TestConfiguration(unittest.TestCase):
     def test_defauts_suivent_la_production(self):
         m = sm.modeles_configures({})
