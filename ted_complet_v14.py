@@ -302,10 +302,17 @@ ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/messages"
 # repondre (blocs thinking, ~1 300 tokens de sortie) : a max_tokens=1000, 39
 # reponses sur 40 etaient tronquees.
 # RETOUR ARRIERE : RADAR_MODELE=claude-haiku-4-5-20251001 (aucun code a toucher).
-# L'ESCALADE reste sur Sonnet 4.6 : Sonnet 5.5 change la doctrine (4 fois moins
-# de "contacter" sur le meme echantillon), decision en attente de calibration BD.
+#
+# BASCULE DE L'ESCALADE SUR SONNET 5.5 (06/11/2026), decidee par CALIBRATION
+# HUMAINE et non par simple comparaison : sur les 19 avis ou Sonnet 4.6 et
+# Sonnet 5.5 divergeaient, la classe d'action jugee par la BD (Mayeul) est
+# celle de Sonnet 5.5 dans 19 cas sur 19, celle de Sonnet 4.6 dans 0. Sonnet
+# 4.6 sur-classait en "contacter" des missions de bureau (fonds, conseil
+# institutionnel). Jeu de reference fige : calibration_escalade.json, a
+# rejouer avant tout changement de modele ou de prompt.
+# RETOUR ARRIERE : RADAR_MODELE_RAFFINEMENT=claude-sonnet-4-6.
 MODELE = os.environ.get("RADAR_MODELE") or "claude-haiku-5-5"  # modele rapide/economique pour le volume
-MODELE_RAFFINEMENT = os.environ.get("RADAR_MODELE_RAFFINEMENT") or "claude-sonnet-4-6"  # escalade sur les cas au-dessus du
+MODELE_RAFFINEMENT = os.environ.get("RADAR_MODELE_RAFFINEMENT") or "claude-sonnet-5-5"  # escalade sur les cas au-dessus du
 
 # --- Sante des appels au modele --------------------------------------------
 # Un modele retire fait echouer TOUS les appels : chaque avis est ignore et le

@@ -162,7 +162,10 @@ Les tests d'intégration Postgres se sautent seuls sans `RADAR_TEST_DATABASE_URL
     `"temperature": 0` en dur : les modèles 5.x le refusent (HTTP 400) et
     raisonnent avant de répondre (marge de tokens obligatoire). Verrouillé par
     `test_corps_appel.py`. Tout changement de modèle passe d'abord par
-    `sonde_modeles.py` (comparaison sur vrais avis + `verif_coeur=1`).
+    `sonde_modeles.py` (comparaison sur vrais avis + `verif_coeur=1`) **et le
+    rejeu du jeu de référence humain `calibration_escalade.json`**
+    (`calibration=calibration_escalade.json`) : un modèle ne remplace l'autre
+    que s'il est au moins aussi conforme aux verdicts de la BD.
 
 ---
 
@@ -173,7 +176,7 @@ Les tests d'intégration Postgres se sautent seuls sans `RADAR_TEST_DATABASE_URL
 |---|---|---|
 | `ANTHROPIC_API_KEY` | LLM | requis |
 | `RADAR_MODELE` | modèle de volume (tri) ; retour arrière : `claude-haiku-4-5-20251001` | **`claude-haiku-5-5`** (depuis le 06/11/2026) |
-| `RADAR_MODELE_RAFFINEMENT` | modèle d'escalade | `claude-sonnet-4-6` |
+| `RADAR_MODELE_RAFFINEMENT` | modèle d'escalade ; retour arrière : `claude-sonnet-4-6` | **`claude-sonnet-5-5`** (depuis le 06/11/2026, calibration 19/19) |
 | `RADAR_LLM_MARGE_RAISONNEMENT` | tokens de sortie ajoutés pour les modèles 5.x (raisonnement interne) | `3000` |
 | `TED_SHEET_ID`, `GOOGLE_SERVICE_ACCOUNT_FILE` | Sheet (écriture) | requis |
 | `DATABASE_URL` | Postgres Neon | secret |
