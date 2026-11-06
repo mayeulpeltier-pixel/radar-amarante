@@ -63,7 +63,8 @@ PROMPT_FICHE = """Tu es analyste commercial pour Amarante International, sociét
 On te donne un lead détecté par le Radar Amarante. Rédige une FICHE D'APPROCHE pour le chargé d'affaires : ce qu'il doit savoir et faire, en 2 minutes de lecture.
 
 RÈGLES ABSOLUES
-- N'invente AUCUN nom d'entreprise, de personne ou de chiffre. Un nom n'est autorisé que s'il figure dans les DONNÉES RADAR ci-dessous ou dans une source web que tu as réellement consultée (indique alors son URL). Sinon décris un PROFIL (ex : « bureau d'études allemand en eau et assainissement »).
+- N'invente AUCUN nom d'entreprise, de personne ou de chiffre. Un nom n'est autorisé que s'il figure dans le texte de l'avis ci-dessous ou dans une source web que tu as réellement consultée (indique alors son URL).
+- « qui_deploiera » ne contient QUE des prospects réels : des organisations nommées, identifiées dans l'avis ou dans une source citée, qui déploieront du personnel sur le terrain. Pas de profil générique, pas d'hypothèse. Si aucun prospect réel n'est identifié, renvoie une liste vide.
 - Sois honnête : si le lead n'a pas de vrai potentiel pour Amarante, dis-le (verdict « abandonner ») plutôt que de broder.
 - Prochaine action : concrète, réalisable par une personne, avec une cible et si possible une date butoir tirée des données (clôture, attribution).
 - Français, phrases courtes, pas de jargon creux.{consigne_web}
@@ -76,7 +77,7 @@ Réponds UNIQUEMENT en JSON valide, sans texte autour :
   "en_une_phrase": "l'opportunité pour Amarante, en une phrase",
   "pourquoi_maintenant": "le déclencheur et la fenêtre de temps",
   "acheteur": "qui paie et ce qu'on sait de lui",
-  "qui_deploiera": [{{"acteur": "nom ou profil", "source": "url, 'données radar' ou ''"}}],
+  "qui_deploiera": [{{"acteur": "nom réel", "source": "url ou 'avis'"}}],
   "besoin_surete": ["prestations Amarante concrètes probablement utiles"],
   "concurrence": "qui assure ou pourrait assurer la sûreté, ou 'inconnu'",
   "angle_amarante": "pourquoi Amarante et comment se différencier",
@@ -326,13 +327,17 @@ def charger_leads():
 
 def executer(selection, leads, modele, plafond, appel=appel_http, texte_notice=None,
              candidats_pour=None, pause=1.0):
-    """Deux fiches par lead (A puis B). Arret net au plafond de depense."""
-    if candidats_pour is None:
-        import candidats_probables as cp
-        hists = cp.historique_titulaires(leads)
+    """Deux fiches par lead (A puis B). Arret net au plafond de depense.
 
+    SOUMISSIONNAIRES PROBABLES RETIRES (06/11/2026, retour de Mayeul) : la
+    liste calculee en base (`candidats_probables`) proposait les memes
+    negociants pour la RDC, le Bangladesh et le Kirghizistan. Hypothetique,
+    couteuse en tokens, sans valeur pour la BD. Doctrine : « soit de vrais
+    prospects, soit rien ». Par defaut, plus aucune lecture de ce module ;
+    `candidats_pour` reste injectable pour les tests uniquement."""
+    if candidats_pour is None:
         def candidats_pour(lead):
-            return cp.soumissionnaires_probables(lead, leads, n=5, hists=hists)
+            return []
     if texte_notice is None:
         def texte_notice(lead):
             if lead.get("src") != "TED" or not lead.get("pub"):
