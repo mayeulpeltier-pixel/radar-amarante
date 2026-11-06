@@ -16,6 +16,14 @@ on:
         description: "Plafond de depense en dollars (defaut 2)"
         required: false
         default: "2"
+      refaire:
+        description: "1 = regenerer aussi les fiches deja existantes"
+        required: false
+        default: "0"
+      diag:
+        description: "1 = diagnostic gratuit des candidats prouves, sans LLM ni ecriture"
+        required: false
+        default: "0"
 jobs:
   analyste:
     runs-on: ubuntu-latest
@@ -36,4 +44,6 @@ jobs:
           RADAR_ANALYSTE: "1"
           RADAR_ANALYSTE_N: ${{ github.event.inputs.n }}
           RADAR_ANALYSTE_PLAFOND_USD: ${{ github.event.inputs.plafond }}
+          RADAR_ANALYSTE_REFAIRE: ${{ github.event.inputs.refaire }}
+          RADAR_ANALYSTE_DIAG: ${{ github.event.inputs.diag }}
         run: python analyste.py
