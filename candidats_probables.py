@@ -356,3 +356,122 @@ def candidats_pour(secteur, zone, index, n=6):
             or index.get("secteur", {}).get(sect)
             or index.get("zone", {}).get(zn)
             or [])[:n]
+
+
+# ===========================================================================
+# CANDIDATS PROUVES (06/11/2026) : « de vraies propositions, pas n'importe quoi »
+# ===========================================================================
+# CONSTAT (sonde fiches Analyste, 6 vrais leads) : `soumissionnaires_probables`
+# proposait les MEMES societes (negociants et fabricants : Monega Enterprises,
+# China MEHECO, Zhejiang Kangle...) pour la RDC, le Bangladesh et le
+# Kirghizistan, toutes a 55 % avec le seul motif « actif sur ce secteur ET ce
+# theatre ». Trois causes, toutes dans les donnees :
+#   1. le « theatre » est une zone CONTINENTALE (Afrique centrale, Asie du Sud) ;
+#   2. le secteur vaut souvent « Autre » ou est mal classe, et « Autre » ==
+#      « Autre » comptait comme une correspondance ;
+#   3. les attributions de FOURNITURES (medicaments, equipements livres par des
+#      agences ONU) dominent le corpus, et un fournisseur ne deploie personne.
+# Verdict de Mayeul : les candidats ont leur place dans les fiches, mais
+# uniquement s'ils sont de vraies propositions.
+#
+# REGLE : un candidat n'est propose que s'il a deja REMPORTE un marche de
+# SERVICES ou de TRAVAUX comparable, et ce marche est cite comme preuve.
+# Trois preuves recevables, de la plus forte a la plus faible :
+#   - meme_projet  : titulaire d'un marche du MEME projet (projet_id) ;
+#   - meme_acheteur: titulaire chez le MEME acheteur reel, dans le MEME pays
+#                    (un bailleur qui finance tout n'est pas un acheteur reel) ;
+#   - meme_pays_secteur : titulaire dans le MEME pays et le MEME secteur precis
+#                    (jamais « Autre »), il y a moins de 36 mois.
+# Aucune preuve : aucun candidat. Mieux vaut rien que n'importe quoi.
+
+import re as _re
+
+# Bailleurs et institutions qui FINANCENT : leur nom en « acheteur » ne dit
+# rien du maitre d'ouvrage reel (tous les avis BAD portent « African
+# Development Bank »).
+_FINANCEURS = ("development bank", "banque africaine", "banque asiatique",
+               "banque mondiale", "world bank", "banque interamericaine",
+               "islamic development", "banque islamique", "european bank for",
+               "berd", "ebrd", "afdb", "adb", "ifc", "miga")
+
+# Marches de FOURNITURE : un fournisseur livre, il ne deploie pas d'equipes.
+_FOURNITURE = _re.compile(
+    r"\b(supply|supplies|supplying|fourniture|fournitures|purchase|procurement of goods|"
+    r"goods|medicine|medicines|medical products|pharmaceutical|vaccines?|drugs|"
+    r"spare parts|printing|impression|reagents?|consumables|ltas? for)\b", _re.I)
+
+_SECTEURS_VAGUES = {"", "autre", "attribution", "non classe", "n.c."}
+MOIS_PREUVE = 36
+
+
+def _norm(t):
+    return " ".join(str(t or "").lower().split())
+
+
+def acheteur_reel(nom):
+    """Vrai si `nom` designe un maitre d'ouvrage et non un financeur."""
+    n = _norm(nom)
+    return bool(n) and n != "n.c." and not any(f in n for f in _FINANCEURS)
+
+
+def marche_de_fourniture(titre):
+    return bool(_FOURNITURE.search(str(titre or "")))
+
+
+def candidats_prouves(avis, leads, n=3, aujourd=None):
+    """[{entreprise, preuve, libelle_preuve, etranger, origine, marches}] pour
+    un avis, UNIQUEMENT avec preuve. Fonction PURE.
+
+    `marches` : jusqu'a 2 marches gagnes qui fondent la proposition
+    ({titre, pays, date, lien}). Tri : force de la preuve, puis titulaire
+    etranger (expatries a proteger), puis nombre de marches probants."""
+    auj = aujourd or _dt.date.today()
+    pays = _norm(avis.get("pays"))
+    projet = str(avis.get("projet_id") or "").strip()
+    ach = _norm(avis.get("agence") or avis.get("acheteur"))
+    ach_ok = acheteur_reel(ach)
+    sect = _norm(avis.get("sect"))
+    rang = {"meme_projet": 0, "meme_acheteur": 1, "meme_pays_secteur": 2}
+    libelles = {"meme_projet": "titulaire d'un marché du même projet",
+                "meme_acheteur": "déjà titulaire chez le même acheteur, dans ce pays",
+                "meme_pays_secteur": "déjà titulaire dans ce pays et ce secteur"}
+    out = {}
+    for l in (leads or []):
+        if l.get("src") != "ATTRIB":
+            continue
+        ent = (l.get("entreprise") or "").strip()
+        if len(ent) < 3 or ent.lower() == "titulaire":
+            continue
+        titre_marche = l.get("marche") or l.get("titre") or ""
+        if marche_de_fourniture(titre_marche):
+            continue
+        mois = _mois_ecart(l.get("date_det") or l.get("mois"), auj)
+        recent = mois is not None and mois <= MOIS_PREUVE
+        preuve = None
+        if projet and str(l.get("projet_id") or "").strip() == projet:
+            preuve = "meme_projet"
+        elif (ach_ok and pays and _norm(l.get("pays")) == pays
+              and _norm(l.get("agence")) == ach):
+            preuve = "meme_acheteur"
+        elif (recent and pays and _norm(l.get("pays")) == pays
+              and sect not in _SECTEURS_VAGUES and _norm(l.get("sect")) == sect):
+            preuve = "meme_pays_secteur"
+        if preuve is None:
+            continue
+        c = out.setdefault(ent, {"entreprise": ent, "preuve": preuve, "marches": [],
+                                 "etranger": False, "origine": ""})
+        if rang[preuve] < rang[c["preuve"]]:
+            c["preuve"] = preuve
+        c["etranger"] = c["etranger"] or _est_etranger(l.get("etranger_titulaire"))
+        c["origine"] = c["origine"] or (l.get("origine") or "").strip()
+        c["marches"].append({"titre": str(titre_marche)[:160], "pays": l.get("pays") or "",
+                             "date": (l.get("date_det") or l.get("mois") or "")[:10],
+                             "lien": l.get("lien") or ""})
+    for c in out.values():
+        c["marches"].sort(key=lambda m: m["date"], reverse=True)
+        c["nb_preuves"] = len(c["marches"])
+        c["marches"] = c["marches"][:2]
+        c["libelle_preuve"] = libelles[c["preuve"]]
+    tries = sorted(out.values(), key=lambda c: (rang[c["preuve"]], not c["etranger"],
+                                               -c["nb_preuves"], c["entreprise"]))
+    return tries[:max(0, n)]

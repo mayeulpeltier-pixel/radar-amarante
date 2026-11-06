@@ -1041,6 +1041,10 @@ def attribution_vers_lead(row):
         "projet_id": _txt(row.get("projet_id")),
         "entreprise": gagnant or "Titulaire",
         "sect": secteur_canonique(secteur, marche),
+        # Intitule du marche gagne, expose tel quel (06/11/2026) : c'est la
+        # PREUVE citee par `candidats_probables.candidats_prouves` (« a deja
+        # remporte tel marche »). Il n'etait disponible que noye dans `justif`.
+        "marche": marche,
     }
 
 

@@ -90,12 +90,47 @@ class TestDoctrine(unittest.TestCase):
     def test_aucune_lecture_des_soumissionnaires_probables(self):
         import inspect
         src = inspect.getsource(an)
-        self.assertNotIn("import candidats_probables", src)
         self.assertNotIn("soumissionnaires_probables(", src)
+        self.assertNotIn("construire_index(", src)
+        self.assertIn("candidats_prouves(", src)
 
     def test_nettoyage_des_citations(self):
         self.assertEqual(an.nettoyer(FICHE)["en_une_phrase"], "PRECAPE 49 M USD à Uvira.")
         self.assertEqual(an.nettoyer({"a": ["<cite index='1-2'>x</cite>"]}), {"a": ["x"]})
+
+
+class TestCandidatsProuves(unittest.TestCase):
+    CANDS = [{"entreprise": "SOGEA SATOM", "preuve": "meme_projet",
+              "libelle_preuve": "titulaire d'un marché du même projet", "etranger": True,
+              "marches": [{"titre": "Réhabilitation d'écoles Uvira", "pays": "RDC",
+                           "date": "2026-05-01", "lien": "https://x"}]}]
+
+    def test_candidats_dans_le_prompt_et_stockes(self):
+        prompts = []
+
+        def faux(c):
+            prompts.append(c["messages"][0]["content"])
+            f = dict(FICHE, qui_deploiera=[{"acteur": "SOGEA SATOM", "source": "radar"},
+                                           {"acteur": "Inventé SA", "source": "radar"}])
+            return _reponse(f)
+        lignes, _ = an.executer([("k", _lead())], "claude-sonnet-5-5", 10, appel=faux,
+                                texte_notice=lambda l: "", pause=0,
+                                candidats_pour=lambda l: self.CANDS)
+        self.assertIn("Titulaires prouvés", prompts[0])
+        self.assertIn("« Réhabilitation d'écoles Uvira », RDC, 2026-05-01", prompts[0])
+        self.assertEqual(lignes[0]["candidats"], self.CANDS)
+        # « radar » n'est accepte que pour un nom de la liste prouvee.
+        self.assertEqual([a["acteur"] for a in lignes[0]["fiche"]["qui_deploiera"]], ["SOGEA SATOM"])
+
+    def test_sans_candidat_aucune_section(self):
+        self.assertNotIn("Titulaires prouvés", an.donnees(_lead(), "", []))
+
+    def test_candidats_en_echec_ne_cassent_pas(self):
+        def boum(l):
+            raise RuntimeError("x")
+        lignes, _ = an.executer([("k", _lead())], "m", 10, appel=lambda c: _reponse(),
+                                texte_notice=lambda l: "", pause=0, candidats_pour=boum)
+        self.assertEqual(lignes[0]["candidats"], [])
 
 
 class TestAppel(unittest.TestCase):
@@ -130,6 +165,27 @@ class TestAppel(unittest.TestCase):
                                   appel=lambda c: _reponse(), texte_notice=lambda l: "", pause=0)
         self.assertLess(len(lignes), 10)
         self.assertGreaterEqual(dep, 0.3)
+
+
+class TestDiagnostic(unittest.TestCase):
+    def test_diag_n_appelle_pas_le_modele_ni_n_ecrit(self):
+        env = {"RADAR_ANALYSTE": "1", "RADAR_ANALYSTE_DIAG": "1", "RADAR_ANALYSTE_REFAIRE": "1",
+               "ANTHROPIC_API_KEY": "k", "DATABASE_URL": "postgres://x"}
+
+        class Conn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+        import radar_stockage as st
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.object(an, "charger_leads", return_value=[_lead()]), \
+                mock.patch.object(st, "connexion", return_value=Conn()), \
+                mock.patch.object(st, "publications_existantes", return_value=set()), \
+                mock.patch.object(st, "ecrire_miroir", side_effect=AssertionError("ecriture")), \
+                mock.patch.object(an, "appel_http", side_effect=AssertionError("appel")):
+            self.assertEqual(an.main(), 0)
 
 
 class TestDrapeau(unittest.TestCase):

@@ -13,11 +13,18 @@ DOCTRINE : « SOIT DE VRAIS PROSPECTS, SOIT RIEN »
 -------------------------------------------------
 Retour de Mayeul sur la sonde : la liste des soumissionnaires probables tiree
 de la base (memes negociants pour la RDC, le Bangladesh et le Kirghizistan)
-est hypothetique et n'apporte rien. Donc :
-  - aucune lecture de `candidats_probables` ;
+est hypothetique et n'apporte rien. Puis (06/11, 17 h) : « dans les fiches je
+veux bien les candidats probables, mais je veux des vraies propositions ».
+Donc :
+  - candidats : UNIQUEMENT `candidats_probables.candidats_prouves`, qui exige
+    un marche de services ou de travaux deja remporte (meme projet, meme
+    acheteur reel dans le pays, ou meme pays et secteur precis) et le cite.
+    Calcul deterministe en base, stocke tel quel dans la fiche : le modele
+    ne peut pas en inventer. Jamais `soumissionnaires_probables` ;
   - « qui_deploiera » ne garde QUE des organisations dont la source est une
-    page web reellement consultee pendant l'appel (verifie dans le CODE, pas
-    seulement demande au modele) ou le texte de l'avis lui-meme ;
+    page web reellement consultee pendant l'appel, le texte de l'avis, ou la
+    liste de candidats prouves (verifie dans le CODE, pas seulement demande
+    au modele) ;
   - sinon la liste reste vide.
 
 CE QUE FAIT LE MODULE
@@ -75,7 +82,8 @@ Tu disposes d'une recherche web (quelques requêtes). Utilise-la pour ce qui cha
 
 RÈGLES ABSOLUES
 - N'invente AUCUN nom d'entreprise, de personne ou de chiffre. Un nom n'est autorisé que s'il figure dans le texte de l'avis ci-dessous ou dans une source web que tu as réellement consultée.
-- « qui_deploiera » ne contient QUE des prospects réels : des organisations nommées qui déploieront du personnel sur le terrain, avec l'URL consultée qui le prouve (ou « avis » si le nom figure dans l'avis). Pas de profil générique, pas d'hypothèse. Si aucun prospect réel n'est identifié, renvoie une liste vide.
+- « qui_deploiera » ne contient QUE des prospects réels : des organisations nommées qui déploieront du personnel sur le terrain, avec l'URL consultée qui le prouve (ou « avis » si le nom figure dans l'avis, ou « radar » s'il figure dans la liste des titulaires prouvés ci-dessous). Pas de profil générique, pas d'hypothèse. Si aucun prospect réel n'est identifié, renvoie une liste vide.
+- Les « titulaires prouvés » ont déjà remporté un marché comparable : ce sont de vrais candidats. Dis en une phrase, dans « angle_amarante » ou « prochaine_action », lequel démarcher en premier et pourquoi.
 - Sois honnête : si l'opportunité n'a pas de vrai potentiel pour Amarante, dis-le (verdict « abandonner »).
 - Prochaine action : concrète, réalisable par une personne, avec une cible et si possible une date butoir.
 - Français, phrases courtes. N'insère aucune balise ni marque de citation dans le texte : mets les URL en clair.
@@ -177,12 +185,20 @@ CHAMPS = (("src", "Source"), ("pub", "Référence"), ("titre", "Titre"),
           ("justif", "Justification du tri"), ("lien", "Lien"))
 
 
-def donnees(lead, texte_notice=""):
+def donnees(lead, texte_notice="", candidats=None):
     lignes = []
     for cle, libelle in CHAMPS:
         v = lead.get(cle)
         if v not in (None, "", "n.c.", "indetermine"):
             lignes.append("- {} : {}".format(libelle, v))
+    if candidats:
+        lignes.append("- Titulaires prouvés (ont déjà remporté un marché comparable, preuve en base) :")
+        for c in candidats:
+            m = (c.get("marches") or [{}])[0]
+            lignes.append("    - {} ({}{}) : « {} », {}, {}".format(
+                c.get("entreprise"), c.get("libelle_preuve"),
+                ", étranger" if c.get("etranger") else "",
+                m.get("titre", ""), m.get("pays", ""), m.get("date", "")))
     if texte_notice:
         lignes.append("- Texte de l'avis (extrait) :\n" + texte_notice[:PLAFOND_TEXTE_NOTICE])
     return "\n".join(lignes)
@@ -235,12 +251,13 @@ def nettoyer(v):
     return v
 
 
-def prospects_reels(fiche, urls, texte_avis):
+def prospects_reels(fiche, urls, texte_avis, candidats=None):
     """Applique la doctrine dans le CODE : ne garde que les acteurs dont la
     source est une URL reellement consultee, ou « avis » quand le nom figure
     dans le texte de l'avis. Le reste est ecarte, sans remplacement."""
     garde = []
     bas = _sans_accents(texte_avis).lower()
+    prouves = {_sans_accents(c.get("entreprise")).lower() for c in (candidats or [])}
     for a in (fiche or {}).get("qui_deploiera") or []:
         if not isinstance(a, dict):
             continue
@@ -248,7 +265,9 @@ def prospects_reels(fiche, urls, texte_avis):
         src = str(a.get("source") or "").strip()
         if not nom:
             continue
-        if src in urls or (src.lower() == "avis" and _sans_accents(nom).lower() in bas):
+        cle_nom = _sans_accents(nom).lower()
+        if (src in urls or (src.lower() == "avis" and cle_nom in bas)
+                or (src.lower() == "radar" and cle_nom in prouves)):
             garde.append({"acteur": nom, "source": src})
     fiche = dict(fiche or {})
     fiche["qui_deploiera"] = garde
@@ -267,9 +286,9 @@ def parser(texte):
     return v if isinstance(v, dict) else None
 
 
-def ligne_fiche(cle, lead, fiche, urls, usd, modele, aujourd=None):
+def ligne_fiche(cle, lead, fiche, urls, usd, modele, aujourd=None, candidats=None):
     """Ligne stockee dans radar_lignes (onglet fiches_analyste)."""
-    return {"publication_number": cle, "date": (aujourd or datetime.date.today()).isoformat(),
+    return {"candidats": list(candidats or []),"publication_number": cle, "date": (aujourd or datetime.date.today()).isoformat(),
             "src": lead.get("src"), "pub": lead.get("pub"), "titre": lead.get("titre"),
             "pays": lead.get("pays"), "lien": lead.get("lien"), "score": lead.get("final"),
             "modele": modele, "cout_usd": round(usd, 4), "sources": urls[:30], "fiche": fiche}
@@ -310,10 +329,10 @@ def appel_http(c):
             "latence_s": round(time.time() - debut, 1)}
 
 
-def produire(cle, lead, modele, texte_notice="", appel=appel_http, aujourd=None):
+def produire(cle, lead, modele, texte_notice="", appel=appel_http, aujourd=None, candidats=None):
     """(ligne|None, cout_usd, message). Ne leve jamais."""
     try:
-        r = appel(corps(modele, PROMPT.format(donnees=donnees(lead, texte_notice))))
+        r = appel(corps(modele, PROMPT.format(donnees=donnees(lead, texte_notice, candidats))))
     except Exception as e:  # noqa: BLE001
         return None, 0.0, "appel en echec : {}".format(str(e)[:120])
     charge = r.get("charge") if isinstance(r.get("charge"), dict) else {}
@@ -326,12 +345,18 @@ def produire(cle, lead, modele, texte_notice="", appel=appel_http, aujourd=None)
     if fiche is None:
         return None, usd, "reponse inexploitable : {}".format(motif or (texte or "")[:120])
     urls = sources_web(charge)
-    fiche = prospects_reels(nettoyer(fiche), urls, texte_notice + " " + str(lead.get("titre") or ""))
-    return ligne_fiche(cle, lead, fiche, urls, usd, modele, aujourd), usd, "ok"
+    fiche = prospects_reels(nettoyer(fiche), urls, texte_notice + " " + str(lead.get("titre") or ""),
+                            candidats)
+    return ligne_fiche(cle, lead, fiche, urls, usd, modele, aujourd, candidats), usd, "ok"
 
 
-def executer(selection, modele, plafond, appel=appel_http, texte_notice=None, pause=1.0):
+def executer(selection, modele, plafond, appel=appel_http, texte_notice=None, pause=1.0,
+             leads=None, candidats_pour=None):
     """Une fiche par opportunite selectionnee, arret au plafond."""
+    if candidats_pour is None:
+        def candidats_pour(lead):
+            import candidats_probables as cp
+            return cp.candidats_prouves(lead, leads or [], n=3)
     if texte_notice is None:
         def texte_notice(lead):
             if lead.get("src") != "TED" or not lead.get("pub"):
@@ -346,11 +371,15 @@ def executer(selection, modele, plafond, appel=appel_http, texte_notice=None, pa
             notice = texte_notice(lead) or ""
         except Exception:  # noqa: BLE001
             notice = ""
-        ligne, usd, msg = produire(cle, lead, modele, notice, appel=appel)
+        try:
+            cands = candidats_pour(lead) or []
+        except Exception:  # noqa: BLE001
+            cands = []
+        ligne, usd, msg = produire(cle, lead, modele, notice, appel=appel, candidats=cands)
         depense += usd
         verdict = (ligne or {}).get("fiche", {}).get("verdict", "-")
-        print("  [{}/{}] {} | {} | {:.3f} $ | {}".format(
-            i, len(selection), str(lead.get("titre"))[:60], verdict, usd, msg))
+        print("  [{}/{}] {} | {} | {} candidat(s) prouve(s) | {:.3f} $ | {}".format(
+            i, len(selection), str(lead.get("titre"))[:60], verdict, len(cands), usd, msg))
         if ligne:
             lignes.append(ligne)
         if pause:
@@ -373,6 +402,11 @@ def main():
         leads = charger_leads()
         with st.connexion() as conn:
             deja = st.publications_existantes(conn, ONGLET)
+        if config_env.booleen("RADAR_ANALYSTE_REFAIRE", False):
+            # Regenere les fiches existantes (upsert en base) : sert quand la
+            # doctrine ou la matiere change, comme l'ajout des candidats prouves.
+            print("Couche Analyste : REFAIRE actif, les fiches existantes seront regenerees.")
+            deja = set()
     except Exception as e:  # noqa: BLE001
         print("Couche Analyste : lecture de la base impossible ({}), rien fait.".format(str(e)[:120]))
         return 0
@@ -381,7 +415,21 @@ def main():
           "(modele {}, plafond {} $).".format(len(leads), len(deja), len(selection), modele, plafond))
     if not selection:
         return 0
-    lignes, depense = executer(selection, modele, plafond)
+    if config_env.booleen("RADAR_ANALYSTE_DIAG", False):
+        # Diagnostic GRATUIT : candidats prouves par opportunite, aucun appel
+        # au modele, aucune ecriture. Sert a mesurer avant de payer.
+        import candidats_probables as cp
+        for cle, lead in selection:
+            cands = cp.candidats_prouves(lead, leads, n=3)
+            print("  - {} | {} | {} candidat(s)".format(
+                str(lead.get("titre"))[:70], lead.get("pays"), len(cands)))
+            for c in cands:
+                m = (c.get("marches") or [{}])[0]
+                print("      * {} [{}{}] « {} » {} {}".format(
+                    c["entreprise"], c["preuve"], ", etranger" if c["etranger"] else "",
+                    str(m.get("titre"))[:70], m.get("pays"), m.get("date")))
+        return 0
+    lignes, depense = executer(selection, modele, plafond, leads=leads)
     print("  " + st.ecrire_miroir(ONGLET, lignes))
     print("Couche Analyste : {} fiche(s) ecrite(s), depense {} $.".format(len(lignes), depense))
     return 0
