@@ -53,7 +53,7 @@ def _modeles():
 _M, _MR = _modeles()
 MODELE = os.environ.get("RADAR_IE_MODELE") or _M or "claude-haiku-4-5"
 MODELE_RAFFINEMENT = (os.environ.get("RADAR_IE_MODELE_RAFFINEMENT") or _MR
-                      or "claude-sonnet-4-6")
+                      or "claude-sonnet-5-5")
 URL_API = "https://api.anthropic.com/v1/messages"
 
 # ===========================================================================

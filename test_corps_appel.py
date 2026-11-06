@@ -65,11 +65,40 @@ class TestBascule(unittest.TestCase):
             self.skipTest("RADAR_MODELE surcharge")
         self.assertEqual(ted.MODELE, "claude-haiku-5-5")
 
-    def test_escalade_inchangee(self):
+    def test_escalade_sonnet_55(self):
+        # Bascule decidee par calibration humaine (calibration_escalade.json).
         import os
         if os.environ.get("RADAR_MODELE_RAFFINEMENT"):
             self.skipTest("surcharge")
-        self.assertEqual(ted.MODELE_RAFFINEMENT, "claude-sonnet-4-6")
+        self.assertEqual(ted.MODELE_RAFFINEMENT, "claude-sonnet-5-5")
+        self.assertTrue(ted.modele_raisonne(ted.MODELE_RAFFINEMENT))
+
+
+class TestJeuCalibration(unittest.TestCase):
+    """Le jeu de reference doit rester rejouable : avis complets, verdicts valides."""
+
+    def setUp(self):
+        import json
+        with open("calibration_escalade.json", encoding="utf-8") as f:
+            self.jeu = json.load(f)
+
+    def test_verdicts_valides(self):
+        self.assertEqual(len(self.jeu["verdicts"]), 19)
+        self.assertTrue(set(self.jeu["verdicts"].values())
+                        <= {"contacter", "surveiller", "ignorer"})
+
+    def test_chaque_verdict_a_son_avis_complet(self):
+        par_num = {a["publication_number"]: a for a in self.jeu["avis"]}
+        self.assertEqual(set(par_num), set(self.jeu["verdicts"]))
+        for a in self.jeu["avis"]:
+            for champ in ("titre", "acheteur", "pays_execution", "cpv", "description"):
+                self.assertTrue(a.get(champ), "{} sans {}".format(a["publication_number"], champ))
+
+    def test_rejouable_par_la_sonde(self):
+        import sonde_modeles
+        avis, verdicts = sonde_modeles.charger_calibration("calibration_escalade.json")
+        self.assertEqual(len(avis), 19)
+        self.assertEqual(len(verdicts), 19)
 
 
 class FausseReponse:
