@@ -292,6 +292,39 @@ class TestExecution(unittest.TestCase):
         self.assertEqual(ligne["niveau_parsing"], "echec")
 
 
+class TestDiagnosticHaiku55(unittest.TestCase):
+    def test_blocs_et_texte_journalises(self):
+        def avec_thinking(temperature, prompt):
+            r = _reponse(json.dumps(_extraction()))
+            r["charge"]["content"].insert(0, {"type": "thinking", "thinking": "..."})
+            return r
+        ligne = sm.analyser_avis(AVIS, "claude-haiku-5-5", None,
+                                 appel=FausseAPI({"claude-haiku-5-5": avec_thinking}))
+        self.assertEqual(ligne["types_blocs"], ["thinking", "text"])
+        self.assertGreater(ligne["longueur_texte"], 0)
+        self.assertIsNotNone(ligne["extraction"])
+
+    def test_max_tokens_transmis(self):
+        api = FausseAPI({"claude-haiku-5-5": _accepte_tout})
+        sm.analyser_avis(AVIS, "claude-haiku-5-5", None, appel=api, max_tokens=4000)
+        self.assertEqual(api.appels[-1][2], 4000)
+
+    def test_roles_actifs(self):
+        self.assertEqual(sm.roles_actifs({}), sm.ROLES)
+        self.assertEqual(sm.roles_actifs({"SONDE_ROLES": "volume_candidat, x"}),
+                         ("volume_candidat",))
+        self.assertEqual(sm.roles_actifs({"SONDE_ROLES": "inconnu"}), sm.ROLES)
+
+    def test_un_seul_role_interroge(self):
+        api = FausseAPI({m: _accepte_tout for m in TestExecution.MODELES.values()})
+        bilan = sm.executer([AVIS], TestExecution.MODELES, 10, appel=api, pause=0,
+                            roles=("volume_candidat",), max_tokens=3000)
+        self.assertEqual({m for m, _, _ in api.appels}, {"claude-haiku-5-5"})
+        s = sm.rapport(bilan, TestExecution.MODELES, roles=("volume_candidat",))
+        self.assertEqual(len(s["par_modele"]), 1)
+        self.assertEqual(s["par_paire"], [])
+
+
 class TestConfiguration(unittest.TestCase):
     def test_defauts_suivent_la_production(self):
         m = sm.modeles_configures({})
