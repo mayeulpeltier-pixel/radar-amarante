@@ -170,3 +170,21 @@ class TestCandidatsProuves(unittest.TestCase):
                  self._att("Projet", projet="P-CD-PRECAPE", agence="y")]
         c = cp.candidats_prouves(self.AVIS, leads, n=2, aujourd=self.AUJ)
         self.assertEqual([x["entreprise"] for x in c], ["Projet", "Etranger"])
+
+
+class TestNomsCorrompus(unittest.TestCase):
+    def test_cas_reel_du_diagnostic(self):
+        reel = ("HAITI OCEAN PROJECT INC; SOCIETE D'OBSERVATION MULTIMODALE DE L'ENVIRONNEMENT; "
+                "BAHAMAS MARINE MAMMAL RESEARCH ORGANISATION; AQUASEARCH; AQUASEARCH "
+                "228638-2026 Page 14/17; RIPPLES TO WAVE INC")
+        self.assertFalse(cp.nom_exploitable(reel))
+
+    def test_noms_valides(self):
+        for nom in ("ADAM SMITH EUROPE BV", "Cowater International SA", "GITEC-IGIP GmbH",
+                    "APCA IDOM BM-011-2025", "AGRECO G.E.I.E; MDF TRAINING"):
+            self.assertTrue(cp.nom_exploitable(nom), nom)
+
+    def test_bornes(self):
+        self.assertFalse(cp.nom_exploitable("AB"))
+        self.assertFalse(cp.nom_exploitable("Titulaire"))
+        self.assertFalse(cp.nom_exploitable("X" * 120))

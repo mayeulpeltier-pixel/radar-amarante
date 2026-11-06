@@ -418,6 +418,19 @@ def marche_de_fourniture(titre):
     return bool(_FOURNITURE.search(str(titre or "")))
 
 
+# Noms de titulaires corrompus a l'extraction (PDF) : numero de page, numero
+# de publication colle, ou concatenation de plusieurs societes. Constate au
+# premier diagnostic reel (06/11) : « ...; AQUASEARCH 228638-2026 Page 14/17;
+# RIPPLES TO WAVE INC ». Un nom illisible n'est pas une proposition.
+_NOM_CORROMPU = _re.compile(r"page\s*\d+\s*/\s*\d+|\b\d{5,}-\d{4}\b", _re.I)
+
+
+def nom_exploitable(nom):
+    n = str(nom or "").strip()
+    return (3 <= len(n) <= 90 and n.lower() != "titulaire"
+            and not _NOM_CORROMPU.search(n) and n.count(";") <= 2)
+
+
 def candidats_prouves(avis, leads, n=3, aujourd=None):
     """[{entreprise, preuve, libelle_preuve, etranger, origine, marches}] pour
     un avis, UNIQUEMENT avec preuve. Fonction PURE.
@@ -440,7 +453,7 @@ def candidats_prouves(avis, leads, n=3, aujourd=None):
         if l.get("src") != "ATTRIB":
             continue
         ent = (l.get("entreprise") or "").strip()
-        if len(ent) < 3 or ent.lower() == "titulaire":
+        if not nom_exploitable(ent):
             continue
         titre_marche = l.get("marche") or l.get("titre") or ""
         if marche_de_fourniture(titre_marche):
