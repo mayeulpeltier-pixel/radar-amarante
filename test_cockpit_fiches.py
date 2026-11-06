@@ -68,7 +68,7 @@ class TestPage(unittest.TestCase):
         self.assertIn("${blocFiche(l)}", self.html)
 
     def test_donnees_fiche_embarquees(self):
-        m = re.search(r"const FICHES=(\{.*?\}), FICHE_PUB=(\{.*?\});", self.html)
+        m = re.search(r"const FICHES=(\{.*?\}), FICHE_PUB=(\{.*?\}), CAND_DOSS=", self.html)
         self.assertIsNotNone(m)
         self.assertEqual(json.loads(m.group(2)), {"PPM-1": list(json.loads(m.group(1)))[0]})
 
@@ -84,6 +84,23 @@ class TestPage(unittest.TestCase):
     def test_liens_assainis_cote_js(self):
         self.assertIn("function lienSur", self.html)
         self.assertIn("/^https?:", self.html)
+
+
+class TestDossiers(unittest.TestCase):
+    def test_candidats_prouves_par_dossier(self):
+        leads = [_avis(projet_id="P123"), _attrib("SOGEA SATOM", projet_id="P123", pays="Burundi"),
+                 _attrib("Monega Enterprises", marche="Supply of medicines", projet_id="P123")]
+        dossiers = [{"proj_id": "P123", "titre": "Projet", "pays": "RDC", "secteur": "Génie civil / BTP",
+                     "phase_courante": "avis", "phases_presentes": ["avis"], "n_phases": 1,
+                     "n_leads": 1, "timeline": []}]
+        html = ck.generer_cockpit(leads, suivi={"api": True}, dossiers=dossiers)
+        m = re.search(r"CAND_DOSS=(\{.*?\});\n", html)
+        cd = json.loads(m.group(1))
+        self.assertEqual([c["entreprise"] for c in cd["P123"]], ["SOGEA SATOM"])
+        self.assertEqual(cd["P123"][0]["preuve"], "meme_projet")
+        self.assertNotIn("function candidatsPour", html)
+        self.assertNotIn("historique secteur/théâtre", html)
+        self.assertEqual(re.findall(r"__[A-Z_]+__", html), [])
 
 
 class TestApplication(unittest.TestCase):
