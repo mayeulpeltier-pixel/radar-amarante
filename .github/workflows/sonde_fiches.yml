@@ -1,0 +1,49 @@
+name: Sonde fiches Analyste
+# Diagnostic ponctuel, DECLENCHEMENT MANUEL UNIQUEMENT (workflow_dispatch).
+# LIT Postgres (meme chemin que l'application), n'ecrit RIEN : ni base, ni
+# Sheet, ni etat, ni dashboard. Genere pour les meilleurs leads recents deux
+# fiches d'approche (A : donnees Radar seules ; B : + recherche web) afin de
+# juger leur utilite et leur cout avant de construire la couche Analyste.
+# Plafond de depense dur. Sonde jetable : supprimer une fois la decision prise.
+#
+# UTILISATION : Actions > "Sonde fiches Analyste" > Run workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      n:
+        description: "Nombre de leads a ficher (defaut 6, deux fiches chacun)"
+        required: false
+        default: "6"
+      plafond:
+        description: "Plafond de depense en dollars (defaut 3)"
+        required: false
+        default: "3"
+jobs:
+  sonde-fiches:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer les dependances radar
+        run: pip install -r requirements-radar.txt
+      - name: Generer les fiches
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SONDE_FICHES_N: ${{ github.event.inputs.n }}
+          SONDE_FICHES_PLAFOND_USD: ${{ github.event.inputs.plafond }}
+        run: python sonde_fiches.py
+      - name: Publier le detail
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonde-fiches-resultats
+          path: |
+            sonde_fiches_resultats.json
+            sonde_fiches_resultats.md
+          if-no-files-found: ignore
