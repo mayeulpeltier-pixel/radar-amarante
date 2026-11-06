@@ -579,11 +579,24 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
     # que s'il a deja remporte un marche comparable, cite en preuve.
     # Etendu aux avis « a surveiller » : la preuve est rare, donc legere.
     soum = {}
+    cand_doss = {}
     try:
         import candidats_probables as _cp
         cibles = [l for l in leads
                   if l.get("src") != "ATTRIB" and l.get("action") in ("contacter", "surveiller")]
         idx_att = _cp.index_attributions(leads)
+        # Vue Dossiers (projets suivis de l'amont a l'attribution) : memes
+        # candidats prouves que le panneau de detail. La preuve la plus forte
+        # y est naturelle : titulaire d'un marche du MEME projet.
+        for d in (dossiers or []):
+            pid = str(d.get("proj_id") or "").strip()
+            if not pid:
+                continue
+            r = _cp.candidats_prouves({"pays": d.get("pays"), "projet_id": pid,
+                                       "sect": d.get("secteur"), "agence": ""},
+                                      leads, n=4, index=idx_att)
+            if r:
+                cand_doss[pid] = r
         for l in cibles[:800]:
             cle = str(l.get("pub") or "").strip()
             if not cle:
@@ -622,6 +635,7 @@ def generer_cockpit(leads, geo=None, suivi=None, risque=None, watchlist=None,
                                                  ensure_ascii=False))
             .replace("__COMPTES_JSON__", json.dumps(comptes_ or {}, ensure_ascii=False))
             .replace("__SOUM_JSON__", json.dumps(soum, ensure_ascii=False))
+            .replace("__CANDDOSS_JSON__", json.dumps(cand_doss, ensure_ascii=False))
             .replace("__SANTEDET_JSON__", json.dumps(detail_sante or {}, ensure_ascii=False))
             .replace("__ONGLET_SRC_JSON__", json.dumps(table_onglets(), ensure_ascii=False))
             .replace("__POSTURE_JSON__", json.dumps(posture or {}, ensure_ascii=False))
@@ -1333,16 +1347,12 @@ const COMPTES=__COMPTES_JSON__;
 // (preference). Les melanger, comme le faisait la v1, produisait un classement
 // qui se presentait comme une prevision sans en etre une.
 const SOUM=__SOUM_JSON__;
-const FICHES=__FICHES_JSON__, FICHE_PUB=__FICHEPUB_JSON__;
+const FICHES=__FICHES_JSON__, FICHE_PUB=__FICHEPUB_JSON__, CAND_DOSS=__CANDDOSS_JSON__;
 const DIM_LBL={attractivite:"Attractivité",timing:"Timing",winability:"Winability",
   fit:"Fit Amarante",confiance:"Confiance"};
-function candidatsPour(l){
-  if(!CANDIDATS||!CANDIDATS.secteur_zone)return [];
-  const sect=(l.secteur||"Autre"), zone=(l.zone||"Non classe");
-  const c=(CANDIDATS.secteur_zone[sect+"|"+zone]||CANDIDATS.secteur[sect]||CANDIDATS.zone[zone]||[]);
-  // ne pas proposer le titulaire lui-meme si le lead EST une attribution
-  return c.filter(x=>x.entreprise&&x.entreprise!==l.titulaire).slice(0,6);
-}
+// `candidatsPour` (cascade secteur/theatre sur CANDIDATS) retiree le 06/11/2026 :
+// elle proposait des titulaires sans preuve. Les vues lisent desormais
+// SOUM (avis) et CAND_DOSS (dossiers), calcules par candidats_prouves.
 const SUIVI_URL=__SUIVI_URL__, SUIVI_TOKEN=__SUIVI_TOKEN__, API_STATUT=__API_STATUT__;
 const SUIVI_ON=!!SUIVI_URL||API_STATUT;
 const SRC_SUIVI={TED:"TED",BM:"Banque Mondiale","PRIVÉ":"Privé BITD",RW:"ReliefWeb",PROPARCO:"Proparco",DFC:"DFC"};
@@ -2582,8 +2592,9 @@ function carteDossier(d){
     const fleche=lead?'<span class="tl-go">→</span>':"";
     return `<div class="tl-row" ${clic}><div class="tl-dot" style="background:${col}"></div><div class="tl-body"><div class="tl-t"><span class="tl-ph">${PH_LBL[l.phase]||l.phase}</span>${esc(l.titre||"").slice(0,90)}${fleche}</div><div class="tl-m">${info}</div></div></div>`;
   }).join("");
-  const cand=(CANDIDATS&&CANDIDATS.secteur?candidatsPour({secteur:d.secteur,zone:d.pays,titulaire:""}):[]);
-  const candHtml=cand.length?`<div class="cand-note" style="margin-top:12px">Candidats probables (historique secteur/théâtre) : ${cand.slice(0,4).map(x=>esc(x.entreprise)+(x.etranger?" ⚑":"")).join(" · ")}</div>`:"";
+  // Candidats PROUVES (06/11/2026) : remplace la cascade secteur/theatre.
+  const cand=CAND_DOSS[d.proj_id]||[];
+  const candHtml=cand.length?`<div class="cand-note" style="margin-top:12px">Candidats probables (prouvés) : ${cand.map(x=>{const m=(x.marches||[])[0]||{};const u=lienSur(m.lien);return esc(x.entreprise)+(x.etranger?" ⚑":"")+` <span title="${esc(m.titre||"")}">(${esc(PREUVE_LBL[x.preuve]||x.preuve)}${u?`, <a href="${u}" target="_blank" rel="noopener">preuve</a>`:""})</span>`;}).join(" · ")}</div>`:"";
   const nph=(d.phases_presentes||[]).length;
   return `<div class="doss" id="doss-${esc(d.proj_id)}"><div class="doss-top"><div class="doss-tit"><div class="doss-nom">${esc(d.titre||"Projet "+d.proj_id)}</div><div class="doss-meta">${esc(d.pays||"")}${d.secteur?" · "+esc(d.secteur):""} · ${nph} phase${nph>1?"s":""} · ${d.n_leads} signal${d.n_leads>1?"aux":""}</div></div><span class="doss-pid" title="Identifiant projet Banque Mondiale (clé de rattachement)">${esc(d.proj_id)}</span></div><div class="pipe">${pipe}</div><div class="tl">${tl}</div>${candHtml}</div>`;
 }
