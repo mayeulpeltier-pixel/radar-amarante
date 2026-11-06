@@ -403,6 +403,21 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python surveillance_attributions.py
 
+      # Couche Analyste (06/11/2026) : une fiche d'approche par opportunite
+      # nouvelle (Sonnet 5.5 + recherche web, prospects reels uniquement).
+      # OPT-IN par la variable de depot RADAR_ANALYSTE (absente = rien) ;
+      # plafond de depense par run. Avant le tableau de bord, pour que les
+      # fiches du jour soient lisibles des la publication.
+      - name: Rediger les fiches Analyste (opt-in)
+        if: always() && steps.cle.outcome == 'success'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          RADAR_ANALYSTE: ${{ vars.RADAR_ANALYSTE }}
+          RADAR_ANALYSTE_N: ${{ vars.RADAR_ANALYSTE_N }}
+          RADAR_ANALYSTE_PLAFOND_USD: ${{ vars.RADAR_ANALYSTE_PLAFOND_USD }}
+        run: python analyste.py
+
       # 5) Generer le tableau de bord depuis le Sheet (public/index.html).
       #    if: always() => le dashboard se rafraichit meme si un collecteur a eu
       #    un souci, en lisant le dernier etat du Sheet. L'echec reste visible
